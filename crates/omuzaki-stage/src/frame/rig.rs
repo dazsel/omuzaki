@@ -17,7 +17,7 @@ use omuzaki_anim_api::{
     SpringSet, Tick,
 };
 use omuzaki_avatar_api::avatar::ImportedAvatar;
-use omuzaki_char_api::{BuiltCharacter, CharacterRig, DriverPlan, JointRef, PartMesh, PoseSource};
+use omuzaki_char_api::{BuiltCharacter, BuiltMesh, CharacterRig, DriverPlan, JointRef, PartCategory, PartMesh, PoseSource};
 use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_rig::constraint::VrmConstraintSolver;
 use omuzaki_rig::full::FullRig;
@@ -133,7 +133,12 @@ impl RigFrame {
     pub(crate) fn for_character(built: &BuiltCharacter) -> Result<Self, StageError> {
         let mut frame = Self::new(&built.rig)?;
         let inverse_bind = built.rig.inverse_bind();
-        let meshes = built.meshes.iter().map(|m| (&m.mesh, None));
+        // Garments are measured as clothes, the rest as the body (#2683).
+        let garment = |m: &BuiltMesh| {
+            let kind = built.def.parts.get(&m.part).and_then(|p| omuzaki_char_api::find_kind(p.kind.as_str()));
+            kind.is_some_and(|k| (k.meta)().category == PartCategory::Garment)
+        };
+        let meshes = built.meshes.iter().map(|m| (&m.mesh, None, garment(m)));
         let by_bone = |_, bone: BoneId| inverse_bind.get(bone.index()).copied();
         let bind = frame.bind_pose(&built.rig.bind);
         frame.rig.set_guard(arm_guard(&built.rig.skeleton, &bind, meshes, by_bone));
@@ -143,7 +148,7 @@ impl RigFrame {
     /// Adds the arm guard measured from an imported avatar's meshes. Cold.
     #[must_use]
     pub(crate) fn guarding(mut self, avatar: &ImportedAvatar) -> Self {
-        let meshes = avatar.meshes.iter().map(|m| (&m.mesh, Some(m.inverse_bind.as_slice())));
+        let meshes = avatar.meshes.iter().map(|m| (&m.mesh, Some(m.inverse_bind.as_slice()), false));
         let bind = self.bind_pose(&avatar.bind);
         self.rig.set_guard(arm_guard(&avatar.skeleton, &bind, meshes, |_, _| None));
         self
@@ -254,7 +259,7 @@ impl RigFrame {
 
 /// A placeholder obstacle for the unused slots of a fixed buffer; never handed to the guard.
 const EMPTY_OBSTACLE: Obstacle =
-    Obstacle { part: BodyPart::Torso, a: Vec3::ZERO, b: Vec3::ZERO, radius: 0.0, depth: 0.0, forward: Vec3::Z };
+    Obstacle { part: BodyPart::Torso, a: Vec3::ZERO, b: Vec3::ZERO, radius: 0.0, depth: 0.0, forward: Vec3::Z, flare: 1.0 };
 
 /// The solved skeleton as the part runtimes see it: skin matrices looked up by joint, and the character's root.
 pub(crate) struct SkinPose<'a> {
@@ -284,19 +289,20 @@ fn bone_of(skeleton: &Skeleton, joint: &JointRef) -> Option<BoneId> {
 }
 
 /// The arm guard for a body with these skinned `meshes` (#2353), or `None` if it cannot be measured. Each mesh comes
-/// with its own inverse bind matrices by joint, if it has them; otherwise `by_bone` gives the inverse bind of a bone.
-/// The body is then made clear of the arms in `bind`, the pose the character rests in. Cold.
+/// with its own inverse bind matrices by joint, if it has them (otherwise `by_bone` gives the inverse bind of a bone),
+/// and whether it is a garment, which is measured as clothes (#2683: a skirt is a hull, not wider thighs). The body is
+/// then made clear of the arms in `bind`, the pose the character rests in. Cold.
 fn arm_guard<'a>(
     skeleton: &Skeleton,
     bind: &Pose,
-    meshes: impl Iterator<Item = (&'a PartMesh, Option<&'a [Mat4]>)>,
+    meshes: impl Iterator<Item = (&'a PartMesh, Option<&'a [Mat4]>, bool)>,
     by_bone: impl Fn(usize, BoneId) -> Option<Mat4>,
 ) -> Option<ArmGuard> {
     let rest = skeleton.rest_pose();
     let mut world = Pose::IDENTITY;
     skeleton.world_pose(&rest, &mut world);
-    let mut vertices = Vec::new();
-    for (mesh, inverse_bind) in meshes.filter(|(m, _)| !m.dynamic && !m.joint_bones.is_empty()) {
+    let (mut skin, mut garments) = (Vec::new(), Vec::new());
+    for (mesh, inverse_bind, garment) in meshes.filter(|(m, _, _)| !m.dynamic && !m.joint_bones.is_empty()) {
         let bones: Vec<Option<BoneId>> = mesh.joint_bones.iter().map(|j| bone_of(skeleton, j)).collect();
         let g = &mesh.geometry;
         let skinned = SkinnedMesh { positions: &g.positions, joints: &g.joints, weights: &g.weights, bones: &bones };
@@ -304,10 +310,10 @@ fn arm_guard<'a>(
             Some(matrices) => Some(matrices.get(joint).copied().unwrap_or(Mat4::IDENTITY)),
             None => by_bone(joint, bone),
         };
-        BodyProxy::gather(&world, skinned, unbind, &mut vertices);
+        BodyProxy::gather(&world, skinned, unbind, if garment { &mut garments } else { &mut skin });
     }
     let config = GuardConfig::default();
-    let mut proxy = BodyProxy::fit(skeleton, &rest, &vertices)?;
+    let mut proxy = BodyProxy::fit_dressed(skeleton, &rest, &skin, &garments)?;
     proxy.clear_of(skeleton, bind, config.margin);
     Some(ArmGuard::new(proxy, config))
 }
@@ -330,5 +336,87 @@ mod tests {
         let mut frame = RigFrame::for_character(&built).unwrap();
         assert!(frame.rig.guard().is_none());
         frame.solve(Tick::at_rate(0, 60.0), &HumanoidPose::REST, &IkGoals::NONE);
+    }
+
+    /// The arm a pose asks to hang `down` degrees from the T-pose, solved through `frame`'s rig and guard: the left
+    /// shoulder-to-wrist line's angle from straight down, degrees, and the smallest gap between the arms and the body.
+    #[allow(clippy::unwrap_used)]
+    fn hang(frame: &mut RigFrame, down: f32) -> (f32, f32) {
+        use omuzaki_anim_api::HumanoidBone as B;
+        use omuzaki_core::glam::Quat;
+        let mut pose = HumanoidPose::REST;
+        pose.set(B::LeftUpperArm, Quat::from_rotation_z(-down.to_radians()));
+        pose.set(B::RightUpperArm, Quat::from_rotation_z(down.to_radians()));
+        frame.reset();
+        frame.rig.guard_mut().unwrap().reset();
+        frame.solve(Tick::at_rate(0, 60.0), &pose, &IkGoals::NONE);
+        let skeleton = frame.rig.skeleton();
+        let map = skeleton.humanoid_map().unwrap();
+        let at = |bone| frame.world().local[map.get(bone).unwrap().index()].translation;
+        let angle = (at(B::LeftHand) - at(B::LeftUpperArm)).angle_between(Vec3::NEG_Y).to_degrees();
+        // The guard on the solved pose finds nothing inside (and so moves nothing).
+        let mut guard = frame.rig.guard().unwrap().clone();
+        guard.reset();
+        let mut solved = (*frame.local).clone();
+        let report = guard.apply(skeleton, &mut solved, 1.0 / 60.0);
+        (angle, report.before)
+    }
+
+    /// #2683: the kit's default character wears a flared skirt. Fitted as part of each thigh, the skirt made each
+    /// thigh a cylinder as wide as the hem and held arms that were asked to hang 29 degrees out; measured as clothes,
+    /// it is a hull of its own, the thighs are as thick as the legs, and a hanging hand rests on the skirt, nothing
+    /// inside the body or the skirt. Without the skirt, the arm hangs closer still, by the hips.
+    #[test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    fn arms_asked_to_hang_rest_on_the_skirt_instead_of_standing_out_by_its_hem() {
+        use omuzaki_char_api::CharacterDef;
+        use omuzaki_core::time::FakeClock;
+        use omuzaki_doc_api::{DocPath, DocRead, DocWrite};
+        use omuzaki_ops_api::{Actor, OpCtx, find};
+        crate::link();
+        let mut doc = omuzaki_doc_mock::MemDoc::new();
+        let (actor, clock) = (Actor::Person { name: "test".into() }, FakeClock::default());
+        let args = serde_json::json!({"id": "kit", "name": "Kit", "template": "standard", "seed": 7});
+        let plan = (find("character.create").unwrap().decode)(args)
+            .unwrap()
+            .plan(&OpCtx::new(&doc, &actor, &clock))
+            .unwrap();
+        doc.apply(&plan.patch).unwrap();
+        let node = doc.get(&DocPath::parse("characters/kit").unwrap()).unwrap().clone();
+        let dressed = CharacterDef::from_node(&node).unwrap();
+        assert!(dressed.parts.keys().any(|p| p.as_str() == "skirt"), "the default character wears a skirt");
+        let mut bare = dressed.clone();
+        bare.parts.retain(|id, _| id.as_str() != "skirt");
+
+        let mut angles = Vec::new();
+        for def in [&dressed, &bare] {
+            let built = RegistryBuilder
+                .build(&CharId::new("kit").unwrap(), def, &BuildOptions::default(), &BuildServices::default())
+                .unwrap();
+            let mut frame = RigFrame::for_character(&built).unwrap();
+            let proxy = frame.rig.guard().unwrap().proxy().clone();
+            let widest = |part: BodyPart| {
+                proxy.body.iter().filter(|p| p.part == part).map(|p| p.radius.max(p.radius * p.flare)).fold(0.0, f32::max)
+            };
+            let skirt = proxy.body.iter().filter(|p| p.part == BodyPart::Skirt).count();
+            println!(
+                "{} skirt parts, thigh {:.0} mm, skirt {:.0} mm",
+                skirt,
+                widest(BodyPart::LeftThigh) * 1e3,
+                widest(BodyPart::Skirt) * 1e3
+            );
+            assert_eq!(skirt, if std::ptr::eq(def, &dressed) { 2 } else { 0 });
+            // The thighs are the legs' own: the skirt's hem stands well outside them.
+            assert!(widest(BodyPart::LeftThigh) < 0.11, "{proxy:?}");
+            // The arm as built (45 degrees out, the bind) is untouched; asked to hang, it comes down to the body.
+            let (bind, _) = hang(&mut frame, 45.0);
+            assert!((bind - 45.0).abs() < 0.01, "{bind}");
+            let (angle, gap) = hang(&mut frame, 85.0);
+            println!("  asked to hang 5 degrees out: {angle:.1} degrees out, smallest gap {:.1} mm", gap * 1e3);
+            assert!(gap > -GuardConfig::default().tolerance - 1e-4, "{gap}");
+            angles.push(angle);
+        }
+        assert!(angles[0] < 15.0, "on the skirt, not 29 degrees out by its hem: {angles:?}");
+        assert!(angles[1] < angles[0] && angles[1] < 9.0, "{angles:?}");
     }
 }

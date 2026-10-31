@@ -39,8 +39,9 @@ pub const BODY_JOINTS: [HumanoidBone; 12] = [
     HumanoidBone::RightHand,
 ];
 
-/// How many guard parts a [`MemberBody`] carries: torso, pelvis, two thighs, head, and one spare.
-pub const BODY_PARTS: usize = 6;
+/// How many guard parts a [`MemberBody`] carries: the waist and the torso, the pelvis, two frustums for each thigh,
+/// the head, and a skirt's two frustums.
+pub const BODY_PARTS: usize = 10;
 
 /// One member's body as the last frame left it, in the world: what the other member's half of a touch reads.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -456,7 +457,7 @@ pub struct TouchReport {
 
 /// A placeholder for the unused slots of a fixed buffer of parts; never measured against.
 pub const PLACEHOLDER: Obstacle =
-    Obstacle { part: BodyPart::Torso, a: Vec3::ZERO, b: Vec3::ZERO, radius: 0.0, depth: 0.0, forward: Vec3::Z };
+    Obstacle { part: BodyPart::Torso, a: Vec3::ZERO, b: Vec3::ZERO, radius: 0.0, depth: 0.0, forward: Vec3::Z, flare: 1.0 };
 
 /// Measures a touch on the bodies a frame left, against the goals `overlays` set for that frame.
 pub fn report(a: &MemberBody, b: &MemberBody, overlays: &[Overlay; 2]) -> TouchReport {
@@ -537,9 +538,11 @@ mod tests {
             radius: 0.15,
             depth: 0.09,
             forward,
+            flare: 1.0,
         });
         let head = p(0.0, 1.57, 0.02);
-        b.parts[1] = Some(Obstacle { part: BodyPart::Head, a: head, b: head, radius: 0.11, depth: 0.11, forward });
+        b.parts[1] =
+            Some(Obstacle { part: BodyPart::Head, a: head, b: head, radius: 0.11, depth: 0.11, forward, flare: 1.0 });
         b.arm = [0.5; 2];
         b.palm = [0.05; 2];
         b.hand_thickness = [0.015; 2];

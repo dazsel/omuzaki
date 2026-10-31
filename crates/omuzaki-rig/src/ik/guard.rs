@@ -11,6 +11,13 @@
 //! is deep, so its cross-section is an ellipse: a half width and a half depth, measured the same way, facing the way
 //! the body faces (#2414: a round torso as wide as the shoulders held a hand on the chest a hand's breadth off it).
 //!
+//! Clothes are measured as what they are (#2683). [`BodyProxy::fit_dressed`] fits the body from its skin and the
+//! garments that hug it (tights, a fitted top), and a loose garment around the hips (a skirt, a dress, a coat's tails)
+//! becomes its own part: a [`BodyPart::Skirt`] hull hung from the hips in two frustums, waist to its widest and on to
+//! the hem, each widening by its [`flare`](Proxy::flare). Fitted as a thigh, a flared skirt made each thigh a
+//! cylinder as wide as the hem from the hip to the knee and held hanging arms 30 degrees out; against the hull a
+//! hanging hand rests on the skirt where it is.
+//!
 //! The forearm's radius comes from the same mesh, and so does the hand: an ellipsoid about its centre, with a half
 //! extent along each of the hand bone's axes, so a palm laid on the chest or on another palm is as thin as a hand
 //! and not a ball.
@@ -69,12 +76,15 @@ pub struct Proxy {
     pub depth: f32,
     /// The way the body faces, in `a`'s bone space: which way `depth` is measured.
     pub forward: Vec3,
+    /// The width and depth at `b` as a multiple of those at `a`, changing evenly between: 1 for a straight part, more
+    /// for a skirt that widens toward its hem.
+    pub flare: f32,
 }
 
 impl Proxy {
     /// A round part: `depth` the same as `radius`.
     pub fn round(part: BodyPart, a: Anchor, b: Anchor, radius: f32) -> Self {
-        Self { part, a, b, radius, depth: radius, forward: Vec3::Z }
+        Self { part, a, b, radius, depth: radius, forward: Vec3::Z, flare: 1.0 }
     }
 
     /// The part as it stands in `pose`, skeleton root space.
@@ -87,6 +97,7 @@ impl Proxy {
             radius: self.radius,
             depth: self.depth,
             forward,
+            flare: self.flare,
         }
     }
 }
@@ -108,6 +119,8 @@ pub struct Obstacle {
     pub depth: f32,
     /// The way the part faces (unit).
     pub forward: Vec3,
+    /// The width and depth at `b` as a multiple of those at `a` ([`Proxy::flare`]); 1 for a straight part.
+    pub flare: f32,
 }
 
 impl Obstacle {
@@ -129,6 +142,7 @@ impl Obstacle {
             && self.forward.is_finite()
             && self.radius.is_finite()
             && self.depth.is_finite()
+            && self.flare.is_finite()
     }
 
     /// The gap between `p` (a point with `own` radius toward the obstacle) and the surface, and the normal out of it.
@@ -136,25 +150,27 @@ impl Obstacle {
         let (_, t) = closest_points(p, p, self.a, self.b);
         let on = self.a + (self.b - self.a) * t;
         let normal = (p - on).try_normalize().unwrap_or(self.forward);
-        (p.distance(on) - own - self.across(normal, self.b - self.a, self.forward), normal)
+        (p.distance(on) - own - self.across(normal, self.b - self.a, self.forward, t), normal)
     }
 
-    /// How far the surface is from the axis toward `out` (a unit direction from the axis), metres: on the ellipse of
-    /// `radius` across and `depth` along `forward`, for the part of `out` square to `axis`.
-    fn across(&self, out: Vec3, axis: Vec3, forward: Vec3) -> f32 {
+    /// How far the surface is from the axis toward `out` (a unit direction from the axis) at `t` along it (0 at `a`, 1
+    /// at `b`), metres: on the ellipse of `radius` across and `depth` along `forward`, for the part of `out` square to
+    /// `axis`, widened by the [`flare`](Self::flare) that far along.
+    fn across(&self, out: Vec3, axis: Vec3, forward: Vec3, t: f32) -> f32 {
+        let widen = 1.0 + (self.flare - 1.0) * t.clamp(0.0, 1.0);
         if (self.depth - self.radius).abs() <= f32::EPSILON * self.radius {
-            return self.radius;
+            return self.radius * widen;
         }
         let axis = axis.normalize_or_zero();
-        let Some(front) = (forward - axis * forward.dot(axis)).try_normalize() else { return self.radius };
+        let Some(front) = (forward - axis * forward.dot(axis)).try_normalize() else { return self.radius * widen };
         let side = axis.cross(front);
         let (f, s) = (out.dot(front), out.dot(side));
         let square = (f * f + s * s).sqrt();
         if square < 1e-6 {
-            return self.radius.min(self.depth);
+            return self.radius.min(self.depth) * widen;
         }
         let (f, s) = (f / square, s / square);
-        self.radius * self.depth / ((self.depth * s).powi(2) + (self.radius * f).powi(2)).sqrt()
+        self.radius * self.depth / ((self.depth * s).powi(2) + (self.radius * f).powi(2)).sqrt() * widen
     }
 }
 
@@ -170,8 +186,10 @@ fn ellipsoid_toward(axes: Vec3, rotation: Quat, out: Vec3) -> f32 {
 /// The parts of the body the arms are kept out of.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum BodyPart {
-    /// Hips to neck.
+    /// The upper torso, from where it bends (the waist) to the neck.
     Torso,
+    /// The lower torso, from the hips to where it bends.
+    Waist,
     /// Across the hip joints.
     Pelvis,
     /// The left thigh.
@@ -180,6 +198,8 @@ pub enum BodyPart {
     RightThigh,
     /// The head.
     Head,
+    /// A loose garment hung from the hips (a skirt, a dress): one of its frustums ([`BodyProxy::fit_dressed`]).
+    Skirt,
 }
 
 /// The body the arms are kept out of, and the arms' own sizes.
@@ -241,31 +261,56 @@ impl BodyProxy {
         };
         let anchor =
             |(id, world): (BoneId, Transform), at: Vec3| Anchor { bone: id, offset: point(inverse(world), at) };
-        let capsule = |part, a: (BoneId, Transform), b: (BoneId, Transform), bones: &[Option<BoneId>]| {
-            let points = carried(bones);
-            let r = radius(&points, a.1.translation, b.1.translation, BODY_QUANTILE)?;
-            Some(Proxy::round(part, anchor(a, a.1.translation), anchor(b, b.1.translation), r))
-        };
 
         let hips = joint(B::Hips)?;
         let top = joint(B::Neck).or_else(|| joint(B::Head))?;
         let spine = [map.get(B::Spine), map.get(B::Chest), map.get(B::UpperChest)];
-        let torso = elliptic(&carried(&spine), hips, top).map(|(radius, depth, forward)| Proxy {
-            part: BodyPart::Torso,
-            a: anchor(hips, hips.1.translation),
-            b: anchor(top, top.1.translation),
-            radius,
-            depth,
-            forward,
-        });
-        let mut body = vec![torso?];
+        // The torso tapers: hips, a waist, a chest and shoulders. One ellipse as wide as the widest held an elbow at the
+        // waist out by the shoulders' width (#2683), so it is two frustums bent where the body is narrowest or widest.
+        // Each ring rides on the last bone of the spine at or below it, so the torso bends with the spine.
+        let chain: Vec<(BoneId, Transform)> = std::iter::once(hips)
+            .chain([B::Spine, B::Chest, B::UpperChest].into_iter().filter_map(joint))
+            .chain(std::iter::once(top))
+            .collect();
+        let carrier = |at: Vec3| {
+            let up = top.1.translation - hips.1.translation;
+            let height = |p: Vec3| (p - hips.1.translation).dot(up);
+            chain.iter().rev().find(|(_, w)| height(w.translation) <= height(at) + 1e-5).copied().unwrap_or(hips)
+        };
+        let mut body = hull(
+            &carried(&spine),
+            (hips.1.translation, top.1.translation),
+            carrier,
+            [BodyPart::Waist, BodyPart::Torso],
+        );
+        if body.is_empty() {
+            return None;
+        }
         if let (Some(l), Some(r)) = (joint(B::LeftUpperLeg), joint(B::RightUpperLeg)) {
-            body.extend(capsule(BodyPart::Pelvis, l, r, &[Some(hips.0)]));
+            // The pelvis: an ellipse like the torso's, on the body's up axis between the hip joints, over the height
+            // of what the hips carry (a capsule across the hip joints had to be as thick as the hips are tall, and
+            // stood a hand's breadth out of their sides).
+            let points = carried(&[Some(hips.0)]);
+            let base = (l.1.translation + r.1.translation) * 0.5;
+            let (low, high) = points.iter().fold((base.y, base.y), |(lo, hi), p| (lo.min(p.y), hi.max(p.y)));
+            let ends = (Vec3::new(base.x, low, base.z), Vec3::new(base.x, high, base.z));
+            body.extend(elliptic(&points, ends, hips.1.rotation).map(|(radius, depth, forward)| Proxy {
+                part: BodyPart::Pelvis,
+                a: anchor(hips, ends.0),
+                b: anchor(hips, ends.1),
+                radius,
+                depth,
+                forward,
+                flare: 1.0,
+            }));
+            // Each thigh tapers from the hip to the knee, and is deeper than wide where it meets the seat: two
+            // frustums like the torso's (a round capsule as thick as the top of the thigh stood 5 cm off its side).
             for (part, upper, knee) in
                 [(BodyPart::LeftThigh, l, B::LeftLowerLeg), (BodyPart::RightThigh, r, B::RightLowerLeg)]
             {
                 if let Some(knee) = joint(knee) {
-                    body.extend(capsule(part, upper, knee, &[Some(upper.0)]));
+                    let ends = (upper.1.translation, knee.1.translation);
+                    body.extend(hull(&carried(&[Some(upper.0)]), ends, |_| upper, [part; 2]));
                 }
             }
         }
@@ -330,6 +375,68 @@ impl BodyProxy {
         Some(Self { body, forearm_radius, hands, hand_axes })
     }
 
+    /// [`fit`](Self::fit) for a dressed body: `skin` are the body's own vertices (and anything else that is part of
+    /// it: the head, hair, boots), `garments` the clothes' (#2683). A garment vertex on the hips or a thigh that stands
+    /// off the bare body by more than [`LOOSE`] of the part's radius is loose (a skirt, a dress); the rest hug the body
+    /// and are fitted with it (tights, a fitted top, the waistband). The loose ones become a [`BodyPart::Skirt`] hull in
+    /// two frustums ([`Self::skirt`]) instead of widening the thighs. `None` as [`fit`](Self::fit) is for `skin`.
+    /// Cold: allocates.
+    pub fn fit_dressed(
+        skeleton: &Skeleton,
+        pose: &Pose,
+        skin: &[(Vec3, BoneId)],
+        garments: &[(Vec3, BoneId)],
+    ) -> Option<Self> {
+        use HumanoidBone as B;
+        let bare = Self::fit(skeleton, pose, skin)?;
+        let map = skeleton.humanoid_map()?;
+        let lower = [map.get(B::Hips), map.get(B::LeftUpperLeg), map.get(B::RightUpperLeg)];
+        // The bare parts each lower bone's garment vertices are measured against: a thigh's own, the hips' both.
+        let placed =
+            |part: BodyPart| bare.body.iter().filter(move |p| p.part == part).map(|p| p.placed(skeleton, pose));
+        let against = [
+            placed(BodyPart::Pelvis).chain(placed(BodyPart::Torso)).collect::<Vec<_>>(),
+            placed(BodyPart::LeftThigh).collect(),
+            placed(BodyPart::RightThigh).collect(),
+        ];
+        let mut fitted = skin.to_vec();
+        let mut loose = Vec::new();
+        for &(p, bone) in garments {
+            let Some(k) = lower.iter().position(|b| *b == Some(bone)) else {
+                fitted.push((p, bone));
+                continue;
+            };
+            let off = against[k].iter().map(|o| o.gap_to(p, 0.0).0 / o.radius.max(1e-3)).fold(f32::INFINITY, f32::min);
+            if off > LOOSE {
+                loose.push(p);
+            } else {
+                fitted.push((p, bone));
+            }
+        }
+        let mut proxy = Self::fit(skeleton, pose, &fitted)?;
+        if let Some(hips) = map.get(B::Hips) {
+            proxy.body.extend(Self::skirt(&loose, hips, bone_world(skeleton, pose, hips)));
+        }
+        Some(proxy)
+    }
+
+    /// The hull of a loose garment's `points` (root space, the hips at `hips_world`): [`hull`]'s two frustums hung
+    /// from the hips along the body's down axis through the garment's middle, from its top to its hem. Nothing for
+    /// fewer than [`MIN_SKIRT_POINTS`] points or a garment with no height.
+    fn skirt(points: &[Vec3], hips: BoneId, hips_world: Transform) -> Vec<Proxy> {
+        if points.len() < MIN_SKIRT_POINTS {
+            return Vec::new();
+        }
+        #[allow(clippy::cast_precision_loss)] // a vertex count
+        let centre = points.iter().sum::<Vec3>() / points.len() as f32;
+        let (top, hem) = points.iter().fold((f32::NEG_INFINITY, f32::INFINITY), |(t, h), p| (t.max(p.y), h.min(p.y)));
+        if top - hem < 1e-3 {
+            return Vec::new();
+        }
+        let ends = (Vec3::new(centre.x, top, centre.z), Vec3::new(centre.x, hem, centre.z));
+        hull(points, ends, |_| (hips, hips_world), [BodyPart::Skirt; 2])
+    }
+
     /// The hand's radius as one number: its largest half extent, metres.
     pub fn hand_radius(&self) -> f32 {
         self.hand_axes[0].max(self.hand_axes[1]).max_element()
@@ -350,8 +457,7 @@ fn thumb_bones(map: &omuzaki_anim_api::HumanoidMap, hand: Hand) -> [Option<BoneI
 /// are): `(half width, half depth, the body's facing in a's bone space)`, or `None` without points. The facing is the
 /// root's `+Z` (VRM normalised space: the body faces `+Z`) made square to the axis. The depth-to-width ratio comes from
 /// the quantiles of each, and the size from the quantile of each point's distance on the ellipse of that ratio.
-fn elliptic(points: &[Vec3], a: (BoneId, Transform), b: (BoneId, Transform)) -> Option<(f32, f32, Vec3)> {
-    let (from, to) = (a.1.translation, b.1.translation);
+fn elliptic(points: &[Vec3], (from, to): (Vec3, Vec3), a_rotation: Quat) -> Option<(f32, f32, Vec3)> {
     let axis = (to - from).try_normalize().unwrap_or(Vec3::Y);
     let front = (Vec3::Z - axis * Vec3::Z.dot(axis)).try_normalize().unwrap_or(Vec3::Z);
     let side = axis.cross(front);
@@ -374,8 +480,94 @@ fn elliptic(points: &[Vec3], a: (BoneId, Transform), b: (BoneId, Transform)) -> 
     let ratio = if wide > 1e-6 { (deep / wide).clamp(MIN_DEPTH_RATIO, 1.0 / MIN_DEPTH_RATIO) } else { 1.0 };
     let mut on_ellipse: Vec<f32> = flat.iter().map(|(s, f)| s.hypot(f / ratio)).collect();
     let radius = quantile(&mut on_ellipse, BODY_QUANTILE)?;
-    Some((radius, radius * ratio, a.1.rotation.inverse() * front))
+    Some((radius, radius * ratio, a_rotation.inverse() * front))
 }
+
+/// Two frustums about the axis `from`-`to` (root space) that hold [`BODY_QUANTILE`] of `points`, each end anchored on
+/// `carrier` (the bone a point on the axis rides on, and its transform) and labelled `parts`: from `from` to the bend and from the bend to `to`. The bend is the ring that
+/// stands farthest in or out of the straight line from one end's ring to the other's (a waist between hips and
+/// chest, the hips where an A-line skirt stops flaring fast); each ring is the quantile of the points in a band about
+/// it, on an ellipse whose depth-to-width ratio is the points' own, and each frustum is raised until the quantile of
+/// its points is inside. The hull spans only the stretch of the axis the points cover. Empty without points.
+fn hull(
+    points: &[Vec3],
+    (from, to): (Vec3, Vec3),
+    carrier: impl Fn(Vec3) -> (BoneId, Transform),
+    parts: [BodyPart; 2],
+) -> Vec<Proxy> {
+    let along = to - from;
+    if along.length_squared() < 1e-8 {
+        return Vec::new();
+    }
+    let axis = along.normalize();
+    let front = (Vec3::Z - axis * Vec3::Z.dot(axis)).try_normalize().unwrap_or(Vec3::Z);
+    let side = axis.cross(front);
+    // Each point as (how far along, 0 to 1; across; ahead).
+    let flat: Vec<(f32, f32, f32)> = points
+        .iter()
+        .map(|p| {
+            let t = ((*p - from).dot(along) / along.length_squared()).clamp(0.0, 1.0);
+            let v = *p - (from + along * t);
+            (t, v.dot(side), v.dot(front))
+        })
+        .collect();
+    let mut wide: Vec<f32> = flat.iter().map(|(_, s, _)| s.abs()).collect();
+    let mut deep: Vec<f32> = flat.iter().map(|(_, _, f)| f.abs()).collect();
+    let (Some(wide), Some(deep)) = (quantile(&mut wide, BODY_QUANTILE), quantile(&mut deep, BODY_QUANTILE)) else {
+        return Vec::new();
+    };
+    let ratio = if wide > 1e-6 { (deep / wide).clamp(MIN_DEPTH_RATIO, 1.0 / MIN_DEPTH_RATIO) } else { 1.0 };
+    // The hull runs over the points' own span of the axis, `lo` to `hi`; each point as (how far along that span; how
+    // far out on the ellipse).
+    let (lo, hi) = flat.iter().fold((1.0_f32, 0.0_f32), |(lo, hi), (t, _, _)| (lo.min(*t), hi.max(*t)));
+    if hi - lo < 1e-3 {
+        return Vec::new();
+    }
+    let profile: Vec<(f32, f32)> = flat.iter().map(|(t, s, f)| ((t - lo) / (hi - lo), s.hypot(f / ratio))).collect();
+    let ring = |at: f32| {
+        let mut d: Vec<f32> = profile.iter().filter(|(t, _)| (t - at).abs() <= HULL_BAND).map(|(_, d)| *d).collect();
+        quantile(&mut d, BODY_QUANTILE)
+    };
+    let (Some(r_from), Some(r_to)) = (ring(0.0), ring(1.0)) else { return Vec::new() };
+    let off_line = |(t, r): (f32, f32)| (r - r_from - (r_to - r_from) * t).abs();
+    #[allow(clippy::cast_precision_loss)] // a handful of rings
+    let (bend, r_bend) = (1..HULL_RINGS)
+        .map(|k| k as f32 / HULL_RINGS as f32)
+        .filter_map(|t| ring(t).map(|r| (t, r)))
+        .max_by(|a, b| off_line(*a).total_cmp(&off_line(*b)))
+        .unwrap_or((0.5, (r_from + r_to) * 0.5));
+    let anchor = |t: f32| {
+        let at = from + along * (lo + (hi - lo) * t);
+        let (bone, world) = carrier(at);
+        (Anchor { bone, offset: point(inverse(world), at) }, world.rotation.inverse() * front)
+    };
+    let mut out = Vec::with_capacity(2);
+    for (part, (t0, t1, r0, r1)) in parts.into_iter().zip([(0.0, bend, r_from, r_bend), (bend, 1.0, r_bend, r_to)]) {
+        let mut over: Vec<f32> = profile
+            .iter()
+            .filter(|(t, _)| (t0..=t1).contains(t))
+            .map(|(t, d)| d - (r0 + (r1 - r0) * (t - t0) / (t1 - t0).max(1e-6)))
+            .collect();
+        let raise = quantile(&mut over, BODY_QUANTILE).unwrap_or(0.0).max(0.0);
+        let (r0, r1) = (r0 + raise, r1 + raise);
+        if r0 < 1e-4 {
+            continue;
+        }
+        let ((a, forward), (b, _)) = (anchor(t0), anchor(t1));
+        out.push(Proxy { part, a, b, radius: r0, depth: r0 * ratio, forward, flare: r1 / r0 });
+    }
+    out
+}
+
+/// How far a garment vertex on the hips or a thigh may stand off the bare body, as a share of the nearest part's
+/// radius, and still hug it ([`BodyProxy::fit_dressed`]).
+pub const LOOSE: f32 = 0.25;
+/// The fewest loose vertices that make a skirt.
+const MIN_SKIRT_POINTS: usize = 16;
+/// The rings tried along a [`hull`] for its bend, end to end.
+const HULL_RINGS: usize = 8;
+/// The half length of the band of points a [`hull`]'s ring is measured from, as a share of its length.
+const HULL_BAND: f32 = 0.125;
 
 /// The flattest a torso's ellipse is taken to be, depth to width (and the inverse).
 const MIN_DEPTH_RATIO: f32 = 0.35;
@@ -421,7 +613,7 @@ impl BodyProxy {
             let normal = (on_arm - on_body).try_normalize().unwrap_or(forward);
             let own =
                 if k == 0 { self.forearm_radius } else { ellipsoid_toward(self.hand_axes[i], wrist.rotation, normal) };
-            let gap = on_arm.distance(on_body) - own - obstacle.across(normal, b - a, forward);
+            let gap = on_arm.distance(on_body) - own - obstacle.across(normal, b - a, forward, t);
             if gap < best.0 {
                 best = (gap, normal, if k == 0 { s } else { 1.0 });
             }
@@ -522,6 +714,8 @@ struct Contact {
 
 /// The rounds of re-solving one arm takes at most.
 const ROUNDS: usize = 6;
+/// The halvings that take back a push larger than the arm needs: the last leaves it within 1/32 of the push.
+const SETTLE_STEPS: usize = 5;
 /// A contact this close to the elbow pushes the wrist as if it were here: the wrist cannot move the elbow.
 const MIN_ALONG: f32 = 0.35;
 /// A push shorter than this is dropped, metres: the last half millimetre of letting go is not worth a solve.
@@ -637,6 +831,13 @@ impl ArmGuard {
             let animated = bone_world(skeleton, pose, ids[2]);
             let bend = Self::pole(skeleton, pose, ids);
             let shoulder = bone_world(skeleton, pose, ids[0]).translation;
+            // How far a point `along` the forearm moves for the wrist's move, the arm turning about the shoulder: a
+            // push divided by it puts that point, not the wrist, out by the push (#2683: dividing by `along` itself
+            // pushed a forearm contact a fifth too far, and a hanging arm stood off the hip by two centimetres).
+            let upper = shoulder.distance(bone_world(skeleton, pose, ids[1]).translation);
+            let reach = upper + bone_world(skeleton, pose, ids[1]).translation.distance(animated.translation);
+            let fore = reach - upper;
+            let lever = |along: f32| if reach > 1e-6 { (upper + along * fore) / reach } else { 1.0 };
             let solve_to = |pose: &mut Pose, push: Vec3, bend: Vec3| {
                 let target = Transform { translation: animated.translation + push, rotation: animated.rotation };
                 let elbow = bone_world(skeleton, pose, ids[1]).translation;
@@ -654,7 +855,25 @@ impl ArmGuard {
                 if contact.along <= 0.0 {
                     bend_now = (bend_now + contact.normal * depth * POLE_GAIN).normalize_or_zero();
                 }
-                need += contact.normal * depth / contact.along.max(MIN_ALONG);
+                need += contact.normal * depth / lever(contact.along).max(MIN_ALONG);
+                solve_to(pose, need, bend_now);
+                contact = self.contact(skeleton, pose, hand, ids);
+            }
+            // The rounds push along each contact's normal in turn, and two contacts (a forearm on the hip, the hand on
+            // the thigh) add up past what either needs: take back the share of the push that isn't needed, so the arm
+            // rests on the body, not a few centimetres off it (#2683).
+            if need != Vec3::ZERO && contact.gap > 2.0 * self.config.margin {
+                let (mut lo, mut hi) = (0.0_f32, 1.0_f32);
+                for _ in 0..SETTLE_STEPS {
+                    let mid = (lo + hi) * 0.5;
+                    solve_to(pose, need * mid, bend_now);
+                    if self.contact(skeleton, pose, hand, ids).gap >= self.config.margin * 0.5 {
+                        hi = mid
+                    } else {
+                        lo = mid
+                    }
+                }
+                need *= hi;
                 solve_to(pose, need, bend_now);
                 contact = self.contact(skeleton, pose, hand, ids);
             }
