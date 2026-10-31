@@ -15,7 +15,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::limits::{MAX_JOINTS, MAX_LIGHTS, MAX_MORPH_WEIGHTS};
-use crate::{Colour, EnvironmentUse, MaterialId, MeshId, RenderError, SpawnBatch, Stylize, TextureId};
+use crate::{Colour, EnvironmentUse, Glare, MaterialId, MeshId, RenderError, SpawnBatch, Stylize, TextureId};
 
 /// The vertical field of view, in degrees, through which an orthographic camera sees an environment backdrop
 /// ([`Camera::sky_rays`]).
@@ -764,6 +764,9 @@ pub struct Post {
     /// toning ([`Stylize`]). The empty value (the default) draws nothing.
     #[serde(default)]
     pub stylize: Stylize,
+    /// Lens glare from the brightest lights: streaks, a halo and ghosts ([`Glare`]). `None` draws none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glare: Option<Glare>,
 }
 
 impl Post {
@@ -801,6 +804,7 @@ impl Post {
             check(at_least_zero(g.saturation), "grade.saturation", ">= 0")?;
             check(at_least_zero(g.contrast), "grade.contrast", ">= 0")?;
         }
+        self.glare.iter().try_for_each(Glare::validate)?;
         self.stylize.validate()
     }
 }
@@ -815,6 +819,7 @@ impl Default for Post {
             grain: None,
             grade: None,
             stylize: Stylize::default(),
+            glare: None,
         }
     }
 }
@@ -1235,13 +1240,14 @@ mod tests {
             grain: Some(FilmGrain { strength: 0.05 }),
             grade: Some(ColourGrade { saturation: 1.1, contrast: 1.0 }),
             stylize: Stylize::default(),
+            glare: Some(Glare::default()),
         };
         good.validate().unwrap();
         Post { exposure: 0.0, ..good }.validate().unwrap();
         let mut scene = Scene::new(Camera::default());
         scene.post = good;
         scene.validate().unwrap();
-        let cases: [Case; 13] = [
+        let cases: [Case; 14] = [
             ("exposure", |p| p.exposure = -0.1),
             ("exposure", |p| p.exposure = f32::NAN),
             ("bloom.strength", |p| p.bloom.as_mut().unwrap().strength = f32::INFINITY),
@@ -1255,6 +1261,7 @@ mod tests {
             ("grade.saturation", |p| p.grade.as_mut().unwrap().saturation = f32::NEG_INFINITY),
             ("grade.contrast", |p| p.grade.as_mut().unwrap().contrast = -1.0),
             ("grade.contrast", |p| p.grade.as_mut().unwrap().contrast = f32::NAN),
+            ("glare.streaks", |p| p.glare.as_mut().unwrap().streaks = 5),
         ];
         for (field, spoil) in cases {
             let mut post = good;

@@ -685,6 +685,7 @@ fn resolve_post(
         grain: p.grain.map(|strength| FilmGrain { strength }),
         grade: p.grade.map(Into::into),
         stylize: p.stylize.unwrap_or_default(),
+        glare: p.glare,
     })
 }
 

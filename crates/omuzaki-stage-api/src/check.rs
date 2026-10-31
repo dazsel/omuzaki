@@ -133,6 +133,11 @@ impl SceneDef {
         {
             return refuse("scene.post.stylize", reason);
         }
+        if let Some(glare) = &s.post.glare
+            && let Err(omuzaki_render_api::RenderError::Invalid { reason, .. }) = glare.validate()
+        {
+            return refuse("scene.post.glare", reason);
+        }
         if let Some(subject) = &s.subject {
             self.require_member("scene.subject", subject)?;
         }

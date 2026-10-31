@@ -26,6 +26,7 @@ mod backdrop;
 mod bloom;
 mod dof;
 mod edges;
+mod glare;
 mod occlusion;
 mod opaque;
 mod outlines;

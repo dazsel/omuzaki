@@ -392,6 +392,16 @@ fn backdrop_ground_and_post_edit_one_path_and_refuse_what_doesnt_fit() {
     assert!(post.grain.is_none() && post.grade.is_none(), "{out}");
     let error = refused::<SetPost>(&doc, json!({ "grain": 2.0 }));
     assert_eq!(error.field.as_deref(), Some("scene.post.grain"));
+
+    // #2713: lens glare, a field left out taking its default; an odd streak count is refused; `off` removes it.
+    let (patch, _) = edit::<SetPost>(&mut doc, json!({ "glare": { "streaks": 6, "rotation_deg": 15, "halo": 0.3 } }));
+    assert_eq!(paths_of(&patch), ["scenes/main/scene/post/glare"]);
+    let glare = scene(&doc, "main").scene.post.glare.unwrap();
+    assert_eq!((glare.streaks, glare.rotation_deg, glare.halo, glare.strength), (6, 15.0, 0.3, 1.0));
+    let error = refused::<SetPost>(&doc, json!({ "glare": { "streaks": 5 } }));
+    assert_eq!(error.field.as_deref(), Some("scene.post.glare"));
+    edit::<SetPost>(&mut doc, json!({ "glare": "off" }));
+    assert!(scene(&doc, "main").scene.post.glare.is_none());
 }
 
 // ---- #931: spot lights, fog and the environment ----------------------------------------------------------------

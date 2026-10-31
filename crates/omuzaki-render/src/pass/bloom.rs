@@ -275,6 +275,8 @@ pub(crate) struct Bloom {
     pipelines: Option<Pipelines>,
     /// One chain per target size seen lately (a target per size is the usual case), the oldest dropped first.
     chains: Vec<Chain>,
+    /// Lens glare, drawn after the glow and added to it (`glare.rs`).
+    glare: super::glare::GlareChain,
 }
 
 /// How many target sizes keep their images at once.
@@ -336,6 +338,7 @@ impl Bloom {
             params_layout,
             pipelines: None,
             chains: Vec::with_capacity(CACHED_SIZES),
+            glare: super::glare::GlareChain::new(shared),
         }
     }
 
@@ -417,7 +420,13 @@ impl FramePass for Bloom {
     }
 
     fn record(&mut self, cx: &mut PassCx<'_>) -> Result<Outcome, RenderError> {
-        let Some(look) = requested(cx) else { return Ok(Outcome::Skipped) };
+        let glare = super::glare::requested(cx);
+        let Some(look) = requested(cx) else {
+            let Some(glare) = glare else { return Ok(Outcome::Skipped) };
+            let passes = self.glare.record(cx, &glare, None)?;
+            cx.stats.draw_calls += passes;
+            return Ok(Outcome::Ran);
+        };
         let shared = cx.shared;
         let device = &shared.gpu.device;
         if self.pipelines.is_none() {
@@ -447,6 +456,12 @@ impl FramePass for Bloom {
 
         cx.attachments.post.glow = Some(chain.glow.clone());
         cx.stats.draw_calls += u32::try_from(STAGES).unwrap_or(0);
+        if let Some(glare) = glare {
+            // The glare's images are the glow's size (half the target), so it adds straight onto the glow.
+            let glow = chain.composite.target.clone();
+            let passes = self.glare.record(cx, &glare, Some(&glow))?;
+            cx.stats.draw_calls += passes;
+        }
         Ok(Outcome::Ran)
     }
 }

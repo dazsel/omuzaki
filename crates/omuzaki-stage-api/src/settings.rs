@@ -1,7 +1,7 @@
 //! Scene settings (design D2): `scene.toml`: the subject, the opening camera, the backdrop, the ground, the post look.
 
 pub use omuzaki_render_api::BackdropFit;
-use omuzaki_render_api::{ColourGrade, Stylize, Tonemap};
+use omuzaki_render_api::{ColourGrade, Glare, Stylize, Tonemap};
 use omuzaki_store_api::ContentHash;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -214,6 +214,10 @@ pub struct PostDef {
     /// wanted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stylize: Option<Stylize>,
+    /// Lens glare from the brightest lights (streaks, a halo, ghosts), if wanted. It rides the bloom switch of the
+    /// render quality but not `bloom` above: a scene may have glare without glow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glare: Option<Glare>,
 }
 
 fn yes() -> bool {
@@ -230,6 +234,7 @@ impl Default for PostDef {
             grade: None,
             occlusion: None,
             stylize: None,
+            glare: None,
         }
     }
 }

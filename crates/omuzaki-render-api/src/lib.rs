@@ -32,6 +32,7 @@
 
 mod environment;
 mod error;
+mod glare;
 mod handle;
 mod material;
 pub mod memory;
@@ -48,6 +49,7 @@ mod stylize;
 
 pub use environment::{EnvironmentDesc, EnvironmentUse, sky_radiance};
 pub use error::RenderError;
+pub use glare::{Glare, MAX_STREAKS};
 pub use handle::{EnvironmentId, MaterialId, MeshId, ParticleSystemId, ResourceRef, TargetId, TextureId};
 pub use material::{
     AlphaMode, HairShadow, MAX_SURFACE_FX_AMOUNT, MAX_SURFACE_FX_EDGE, MAX_SURFACE_FX_GLOW, Mapping, Material, Outline,

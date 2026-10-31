@@ -3,7 +3,7 @@
 //! `stage.set_smears`.
 
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
-use omuzaki_render_api::{BackdropFit, Colour, Stylize, Tonemap};
+use omuzaki_render_api::{BackdropFit, Colour, Glare, Stylize, Tonemap};
 use omuzaki_stage_api::{
     Backdrop, Bars, DepthOfFieldDef, GradeDef, GroundKind, OcclusionDef, SceneId, Smears, Squash,
 };
@@ -250,7 +250,9 @@ register_op!(SetGround);
         {"depth_of_field": {"focus": "subject", "range": 0.3, "max_blur": 0.01}},
         {"scene": "night_stream", "tonemap": "none", "grain": "off"},
         {"occlusion": {"radius": 0.005, "strength": 0.6, "contact": 0.015}},
-        {"occlusion": "off"}
+        {"occlusion": "off"},
+        {"glare": {"streaks": 6, "length": 0.4, "rotation_deg": 15, "halo": 0.3}},
+        {"glare": "off"}
     ],
     "x-omuzaki-fixture" = "scenes"
 ))]
@@ -282,6 +284,12 @@ pub struct SetPost {
     /// scene's whole stylize block.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stylize: Option<OrOff<Stylize>>,
+    /// Lens glare from the brightest lights, or `off`: a star of `streaks` (0, 2, 4, 6 or 8) `length` of the frame's
+    /// height long at `rotation_deg`, a `halo` ring and `ghosts` across the centre, tinted, from what is brighter than
+    /// `threshold` (linear luminance). A field left out takes its default (strength 1, threshold 1.5, 4 streaks, 0.3
+    /// long at 20 degrees, white, no halo or ghosts). Replaces the scene's whole glare block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glare: Option<OrOff<Glare>>,
 }
 
 impl Op for SetPost {
@@ -290,8 +298,8 @@ impl Op for SetPost {
             name: "stage.set_post",
             summary: "Change a scene's post look: bloom on or off, tone mapping, depth of field, film grain, colour \
                       grade, ambient occlusion with contact shadows and the drawn stylize look (halftone, hatching, \
-                      posterize, paper, vignette, lens fringe, split toning; `off` removes an effect). Only the fields \
-                      given change.",
+                      posterize, paper, vignette, lens fringe, split toning) and lens glare (streaks, halo, ghosts); \
+                      `off` removes an effect. Only the fields given change.",
             kind: OpKind::Edit,
             scope: Scope::EditScene,
             undo: Undo::Auto,
@@ -321,6 +329,9 @@ impl Op for SetPost {
         }
         if let Some(stylize) = &self.stylize {
             post.stylize = stylize.clone().into_option();
+        }
+        if let Some(glare) = &self.glare {
+            post.glare = glare.clone().into_option();
         }
         let id = edit.id.clone();
         let plan = edit.finish(ctx, serde_json::Value::Null)?;
