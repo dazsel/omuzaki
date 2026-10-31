@@ -96,7 +96,7 @@ fn wispy() -> BangsGen {
     BangsGen { layers, wisps, sweep_deg: 8.0, ..BangsGen::default() }
 }
 
-// Measured on the kit's renders against an anime reference's fringe: the top layer's long locks reach the lower
+// Tuned on the kit's renders: the top layer's long locks reach the lower
 // eyelids (head-local -0.05 to -0.06) between shorter ones at the brow, so the eyes show through the gaps; the under
 // layer fills to the upper lids. The rhythm alternates long and short, longest left of centre, as a drawn fringe does.
 fn anime() -> BangsGen {

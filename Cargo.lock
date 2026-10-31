@@ -6393,6 +6393,7 @@ version = "0.0.0"
 dependencies = [
  "criterion",
  "hound",
+ "image",
  "omuzaki-ai-api",
  "omuzaki-ai-mock",
  "omuzaki-audio-api",
@@ -6743,6 +6744,7 @@ version = "0.0.0"
 dependencies = [
  "criterion",
  "hound",
+ "image",
  "omuzaki-ai",
  "omuzaki-ai-api",
  "omuzaki-ai-litert",
@@ -6895,6 +6897,7 @@ dependencies = [
 name = "omuzaki-ui"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "clap",
  "eframe",
  "egui",

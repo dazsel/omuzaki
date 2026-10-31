@@ -20,6 +20,8 @@
 //!   three speech frames in a row), the mute flag, and which utterances were spoken privately (`CohostOnly`).
 //! - [`turn`]: [`TurnTaker`], end-of-turn prediction from the voice's pitch, loudness and last words, which sets the
 //!   segmenter's wait per pause and marks where a listener would nod.
+//! - [`parity`]: measured voice parity, our audio against a reference recording aligned by DTW, and the
+//!   `voice.compare` op.
 //! - [`ears`]: [`SpeechEars`], the host as the AI performer hears it, dropping its own echo.
 //! - [`commands`]: voice commands (AP-10): the phrase matcher, the [`CommandListener`] that turns the person's raw-mic
 //!   transcripts into `voice.command` events, and the opt-in `voice_commands.*` ops.
@@ -48,6 +50,7 @@ pub mod error;
 pub mod g2p;
 pub mod host;
 pub mod kokoro_runtime;
+pub mod parity;
 pub mod queue;
 pub mod segmenter;
 pub mod slots;

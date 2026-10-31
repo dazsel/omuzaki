@@ -1,0 +1,7 @@
+{
+  "about": "The kit character with a hat `hat` its kind places by itself on the head, so it can be pinned and placed.",
+  "base": "character",
+  "steps": [
+    { "op": "part.add", "args": { "character": "kit", "kind": "hat", "id": "hat" } }
+  ]
+}
