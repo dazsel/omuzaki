@@ -540,7 +540,12 @@ fn the_body_fits_onto_its_frames_pixel_for_pixel_when_asked() {
     let mut stance = HumanoidPose::REST;
     omuzaki_stage::frame::pose::seed_base_pose(&built.rig, &mut stance);
     let mut synth = StageSynth::new(renderer(), &builder, &def, &light, &shot);
-    let mut config = FitConfig::default();
+    let mut config = FitConfig {
+        progress: Some(|step, level, score, renders| {
+            eprintln!("  {step} deg {level:?}: sum {} differ {} after {renders} renders", score.sum, score.differ);
+        }),
+        ..FitConfig::default()
+    };
     if let Some(renders) = std::env::var("OMUZAKI_BODY_FIT_RENDERS").ok().and_then(|v| v.parse().ok()) {
         config.renders = renders;
     }
@@ -555,6 +560,7 @@ fn the_body_fits_onto_its_frames_pixel_for_pixel_when_asked() {
             continue;
         };
         let (width, height, frame) = read_ppm(&bytes);
+        eprintln!("{name}: fitting");
         if !checked || which == "control" {
             // The synth draws a pose exactly as a still does: the frame's own pose gives the frame back.
             let ours = synth.render(truth, Level::Fine).unwrap();

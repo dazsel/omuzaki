@@ -99,6 +99,9 @@ pub struct FitConfig {
     pub blur_per_deg: f32,
     /// The largest blur radius.
     pub max_blur: u32,
+    /// Called with each trace entry as it is made (step in degrees, level, score, renders so far): a long fit's
+    /// progress.
+    pub progress: Option<fn(f32, Level, Score, u32)>,
 }
 
 impl Default for FitConfig {
@@ -143,6 +146,7 @@ impl Default for FitConfig {
             renders: 6000,
             blur_per_deg: 0.25,
             max_blur: 8,
+            progress: None,
         }
     }
 }
@@ -255,7 +259,11 @@ fn walk(
                 break;
             }
         }
-        trace.push((step_deg, now, best, search.renders.iter().sum()));
+        let entry = (step_deg, now, best, search.renders.iter().sum());
+        if let Some(progress) = config.progress {
+            progress(entry.0, entry.1, entry.2, entry.3);
+        }
+        trace.push(entry);
         if now == Level::Fine && best.differ == 0 {
             return Ok(true);
         }
@@ -278,7 +286,11 @@ fn walk(
                 search.offsets[bone] = held;
             }
         }
-        trace.push((0.0, Level::Fine, best, search.renders.iter().sum()));
+        let entry = (0.0, Level::Fine, best, search.renders.iter().sum());
+        if let Some(progress) = config.progress {
+            progress(entry.0, entry.1, entry.2, entry.3);
+        }
+        trace.push(entry);
     }
     Ok(level.is_some_and(|(now, _)| now == Level::Fine) && best.differ == 0)
 }
