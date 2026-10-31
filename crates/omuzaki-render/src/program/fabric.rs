@@ -21,141 +21,130 @@
 //! | `fold-colour`, `fold-strength`, `fold-softness` | the shade side's tint, how far it applies and over how much of the light's falloff | `0x6a5f8a`, `0.4`, `0.5` |
 //! | `style` and `cel-*` | the style axis (#2607): `0` this cloth, `1` the cel toon in `cel-*` | `0` |
 //!
-//! [`PRESETS`] holds the parameters of cotton, satin, knit, leather, denim and velvet.
-
-use omuzaki_render_api::ParamValue;
+//! **Presets** are programs of their own, so a look, a garment or an agent picks a cloth by name: `fabric-cotton` (the
+//! same as `fabric`), `fabric-satin`, `fabric-knit`, `fabric-leather`, `fabric-denim` and `fabric-velvet` are this
+//! program with those defaults; any parameter can still be set over them.
 
 use super::{ParamSpec, ProgramSpec, cel_toon, register_shading_program, with_cel};
 
+/// The program's parameters with the defaults of one cloth (see the table above for what each means).
+macro_rules! fabric_params {
+    (
+        weave: $weave:expr, scale: $scale:expr, depth: $depth:expr, roughness: $roughness:expr, specular: $specular:expr,
+        anisotropy: $anisotropy:expr, wrap: $wrap:expr, sheen: $sheen:expr, sheen_roughness: $sheen_roughness:expr,
+        fold_strength: $fold_strength:expr $(,)?
+    ) => {
+        with_cel![0.0;
+            ParamSpec::float("weave", $weave, 0.0, 3.0),
+            ParamSpec::float("weave-scale", $scale, 10.0, 5000.0),
+            ParamSpec::float("weave-depth", $depth, 0.0, 1.0),
+            ParamSpec::float("roughness", $roughness, 0.02, 1.0),
+            ParamSpec::float("specular", $specular, 0.0, 0.2),
+            ParamSpec::float("anisotropy", $anisotropy, 0.0, 1.0),
+            ParamSpec::float("wrap", $wrap, 0.0, 1.0),
+            ParamSpec::float("sheen", $sheen, 0.0, 2.0),
+            ParamSpec::colour("sheen-colour", 0x00ff_ffff),
+            ParamSpec::float("sheen-roughness", $sheen_roughness, 0.05, 1.0),
+            ParamSpec::colour("fold-colour", 0x006a_5f8a),
+            ParamSpec::float("fold-strength", $fold_strength, 0.0, 1.0),
+            ParamSpec::float("fold-softness", 0.5, 0.0, 1.0),
+        ]
+    };
+}
+
+/// Cotton: a matte plain weave with a soft fuzz. Also the program's own defaults.
+const COTTON: &[ParamSpec] = fabric_params!(
+    weave: 0.0, scale: 900.0, depth: 0.5, roughness: 0.85, specular: 0.03, anisotropy: 0.0, wrap: 0.25, sheen: 0.35,
+    sheen_roughness: 0.6, fold_strength: 0.4,
+);
+
 register_shading_program!(
     "fabric",
+    ProgramSpec { name: "fabric", params: COTTON, attributes: &[], toon: cel_toon, wgsl: include_str!("fabric.wgsl") }
+);
+
+register_shading_program!(
+    "fabric-cotton",
     ProgramSpec {
-        name: "fabric",
-        params: with_cel![0.0;
-            ParamSpec::float("weave", 0.0, 0.0, 3.0),
-            ParamSpec::float("weave-scale", 900.0, 10.0, 5000.0),
-            ParamSpec::float("weave-depth", 0.5, 0.0, 1.0),
-            ParamSpec::float("roughness", 0.85, 0.02, 1.0),
-            ParamSpec::float("specular", 0.03, 0.0, 0.2),
-            ParamSpec::float("anisotropy", 0.0, 0.0, 1.0),
-            ParamSpec::float("wrap", 0.25, 0.0, 1.0),
-            ParamSpec::float("sheen", 0.35, 0.0, 2.0),
-            ParamSpec::colour("sheen-colour", 0x00ff_ffff),
-            ParamSpec::float("sheen-roughness", 0.6, 0.05, 1.0),
-            ParamSpec::colour("fold-colour", 0x006a_5f8a),
-            ParamSpec::float("fold-strength", 0.4, 0.0, 1.0),
-            ParamSpec::float("fold-softness", 0.5, 0.0, 1.0),
-        ],
+        name: "fabric-cotton",
+        params: COTTON,
         attributes: &[],
         toon: cel_toon,
         wgsl: include_str!("fabric.wgsl"),
     }
 );
 
-/// A named fabric: the `fabric` program's parameters for it (a parameter left out takes the program's default).
-pub struct FabricPreset {
-    /// The name a look or a garment selects it by.
-    pub name: &'static str,
-    /// What it reads as.
-    pub summary: &'static str,
-    /// Its parameters, by name.
-    pub params: &'static [(&'static str, ParamValue)],
-}
+// Satin: smooth warp floats with a bright streak of highlight across the threads.
+register_shading_program!(
+    "fabric-satin",
+    ProgramSpec {
+        name: "fabric-satin",
+        params: fabric_params!(
+            weave: 1.0, scale: 2500.0, depth: 0.12, roughness: 0.3, specular: 0.06, anisotropy: 0.85, wrap: 0.1,
+            sheen: 0.15, sheen_roughness: 0.3, fold_strength: 0.25,
+        ),
+        attributes: &[],
+        toon: cel_toon,
+        wgsl: include_str!("fabric.wgsl"),
+    }
+);
 
-const fn float(v: f32) -> ParamValue {
-    ParamValue::Float(v)
-}
+// Knit: chunky loops, a deep fuzz and soft light.
+register_shading_program!(
+    "fabric-knit",
+    ProgramSpec {
+        name: "fabric-knit",
+        params: fabric_params!(
+            weave: 2.0, scale: 120.0, depth: 0.85, roughness: 0.95, specular: 0.02, anisotropy: 0.0, wrap: 0.4,
+            sheen: 0.5, sheen_roughness: 0.8, fold_strength: 0.4,
+        ),
+        attributes: &[],
+        toon: cel_toon,
+        wgsl: include_str!("fabric.wgsl"),
+    }
+);
 
-/// The fabrics a garment can be made of, each tuned by rendering it close up under a key, a fill and a rim light.
-pub const PRESETS: &[FabricPreset] = &[
-    FabricPreset {
-        name: "cotton",
-        summary: "matte plain weave with a soft fuzz",
-        params: &[
-            ("weave", float(0.0)),
-            ("weave-scale", float(900.0)),
-            ("weave-depth", float(0.5)),
-            ("roughness", float(0.85)),
-            ("specular", float(0.03)),
-            ("sheen", float(0.35)),
-            ("sheen-roughness", float(0.6)),
-        ],
-    },
-    FabricPreset {
-        name: "satin",
-        summary: "smooth warp floats with a bright streak of highlight across the threads",
-        params: &[
-            ("weave", float(1.0)),
-            ("weave-scale", float(2500.0)),
-            ("weave-depth", float(0.12)),
-            ("roughness", float(0.3)),
-            ("specular", float(0.06)),
-            ("anisotropy", float(0.85)),
-            ("wrap", float(0.1)),
-            ("sheen", float(0.15)),
-            ("sheen-roughness", float(0.3)),
-            ("fold-strength", float(0.25)),
-        ],
-    },
-    FabricPreset {
-        name: "knit",
-        summary: "chunky loops, a deep fuzz and soft light",
-        params: &[
-            ("weave", float(2.0)),
-            ("weave-scale", float(120.0)),
-            ("weave-depth", float(0.85)),
-            ("roughness", float(0.95)),
-            ("specular", float(0.02)),
-            ("wrap", float(0.4)),
-            ("sheen", float(0.5)),
-            ("sheen-roughness", float(0.8)),
-        ],
-    },
-    FabricPreset {
-        name: "leather",
-        summary: "a pebbled grain under a satin gloss",
-        params: &[
-            ("weave", float(3.0)),
-            ("weave-scale", float(700.0)),
-            ("weave-depth", float(0.4)),
-            ("roughness", float(0.38)),
-            ("specular", float(0.05)),
-            ("wrap", float(0.0)),
-            ("sheen", float(0.0)),
-            ("fold-strength", float(0.25)),
-        ],
-    },
-    FabricPreset {
-        name: "denim",
-        summary: "a coarse twill, matte and a little fuzzy",
-        params: &[
-            ("weave", float(0.0)),
-            ("weave-scale", float(450.0)),
-            ("weave-depth", float(0.7)),
-            ("roughness", float(0.9)),
-            ("specular", float(0.03)),
-            ("sheen", float(0.25)),
-            ("sheen-roughness", float(0.7)),
-        ],
-    },
-    FabricPreset {
-        name: "velvet",
-        summary: "a dense pile: dark face-on, glowing at the edges",
-        params: &[
-            ("weave", float(0.0)),
-            ("weave-scale", float(2000.0)),
-            ("weave-depth", float(0.15)),
-            ("roughness", float(1.0)),
-            ("specular", float(0.0)),
-            ("wrap", float(0.15)),
-            ("sheen", float(1.6)),
-            ("sheen-roughness", float(0.35)),
-            ("fold-strength", float(0.55)),
-        ],
-    },
-];
+// Leather: a pebbled grain under a satin gloss.
+register_shading_program!(
+    "fabric-leather",
+    ProgramSpec {
+        name: "fabric-leather",
+        params: fabric_params!(
+            weave: 3.0, scale: 700.0, depth: 0.4, roughness: 0.38, specular: 0.05, anisotropy: 0.0, wrap: 0.0,
+            sheen: 0.0, sheen_roughness: 0.6, fold_strength: 0.25,
+        ),
+        attributes: &[],
+        toon: cel_toon,
+        wgsl: include_str!("fabric.wgsl"),
+    }
+);
 
-/// The preset called `name`.
-pub fn fabric_preset(name: &str) -> Option<&'static FabricPreset> {
-    PRESETS.iter().find(|p| p.name == name)
-}
+// Denim: a coarse weave, matte and a little fuzzy.
+register_shading_program!(
+    "fabric-denim",
+    ProgramSpec {
+        name: "fabric-denim",
+        params: fabric_params!(
+            weave: 0.0, scale: 450.0, depth: 0.7, roughness: 0.9, specular: 0.03, anisotropy: 0.0, wrap: 0.25,
+            sheen: 0.25, sheen_roughness: 0.7, fold_strength: 0.4,
+        ),
+        attributes: &[],
+        toon: cel_toon,
+        wgsl: include_str!("fabric.wgsl"),
+    }
+);
+
+// Velvet: a dense pile, dark face-on and glowing at the edges.
+register_shading_program!(
+    "fabric-velvet",
+    ProgramSpec {
+        name: "fabric-velvet",
+        params: fabric_params!(
+            weave: 0.0, scale: 2000.0, depth: 0.15, roughness: 1.0, specular: 0.0, anisotropy: 0.0, wrap: 0.15,
+            sheen: 1.6, sheen_roughness: 0.35, fold_strength: 0.55,
+        ),
+        attributes: &[],
+        toon: cel_toon,
+        wgsl: include_str!("fabric.wgsl"),
+    }
+);

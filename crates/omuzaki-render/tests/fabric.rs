@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use omuzaki_core::glam::{Mat4, UVec2, Vec3};
 use omuzaki_core::id::Slug;
-use omuzaki_render::{FABRIC_PRESETS, WgpuRenderer, check_shading_program, fabric_preset};
+use omuzaki_render::{WgpuRenderer, check_shading_program};
 use omuzaki_render_api::{
     AlphaEncoding, Background, Camera, Colour, Image, Instance, Light, Material, MeshData, ParamValue, Projection,
     Quality, Renderer, RendererExt, Scene, Shading, Tonemap,
@@ -54,10 +54,12 @@ fn fabric(params: &[(&str, ParamValue)]) -> Shading {
     Shading::Program { name: slug("fabric"), params: params.iter().map(|(k, v)| (slug(k), *v)).collect() }
 }
 
+/// The cloth preset `name`: the program `fabric-<name>` with its own defaults.
 fn preset(name: &str) -> Shading {
-    let preset = fabric_preset(name).unwrap();
-    fabric(preset.params)
+    Shading::Program { name: slug(&format!("fabric-{name}")), params: Default::default() }
 }
+
+const PRESETS: [&str; 6] = ["cotton", "satin", "knit", "leather", "denim", "velvet"];
 
 /// A key from the upper left front, a dim cool fill and a rim from behind on the right.
 fn scene(view_height: f32) -> Scene {
@@ -260,12 +262,12 @@ fn each_parameter_does_what_it_says() {
 #[test]
 fn the_presets_read_as_different_cloths() {
     let mut r = support::renderer();
-    let names: Vec<&str> = FABRIC_PRESETS.iter().map(|p| p.name).collect();
-    for wanted in ["cotton", "satin", "knit", "leather"] {
-        assert!(names.contains(&wanted), "{names:?}");
+    let listed: Vec<String> = r.capabilities().shading_programs.iter().map(|s| s.as_str().to_owned()).collect();
+    for name in PRESETS {
+        assert!(listed.contains(&format!("fabric-{name}")), "{listed:?}");
     }
-    let renders: Vec<(&str, Image)> =
-        FABRIC_PRESETS.iter().map(|p| (p.name, render(&mut r, &preset(p.name), VIEW_HEIGHT))).collect();
+    let renders: Vec<(&str, Image)> = PRESETS.iter().map(|&p| (p, render(&mut r, &preset(p), VIEW_HEIGHT))).collect();
+    assert_eq!(render(&mut r, &fabric(&[]), VIEW_HEIGHT).rgba8, renders[0].1.rgba8, "plain `fabric` is cotton");
     for (name, image) in &renders {
         save(image, &format!("fabric-{name}.png"));
     }

@@ -97,6 +97,6 @@ omuzaki_core::define_link!();
 pub use caps::{CapabilityProfile, PROFILE_ENV, REQUIREMENTS, Requirement, Unmet, unmet};
 pub use gpu::{AdapterPreference, HeadlessOptions};
 pub use paint::NativePaintTarget;
-pub use program::{FABRIC_PRESETS, FabricPreset, UnknownProgram, check_shading_program, fabric_preset};
+pub use program::{UnknownProgram, check_shading_program};
 pub use renderer::WgpuRenderer;
 pub use resource::target::NativeTarget;

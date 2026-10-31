@@ -63,8 +63,6 @@ mod sheen;
 mod skin;
 mod stylized;
 
-pub use fabric::{FabricPreset, PRESETS as FABRIC_PRESETS, fabric_preset};
-
 /// Floats in the material uniform's `program[]` (`array<vec4<f32>, 16>`).
 pub(crate) const PACKED_FLOATS: usize = 64;
 /// The most extra vertex attributes a program reads (the most a mesh carries).
