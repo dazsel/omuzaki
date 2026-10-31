@@ -206,13 +206,11 @@ fn the_body_is_measured_from_its_mesh() {
     let skeleton = skeleton();
     let proxy = BodyProxy::fit(&skeleton, &skeleton.rest_pose(), &mesh(&skeleton)).unwrap();
     let radius = |part: BodyPart| proxy.body.iter().find(|p| p.part == part).unwrap().radius;
-    for (part, want) in [
-        (BodyPart::Torso, TORSO),
-        (BodyPart::Pelvis, PELVIS),
-        (BodyPart::LeftThigh, THIGH),
-        (BodyPart::RightThigh, THIGH),
-        (BodyPart::Head, HEAD),
-    ] {
+    // The pelvis is an ellipse on the body's up axis (#2688), so its width is the hips' own, not the capsule's radius:
+    // it is checked by what it holds, below.
+    for (part, want) in
+        [(BodyPart::Torso, TORSO), (BodyPart::LeftThigh, THIGH), (BodyPart::RightThigh, THIGH), (BodyPart::Head, HEAD)]
+    {
         let got = radius(part);
         println!("{part:?}: radius {:.1} mm (built at {:.1})", got * 1e3, want * 1e3);
         assert!((got - want).abs() < 0.003, "{part:?}: {got} vs {want}");
@@ -221,6 +219,21 @@ fn the_body_is_measured_from_its_mesh() {
     for axes in proxy.hand_axes {
         assert!((axes - Vec3::splat(HAND)).abs().max_element() < 0.003, "{axes}");
     }
+    // Every part holds the mesh it was measured from, and hugs it: the pelvis's points are inside it, none more than a
+    // centimetre and a half under its surface.
+    let hips = skeleton.humanoid_map().unwrap().get(B::Hips).unwrap();
+    let rest = skeleton.rest_pose();
+    let pelvis: Vec<_> =
+        proxy.body.iter().filter(|p| p.part == BodyPart::Pelvis).map(|p| p.placed(&skeleton, &rest)).collect();
+    let mut depths: Vec<f32> = mesh(&skeleton)
+        .iter()
+        .filter(|(_, b)| *b == hips)
+        .map(|(p, _)| pelvis.iter().map(|o| o.gap_to(*p, 0.0).0).fold(f32::INFINITY, f32::min))
+        .collect();
+    depths.sort_by(f32::total_cmp);
+    let (deepest, outermost) = (depths[0], depths[depths.len() * 95 / 100]);
+    println!("pelvis: its points from {:.1} to {:.1} mm off its surface", deepest * 1e3, outermost * 1e3);
+    assert!(outermost <= 1e-3 && deepest > -PELVIS * 1.5, "{deepest} {outermost}");
     let torso = proxy.body.iter().find(|p| p.part == BodyPart::Torso).unwrap();
     assert!((torso.depth - TORSO).abs() < 0.003, "a round torso is as deep as it is wide: {}", torso.depth);
     assert!((proxy.hands[0] - Vec3::X * 0.08).length() < 0.003 && (proxy.hands[1] + Vec3::X * 0.08).length() < 0.003);
