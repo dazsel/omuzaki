@@ -1,0 +1,85 @@
+# Shoujo: the romance-manga look on the standard and tall templates.
+#
+# Read through the eyes first: big, tall and wet, an iris that fills most of the opening, a ring of extra catchlights
+# with a star, long curled strand lashes and a soft crease. A small, pointed chin (the heart face shape), a tiny mouth,
+# a dot of a nose and fine high brows. The body is slender and long in the leg with a long neck; the hair falls long
+# and straight.
+id = "shoujo"
+name = "Shoujo"
+family = "anime"
+summary = "Romance-manga look: huge sparkling eyes with long curled lashes, a pointed chin, a tiny mouth and a slender, long-legged body."
+origin = "Design target: the shoujo model-sheet conventions (an eye about a fifth of the face's width with a tall iris and several catchlights, a small mouth, a pointed chin, long limbs), tuned by eye on the kit's own renders; no traced likeness."
+templates = ["standard", "tall"]
+profile = "heart"
+hair = "long-straight"
+look = "soft-sd"
+shading = 1.0
+
+[face.layout]
+eye_width = 0.053
+eye_spacing = 0.086
+brow_gap = 0.085
+
+[face.eyes]
+scale = 1.15
+lid_shadow = 0.45
+
+[face.eyes.aperture]
+roundness = 0.75
+upper_height = 0.86
+lower_depth = 0.7
+tilt = 0.04
+inner_sharpness = 0.75
+outer_bluntness = 0.55
+
+[face.eyes.iris]
+width = 0.74
+height = 1.12
+drop = 0.02
+
+[face.eyes.highlights]
+shape = "blob"
+size = 0.34
+shimmer = 0.6
+second = 0.6
+extra = [
+    { shape = "star", offset = [-0.4, 0.42], size = 0.12, opacity = 0.95 },
+    { shape = "ring", offset = [-0.25, -0.45], size = 0.16, opacity = 0.7 },
+    { shape = "blob", offset = [0.45, -0.3], size = 0.07, opacity = 0.8 },
+]
+
+[face.eyes.lash]
+thickness = 0.0075
+flick = 0.85
+lower = 0.6
+
+[face.eyes.lash.strands]
+upper = { count = 32, length = 0.36, curl = 0.6, clumping = 0.55 }
+lower = { count = 14, length = 0.18, opacity = 0.8 }
+
+[face.eyes.crease]
+strength = 0.35
+lift = 0.32
+
+[face.mouth]
+half_width = 0.0085
+
+[face.nose]
+kind = "dot"
+size = 0.8
+
+[face.brows]
+thickness = 0.0012
+arch = 0.008
+
+[body]
+hands = "five_finger"
+
+[body.proportions]
+neck_length = 1.2
+shoulder_width = 0.94
+leg_length = 1.06
+
+[body.shape]
+height = 0.4
+build = -0.3

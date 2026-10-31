@@ -1,0 +1,23 @@
+schema = 1
+id = "omuzaki/face-profiles/shoujo"
+version = "1.0.0"
+section = "face-profiles"
+kind = "setting"
+target = "character"
+title = "Shoujo"
+summary = "Romance-manga look: huge sparkling eyes with long curled lashes, a pointed chin, a tiny mouth and a slender, long-legged body."
+tags = ["face", "style", "anime", "shoujo"]
+origin = "the kit's shoujo art style (#2696)"
+compat = { kinds = ["humanoid"], requires = ["head", "body"] }
+
+[rights]
+author = "Omuzaki"
+licence = "CC0-1.0"
+commercial = "ok"
+owned = true
+
+[[step]]
+op = "character.set_style"
+[step.args]
+character = "$character"
+style = "shoujo"

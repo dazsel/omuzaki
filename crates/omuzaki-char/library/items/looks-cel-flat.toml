@@ -1,0 +1,23 @@
+schema = 1
+id = "omuzaki/looks/cel-flat"
+version = "1.0.0"
+section = "looks"
+kind = "setting"
+target = "character"
+title = "Cel flat"
+summary = "Flat 2D cel: a hard two-tone terminator in tinted shade colours, no rim, crisp hair bands and uniform coloured lines, with a clean frame."
+tags = ["look", "shading", "cel", "flat"]
+origin = "the kit's cel-flat look preset (#2696)"
+compat = { kinds = ["humanoid"] }
+
+[rights]
+author = "Omuzaki"
+licence = "CC0-1.0"
+commercial = "ok"
+owned = true
+
+[[step]]
+op = "look.set_preset"
+[step.args]
+character = "$character"
+preset = "cel-flat"

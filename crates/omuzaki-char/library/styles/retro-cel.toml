@@ -1,0 +1,87 @@
+# Retro cel: the hand-inked TV anime of the 1990s, on the standard and tall templates.
+#
+# Tall eyes with a tall oval iris, one big glossy catchlight and a second small one, an inked lower lid and no strand
+# lashes; a long face to a sharp chin; a drawn nose (a long tick with a cel shadow down its side); a mid-size mouth;
+# hatched blush. Long neck and long legs; long wavy hair. Hard two-tone cel shading.
+id = "retro-cel"
+name = "Retro cel"
+family = "anime"
+summary = "1990s TV anime: tall eyes with a tall oval iris and one big catchlight, a long face to a sharp chin, a drawn nose and hard two-tone cel."
+origin = "Design target: the hand-inked TV anime model-sheet conventions of the 1990s (tall eyes and irises, an inked lower lid, a drawn nose with a cel shadow, sharp chins, long limbs), tuned by eye on the kit's own renders; no traced likeness."
+templates = ["standard", "tall"]
+profile = "long"
+hair = "wavy-long"
+look = "cel-flat"
+shading = 1.0
+
+[face.layout]
+eye_width = 0.05
+eye_spacing = 0.085
+brow_gap = 0.075
+
+[face.eyes]
+scale = 1.08
+lid_shadow = 0.35
+
+[face.eyes.aperture]
+roundness = 0.45
+upper_height = 0.92
+lower_depth = 0.55
+tilt = 0.02
+inner_sharpness = 0.85
+outer_bluntness = 0.35
+
+[face.eyes.iris]
+width = 0.62
+height = 1.22
+drop = 0.0
+
+[face.eyes.highlights]
+shape = "blob"
+size = 0.27
+shimmer = 0.0
+second = 0.5
+caustic = 0.2
+extra = []
+
+[face.eyes.lash]
+thickness = 0.009
+flick = 0.6
+lower = 0.4
+inner_tick = false
+
+[face.eyes.lash.strands]
+upper = { count = 0 }
+lower = { count = 0 }
+
+[face.eyes.lower_lid]
+line = 0.65
+
+[face.eyes.crease]
+strength = 0.45
+lift = 0.35
+
+[face.mouth]
+half_width = 0.012
+
+[face.nose]
+kind = "tick"
+size = 1.7
+shadow = 0.45
+
+[face.cheeks]
+kind = "hatched"
+
+[face.brows]
+thickness = 0.0018
+arch = 0.007
+
+[body]
+hands = "five_finger"
+
+[body.proportions]
+neck_length = 1.3
+leg_length = 1.08
+
+[body.shape]
+height = 0.5

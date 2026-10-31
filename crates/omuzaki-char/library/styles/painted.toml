@@ -1,0 +1,88 @@
+# Painted: a soft 2D painted illustration, on the standard and tall templates.
+#
+# Natural anime proportions drawn softly: medium round eyes with a glowing iris, a wet catchlight and a caustic, fine
+# curled lashes, a gentle lid shadow; a dot of a nose and a soft mouth both modelled by light and shade rather than a
+# line; a painted blush. Long wavy hair. Soft shading leaning toward cel with gentle volume.
+id = "painted"
+name = "Painted"
+family = "anime"
+summary = "Soft 2D painted illustration: glowing round eyes, a nose and mouth modelled by light rather than lines, a painted blush and soft volume."
+origin = "Design target: the conventions of painted character illustration (soft edges, features modelled by light and colour instead of line, glowing irises and wet catchlights), tuned by eye on the kit's own renders; no traced likeness."
+templates = ["standard", "tall"]
+profile = "egg-oval"
+hair = "wavy-long"
+look = "soft-sd"
+shading = 0.8
+
+[face.layout]
+eye_width = 0.049
+eye_spacing = 0.086
+brow_gap = 0.078
+
+[face.eyes]
+scale = 1.02
+lid_shadow = 0.65
+
+[face.eyes.aperture]
+roundness = 0.58
+upper_height = 0.72
+lower_depth = 0.6
+tilt = 0.04
+inner_sharpness = 0.7
+outer_bluntness = 0.6
+
+[face.eyes.iris]
+width = 0.64
+height = 0.96
+drop = 0.02
+
+[face.eyes.highlights]
+shape = "blob"
+size = 0.26
+shimmer = 0.3
+second = 0.4
+caustic = 0.85
+extra = []
+
+[face.eyes.sclera]
+corner_shade = 0.6
+
+[face.eyes.lash]
+thickness = 0.005
+flick = 0.55
+lower = 0.3
+
+[face.eyes.lash.strands]
+upper = { count = 30, length = 0.28, curl = 0.5, clumping = 0.5 }
+lower = { count = 10, length = 0.14, opacity = 0.7 }
+
+[face.eyes.crease]
+strength = 0.4
+lift = 0.3
+
+[face.mouth]
+half_width = 0.0105
+
+[face.mouth.lips]
+strength = 0.5
+tint = 0.35
+
+[face.nose]
+kind = "dot"
+size = 0.9
+shadow = 0.5
+highlight = 0.45
+
+[face.cheeks]
+base = 0.3
+wash = 0.3
+
+[face.brows]
+thickness = 0.0014
+arch = 0.006
+
+[body]
+hands = "five_finger"
+
+[body.proportions]
+neck_length = 1.2

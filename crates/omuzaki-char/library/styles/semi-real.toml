@@ -1,0 +1,97 @@
+# Semi-real: between anime and life, on the tall template (7.5 heads).
+#
+# Eyes near life size and placement: an almond with a small round iris set into the lids, a window catchlight, a
+# caruncle, vessels and a wet waterline, fine dense strand lashes and a defined crease. A nose modelled by shade and a
+# light on the bridge; a life-size mouth with full, tinted lips; contoured cheeks; brows with real weight. Natural
+# proportions; long straight hair. Shading halfway toward physical skin and fibre-lit hair.
+id = "semi-real"
+name = "Semi-real"
+family = "real"
+summary = "Between anime and life: near life-size almond eyes with a small iris and dense lashes, a modelled nose, full lips and half-physical shading."
+origin = "Design target: semi-realistic character conventions (eye width near a fifth of the face, the iris partly under the lids, modelled nose and lips, natural proportions near seven and a half heads), with the kit's realistic eye preset's numbers; no traced likeness."
+templates = ["tall"]
+profile = "long"
+hair = "long-straight"
+look = "semi-real"
+shading = 0.4
+
+[face.layout]
+eye_width = 0.043
+eye_spacing = 0.085
+brow_gap = 0.06
+
+[face.eyes]
+scale = 0.95
+lid_shadow = 0.7
+
+[face.eyes.aperture]
+roundness = 0.4
+upper_height = 0.6
+lower_depth = 0.5
+tilt = 0.06
+inner_sharpness = 0.85
+outer_bluntness = 0.45
+
+[face.eyes.iris]
+width = 0.5
+height = 0.5
+inset = 0.06
+drop = 0.05
+
+[face.eyes.highlights]
+shape = "window"
+size = 0.22
+shimmer = 0.1
+second = 0.0
+caustic = 0.7
+extra = []
+
+[face.eyes.sclera]
+corner_shade = 0.75
+vessels = 0.35
+caruncle = 0.85
+waterline = 0.85
+
+[face.eyes.lash]
+thickness = 0.0035
+flick = 0.1
+lower = 0.0
+inner_tick = false
+
+[face.eyes.lash.strands]
+upper = { count = 90, length = 0.28, curl = 0.55, lift = 0.5, clumping = 0.6, thickness = 0.0006, randomness = 0.6, from = -0.8 }
+lower = { count = 45, length = 0.13, thickness = 0.0004, from = -0.6, opacity = 0.85 }
+
+[face.eyes.crease]
+strength = 0.8
+lift = 0.3
+
+[face.mouth]
+half_width = 0.019
+
+[face.mouth.lips]
+strength = 0.75
+tint = 0.5
+
+[face.nose]
+kind = "tick"
+size = 1.6
+shadow = 0.8
+highlight = 0.6
+
+[face.cheeks]
+contour = 0.4
+
+[face.brows]
+thickness = 0.0026
+arch = 0.006
+
+[body]
+hands = "five_finger"
+
+[body.proportions]
+neck_length = 1.2
+
+# A rounder face plane: the painted features sit on a modelled face, not a flattened anime one.
+[head.cranium]
+face_flatten = 0.01

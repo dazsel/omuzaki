@@ -1,0 +1,23 @@
+schema = 1
+id = "omuzaki/face-profiles/retro-cel"
+version = "1.0.0"
+section = "face-profiles"
+kind = "setting"
+target = "character"
+title = "Retro cel"
+summary = "1990s TV anime: tall eyes with a tall oval iris and one big catchlight, a long face to a sharp chin, a drawn nose and hard two-tone cel."
+tags = ["face", "style", "anime", "retro", "cel"]
+origin = "the kit's retro-cel art style (#2696)"
+compat = { kinds = ["humanoid"], requires = ["head", "body"] }
+
+[rights]
+author = "Omuzaki"
+licence = "CC0-1.0"
+commercial = "ok"
+owned = true
+
+[[step]]
+op = "character.set_style"
+[step.args]
+character = "$character"
+style = "retro-cel"

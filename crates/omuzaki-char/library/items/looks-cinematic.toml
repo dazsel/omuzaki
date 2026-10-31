@@ -1,0 +1,23 @@
+schema = 1
+id = "omuzaki/looks/cinematic"
+version = "1.0.0"
+section = "looks"
+kind = "setting"
+target = "character"
+title = "Cinematic"
+summary = "Physical and filmic: subsurface skin, hair partly lit as fibres, no lines, full occlusion, depth of field, bloom and a fine film grain."
+tags = ["look", "shading", "cinematic"]
+origin = "the kit's cinematic look preset (#2696)"
+compat = { kinds = ["humanoid"] }
+
+[rights]
+author = "Omuzaki"
+licence = "CC0-1.0"
+commercial = "ok"
+owned = true
+
+[[step]]
+op = "look.set_preset"
+[step.args]
+character = "$character"
+preset = "cinematic"

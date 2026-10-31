@@ -7,6 +7,7 @@
 # slightly broader shoulders and a longer body against the same head, so the head reads smaller.
 id = "mature"
 name = "Mature"
+family = "anime"
 summary = "An older anime character: narrow eyes under heavy upper lashes, a small mouth, a longer face and a long neck."
 origin = "Design target: the anime model-sheet conventions for adult characters (narrow almond eyes, heavy upper lash line, small mouth, long neck), tuned by eye on the kit's own renders against the default; no traced likeness."
 templates = ["standard", "tall"]

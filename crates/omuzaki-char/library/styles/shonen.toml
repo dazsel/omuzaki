@@ -1,0 +1,81 @@
+# Shonen: the action-manga look on the standard and tall templates.
+#
+# Narrow, sharp eyes with a lifted outer corner, a small iris and one hard catchlight; a heavy upper lash line with no
+# flick and no strands; thick, nearly straight brows close over the eyes. A longer oval face, a wider mouth and a tick
+# of a nose. Broad shoulders and some muscle; short, messy hair. Flat cel shading.
+id = "shonen"
+name = "Shonen"
+family = "anime"
+summary = "Action-manga look: narrow, sharp eyes under thick straight brows, a wide mouth, broad shoulders and messy short hair, in flat cel."
+origin = "Design target: the shonen model-sheet conventions (narrow eyes with a small iris and a hard catchlight, heavy straight brows, a wider jaw and mouth, a broad athletic build), tuned by eye on the kit's own renders; no traced likeness."
+templates = ["standard", "tall"]
+profile = "egg-oval"
+hair = "messy-short"
+look = "cel-flat"
+shading = 1.0
+
+[face.layout]
+eye_width = 0.045
+eye_spacing = 0.086
+brow_gap = 0.058
+
+[face.eyes]
+scale = 0.95
+lid_shadow = 0.55
+
+[face.eyes.aperture]
+roundness = 0.28
+upper_height = 0.55
+lower_depth = 0.42
+tilt = 0.12
+inner_sharpness = 0.95
+outer_bluntness = 0.15
+
+[face.eyes.iris]
+width = 0.55
+height = 0.85
+drop = 0.06
+
+[face.eyes.highlights]
+shape = "blob"
+size = 0.18
+shimmer = 0.1
+second = 0.0
+extra = []
+
+[face.eyes.lash]
+thickness = 0.0075
+flick = 0.15
+lower = 0.15
+
+[face.eyes.lash.strands]
+upper = { count = 0 }
+lower = { count = 0 }
+
+[face.eyes.crease]
+strength = 0.6
+lift = 0.25
+
+[face.mouth]
+half_width = 0.016
+
+[face.nose]
+kind = "tick"
+size = 1.25
+
+[face.brows]
+thickness = 0.0034
+arch = 0.002
+
+[body]
+hands = "five_finger"
+
+[body.proportions]
+neck_length = 1.15
+shoulder_width = 1.1
+leg_length = 1.02
+
+[body.shape]
+height = 0.4
+musculature = 0.45
+shoulder_hip = 0.4
