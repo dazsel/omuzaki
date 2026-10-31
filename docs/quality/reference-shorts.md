@@ -67,6 +67,10 @@ To land on a reference's frames rather than near them:
   whose hands never come up takes `gestures = 0` and `fidgets = 0`.
 - A shot's `head_width` frames the head (hair included) at a share of the frame's width, the same on every character,
   where `zoom` alone depends on the character's size; `zoom`, `punch` and `push` scale it from there.
+- A shot's `eyes = [[x, y], [x, y]]` (shares of the frame from its top left, the eye on the picture's left first) puts
+  the face's eyes on those marks: the camera solves its zoom, roll and shift so they land there, so a framing measured
+  off a reference is matched in one render rather than refitted round after round. `mouth = [x, y]` does the same with
+  the mouth for a close-up that leaves the eyes out, keeping the shot's size (`head_width`) and roll.
 - `[captions]` takes a `look` (`punchy`, the default: extra bold, heavy outline, shadow and pop; `clean`: bold, a thin
   edge, a faint shadow, steady; `outline`: semibold, an outline, no shadow) and changes one thing about it with
   `weight`, `outline`, `shadow`, `pop`, `fill` and `line`. `fade` (seconds) fades each caption in and `rise` (a share of

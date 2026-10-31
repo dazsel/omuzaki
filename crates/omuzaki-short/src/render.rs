@@ -185,11 +185,12 @@ fn run(
         OfflinePerformer::new(scene.timeline, &expressions, ChannelBuf::NEUTRAL, base, def.seed, def.body)?;
     let [w, h] = def.size;
     #[allow(clippy::cast_precision_loss, reason = "sides are at most 4096")]
-    let rig = CameraRig {
+    let mut rig = CameraRig {
         landmarks: scene.landmarks,
         root: scene.staged.subject_root,
         aspect: w as f32 / h as f32,
         seed: def.seed,
+        face: None,
     };
     // Warm up as the stills do: a frame at the base pose, the springs and part runtimes settled under it, so the first
     // frame doesn't start with hair falling from its rest shape.
@@ -199,6 +200,10 @@ fn run(
     match stage {
         AnyStage::Kit(kit) => kit.settle(SETTLE_STEPS),
         AnyStage::Avatar(avatar) => avatar.settle(SETTLE_STEPS),
+    }
+    // Shots that place the face are solved against it at rest, as the warm-up left it.
+    if let AnyStage::Kit(kit) = stage {
+        rig.face = kit.face_world_points().map(|[right, left, mouth, _]| [right, left, mouth]);
     }
     let captioner = Captioner::new(Ink::of(&def.captions))?;
     let mut inserts = InsertPainter::default();
