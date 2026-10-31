@@ -1,0 +1,23 @@
+schema = 1
+id = "omuzaki/face-profiles/animated-feature"
+version = "1.0.0"
+section = "face-profiles"
+kind = "setting"
+target = "character"
+title = "Animated feature"
+summary = "Feature-film 3D animation: round open eyes with a small iris, a sculpted nose and full lips, adult proportions and soft volumetric shading."
+tags = ["face", "style", "western", "animated", "feature"]
+origin = "the kit's animated-feature art style (#2696)"
+compat = { kinds = ["humanoid"], requires = ["head", "body"] }
+
+[rights]
+author = "Omuzaki"
+licence = "CC0-1.0"
+commercial = "ok"
+owned = true
+
+[[step]]
+op = "character.set_style"
+[step.args]
+character = "$character"
+style = "animated-feature"

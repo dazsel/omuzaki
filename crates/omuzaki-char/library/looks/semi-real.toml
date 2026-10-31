@@ -15,6 +15,10 @@ softness_scale = 1.4
 rim_scale = 0.6
 outline_width_scale = 0.4
 
+# The kit's anime fringe casts a hard, jagged hair shadow that reads as a stain on half-physical skin.
+[params.skin]
+receives_hair_shadow = false
+
 [params.scene]
 bloom = true
 depth_of_field = false

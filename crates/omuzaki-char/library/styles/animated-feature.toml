@@ -1,4 +1,4 @@
-# Animated feature: the stylized 3D look of feature-film animation, on the tall and standard templates.
+# Animated feature: the stylized 3D look of feature-film animation, on the tall template (7.5 heads).
 #
 # An adult with realistic-stylized proportions (not a big head). Round, open eyes with a lot of white around a small
 # iris, a soft crease and fine strand lashes; a sculpted nose read through shade and a light on its bridge; a wide
@@ -9,7 +9,7 @@ name = "Animated feature"
 family = "western"
 summary = "Feature-film 3D animation: round open eyes with a small iris, a sculpted nose and full lips, adult proportions and soft volumetric shading."
 origin = "Design target: the stylized-character conventions of feature animation (eyes large but anatomically placed with the sclera showing round the iris, a modelled nose and lips, adult proportions near seven heads, soft subsurface-like light), tuned by eye on the kit's own renders; no traced likeness."
-templates = ["tall", "standard"]
+templates = ["tall"]
 profile = "egg-oval"
 hair = "half-up"
 look = "soft-sd"
@@ -92,3 +92,7 @@ neck_length = 1.15
 
 [body.shape]
 height = 0.2
+
+# A rounder face plane: the painted features sit on a modelled face, not a flattened anime one.
+[head.cranium]
+face_flatten = 0.015

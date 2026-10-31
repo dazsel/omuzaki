@@ -5,13 +5,21 @@
 # and a filmic touch of contrast.
 id = "cinematic"
 name = "Cinematic"
-summary = "Physical and filmic: subsurface skin, fibre-lit hair, no lines, full occlusion, depth of field, bloom and a fine film grain."
+summary = "Physical and filmic: subsurface skin, hair partly lit as fibres, no lines, full occlusion, depth of field, bloom and a fine film grain."
 origin = """Design target: real-time cinematic character rendering (physical materials, no ink, occlusion and contact \
 shadows, a shallow focus, film grain); numbers tuned by eye on the kit's renders."""
 
 [params.all]
 style = 0.0
 outline_width_scale = 0.0
+
+# The kit's anime fringe casts a hard, jagged hair shadow that reads as a stain on physical skin; the occlusion seats
+# the fringe instead. Hair stays a little toward cel, where the kit's hair cards read best.
+[params.skin]
+receives_hair_shadow = false
+
+[params.hair]
+style = 0.35
 
 [params.scene]
 bloom = true

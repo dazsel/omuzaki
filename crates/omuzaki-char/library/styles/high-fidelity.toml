@@ -9,7 +9,7 @@ family = "real"
 summary = "Photoreal end: life-size eyes with dense lashes, a nose and lips modelled by light, physical skin and hair, depth of field and occlusion."
 origin = "Design target: real adult facial proportions (eye width a fifth of the face, the iris a third hidden by the upper lid, the mouth as wide as the pupils are apart) and the kit's realistic eye preset; no traced likeness."
 templates = ["tall"]
-profile = "egg-oval"
+profile = "long"
 hair = "long-straight"
 look = "cinematic"
 shading = 0.0
@@ -82,7 +82,7 @@ shadow = 1.0
 highlight = 0.7
 
 [face.cheeks]
-contour = 0.5
+contour = 0.25
 
 [face.brows]
 thickness = 0.0028
@@ -93,3 +93,7 @@ hands = "five_finger"
 
 [body.proportions]
 neck_length = 1.2
+
+# A rounder face plane: the painted features sit on a modelled face, not a flattened anime one.
+[head.cranium]
+face_flatten = 0.0

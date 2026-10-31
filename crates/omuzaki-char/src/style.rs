@@ -572,13 +572,13 @@ fn restyled_look(
     let now = look.overrides.all.style.map(f64::from);
     let axes: Vec<(Option<f64>, f64)> =
         entries.iter().map(|(s, w)| (s.map_or(now, |s| s.shading), *w)).collect();
-    let axis = if axes.iter().all(|(a, _)| a.is_none()) {
+    let place = if axes.iter().all(|(a, _)| a.is_none()) {
         None
     } else {
         let mean: f64 = axes.iter().map(|(a, w)| a.unwrap_or(1.0) * w).sum();
         Some(json!(axis_value(mean)))
     };
-    after.overrides.set_param("all.style", axis).map_err(|e| invalid(&e))?;
+    after.overrides.set_param("all.style", place).map_err(|e| invalid(&e))?;
     after.resolve().map_err(|e| invalid(&e))?;
     Ok(Some(after))
 }

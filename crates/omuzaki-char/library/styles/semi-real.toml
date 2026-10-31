@@ -1,4 +1,4 @@
-# Semi-real: between anime and life, on the tall and standard templates.
+# Semi-real: between anime and life, on the tall template (7.5 heads).
 #
 # Eyes near life size and placement: an almond with a small round iris set into the lids, a window catchlight, a
 # caruncle, vessels and a wet waterline, fine dense strand lashes and a defined crease. A nose modelled by shade and a
@@ -9,8 +9,8 @@ name = "Semi-real"
 family = "real"
 summary = "Between anime and life: near life-size almond eyes with a small iris and dense lashes, a modelled nose, full lips and half-physical shading."
 origin = "Design target: semi-realistic character conventions (eye width near a fifth of the face, the iris partly under the lids, modelled nose and lips, natural proportions near seven and a half heads), with the kit's realistic eye preset's numbers; no traced likeness."
-templates = ["tall", "standard"]
-profile = "egg-oval"
+templates = ["tall"]
+profile = "long"
 hair = "long-straight"
 look = "semi-real"
 shading = 0.4
@@ -91,3 +91,7 @@ hands = "five_finger"
 
 [body.proportions]
 neck_length = 1.2
+
+# A rounder face plane: the painted features sit on a modelled face, not a flattened anime one.
+[head.cranium]
+face_flatten = 0.01

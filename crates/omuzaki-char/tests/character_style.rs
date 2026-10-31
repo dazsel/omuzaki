@@ -107,23 +107,23 @@ fn a_style_brings_its_hair_and_look_unless_asked_not_to() {
     let hair_before = params(&common::definition(&doc, "kit"), "hair");
     let plan = common::round_trip(&mut doc, "character.set_style", json!({"character": "kit", "style": "semi-real"}));
     let def = common::definition(&doc, "kit");
-    assert_eq!(def.template.as_str(), "standard", "semi-real is tuned for standard too");
+    assert_eq!(def.template.as_str(), "tall", "semi-real moves the character to its template");
     assert_ne!(params(&def, "hair")["groups"], hair_before["groups"], "the hair is cut to the style's");
     assert_eq!(params(&def, "hair")["shading"], hair_before["shading"], "the hair keeps its colours");
     let stored = look(&doc).unwrap();
     assert_eq!(stored["preset"], "semi-real");
     assert!((stored["overrides"]["all"]["style"].as_f64().unwrap() - 0.4).abs() < 1e-6, "{stored}");
     let out = plan.output.unwrap();
-    assert_eq!((out["template"].as_str(), out["look"].as_str()), (Some("standard"), Some("semi-real")));
+    assert_eq!((out["template"].as_str(), out["look"].as_str()), (Some("tall"), Some("semi-real")));
 
-    let mut plain = created("standard", None);
+    let mut unstyled = created("standard", None);
     common::apply(
-        &mut plain,
+        &mut unstyled,
         "character.set_style",
         json!({"character": "kit", "style": "semi-real", "hair": false, "look": false}),
     );
-    assert_eq!(params(&common::definition(&plain, "kit"), "hair"), hair_before);
-    assert_eq!(look(&plain), None);
+    assert_eq!(params(&common::definition(&unstyled, "kit"), "hair"), hair_before);
+    assert_eq!(look(&unstyled), None);
 }
 
 #[test]
@@ -135,7 +135,7 @@ fn amount_blends_from_the_character_toward_the_style() {
     let full = common::definition(&full, "kit");
     common::round_trip(&mut doc, "character.set_style", json!({"character": "kit", "style": "shonen", "amount": 0.5}));
     let half = common::definition(&doc, "kit");
-    let mid = |a: f64, b: f64| 0.5 * (a + b);
+    let mid = f64::midpoint;
     let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
     let r = |d: &CharacterDef| d.face.eyes.aperture.roundness;
     assert!(close(r(&half), mid(r(&before), r(&full))), "{} between {} and {}", r(&half), r(&before), r(&full));
