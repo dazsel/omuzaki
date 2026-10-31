@@ -1,0 +1,95 @@
+# High fidelity: the photoreal end, on the tall template (7.5 heads).
+#
+# Life-size, life-placed features: small almond eyes with the iris well under the upper lid, dense fine lashes, vessels,
+# a caruncle and a wet waterline; a nose and lips modelled entirely by light; contoured cheekbones; full brows. Shaded
+# physically (subsurface skin, fibre-lit hair, sheen on cloth) under the cinematic look's depth of field and occlusion.
+id = "high-fidelity"
+name = "High fidelity"
+family = "real"
+summary = "Photoreal end: life-size eyes with dense lashes, a nose and lips modelled by light, physical skin and hair, depth of field and occlusion."
+origin = "Design target: real adult facial proportions (eye width a fifth of the face, the iris a third hidden by the upper lid, the mouth as wide as the pupils are apart) and the kit's realistic eye preset; no traced likeness."
+templates = ["tall"]
+profile = "egg-oval"
+hair = "long-straight"
+look = "cinematic"
+shading = 0.0
+
+[face.layout]
+eye_width = 0.039
+eye_spacing = 0.084
+brow_gap = 0.056
+
+[face.eyes]
+scale = 0.9
+lid_shadow = 0.8
+
+[face.eyes.aperture]
+roundness = 0.35
+upper_height = 0.55
+lower_depth = 0.45
+tilt = 0.06
+inner_sharpness = 0.9
+outer_bluntness = 0.4
+
+[face.eyes.iris]
+width = 0.46
+height = 0.46
+inset = 0.1
+drop = 0.08
+
+[face.eyes.iris.pupil]
+size = 0.8
+
+[face.eyes.highlights]
+shape = "window"
+size = 0.18
+shimmer = 0.1
+second = 0.0
+caustic = 0.6
+extra = []
+
+[face.eyes.sclera]
+corner_shade = 0.8
+vessels = 0.5
+caruncle = 0.9
+waterline = 0.9
+
+[face.eyes.lash]
+thickness = 0.003
+flick = 0.05
+lower = 0.0
+inner_tick = false
+
+[face.eyes.lash.strands]
+upper = { count = 110, length = 0.26, curl = 0.55, lift = 0.5, clumping = 0.65, thickness = 0.0005, randomness = 0.65, from = -0.85 }
+lower = { count = 55, length = 0.12, thickness = 0.00035, from = -0.6, opacity = 0.85 }
+
+[face.eyes.crease]
+strength = 0.85
+lift = 0.3
+
+[face.mouth]
+half_width = 0.02
+
+[face.mouth.lips]
+strength = 0.85
+tint = 0.6
+
+[face.nose]
+kind = "none"
+size = 1.7
+shadow = 1.0
+highlight = 0.7
+
+[face.cheeks]
+contour = 0.5
+
+[face.brows]
+thickness = 0.0028
+arch = 0.006
+
+[body]
+hands = "five_finger"
+
+[body.proportions]
+neck_length = 1.2

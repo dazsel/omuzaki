@@ -1,0 +1,25 @@
+# Cel-flat: the flat 2D look for 3D characters (LK-06, ADR 0010 decision 2), as a drawn TV cel reads.
+#
+# Two tones per material with a hard terminator (no ramp softness), the parts' own tinted shade colours (never grey),
+# no rim light, the hair's highlight drawn as crisp bands, uniform coloured lines on every part, and a clean frame: no
+# bloom, grain or depth of field.
+id = "cel-flat"
+name = "Cel flat"
+summary = "Flat 2D cel: a hard two-tone terminator in tinted shade colours, no rim, crisp hair bands and uniform coloured lines, with a clean frame."
+origin = """Design target: spec LK-06 and ADR 0010 (the flat look for any 3D character) and the conventions of painted \
+animation cels (one light and one shade tone per colour, an even ink line); numbers tuned by eye on the kit's renders."""
+
+[params.all]
+softness_scale = 0.0
+rim_scale = 0.0
+outline_width = 0.0016
+outline_colour = "material"
+style = 1.0
+
+[params.hair.program_params.hair]
+highlight-cel = { float = 1.0 }
+
+[params.scene]
+bloom = false
+depth_of_field = false
+grain = 0.0
