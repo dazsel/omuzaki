@@ -527,6 +527,11 @@ impl Stage {
         self.subject_root
     }
 
+    /// The lift that stands the body on its lowest point, the last factor of its frame's root.
+    pub(crate) fn stand_now(&self) -> Mat4 {
+        self.stand
+    }
+
     /// Keeps the arms out of another member's `parts` (world space) from the next frame, this member standing at
     /// `root` then; an empty slice clears them. Allocation-free.
     pub(crate) fn set_partner_parts(&mut self, parts: &[omuzaki_rig::ik::guard::Obstacle], root: Mat4) {
