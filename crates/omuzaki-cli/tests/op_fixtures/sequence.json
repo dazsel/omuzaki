@@ -1,0 +1,27 @@
+{
+  "about": "The `character` fixture with a sequence `weather`: one desk shot of `kit` behind a news desk, talking and smiling, and a title layer that slides in: the base for ops that read, key, render or delete a sequence.",
+  "base": "character",
+  "steps": [
+    { "op": "sequence.set", "args": { "id": "weather", "sequence": {
+      "title": "Weather tease",
+      "duration": 1.0,
+      "fps": 12,
+      "size": [270, 480],
+      "shot": [{
+        "id": "desk",
+        "start": 0.0,
+        "end": 1.0,
+        "backdrop": { "kind": "gradient", "top": "#2a3a8f", "bottom": "#e05aa8" },
+        "camera": { "position": [0.0, 1.4, 2.0], "target": [0.0, 1.3, 0.0], "fov": 30 },
+        "actor": [{ "id": "anchor", "character": "kit", "face": [{ "t": 0.0, "set": { "happy": 0.7 } }], "talk": [[0.1, 0.9]] }],
+        "prop": [{ "id": "desk", "kind": "news-desk", "position": [0.0, 0.0, 0.45] }]
+      }],
+      "layer": [{
+        "id": "title",
+        "draw": { "kind": "text", "text": "WEATHER", "size": 64 },
+        "y": 0.85,
+        "x": [{ "t": 0.0, "v": -0.5 }, { "t": 0.4, "v": 0.5, "ease": "expo-out" }]
+      }]
+    } } }
+  ]
+}

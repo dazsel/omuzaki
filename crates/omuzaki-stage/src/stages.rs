@@ -237,6 +237,22 @@ macro_rules! either {
     };
 }
 
+impl AnyStage {
+    /// Runs the surface fx `fx` (a burn, a dissolve, turning to stone) over the body's materials, sparing those whose
+    /// names contain any of `spare`, or takes it off with `None`. Cold.
+    ///
+    /// # Errors
+    /// [`StageError::Render`] if the renderer refuses a material; the materials are as they were.
+    pub fn set_surface_fx(
+        &mut self,
+        renderer: &mut dyn Renderer,
+        fx: Option<omuzaki_render_api::SurfaceFx>,
+        spare: &[String],
+    ) -> Result<(), StageError> {
+        either!(self, s => s.set_surface_fx(renderer, fx, spare))
+    }
+}
+
 impl FrameLoop for AnyStage {
     fn tick(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
         either!(self, s => FrameLoop::tick(s, renderer, input))

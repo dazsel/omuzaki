@@ -668,8 +668,8 @@ model.
 | Level | Feature | Best at it | Status | Where, or the issue |
 |---|---|---|---|---|
 | History | Browsable history, restore any point (VC-01) | Figma | ✓ | `history.*` ops |
-| Branches | Branch, compare, merge part-level changes (VC-02) | Figma, Git | ◐ | `branch.list`, `branch.status`, `omuzaki-app/src/branches` |
-| Diffs | Visual diffs with heatmaps (VC-03) | Figma | ◐ | `history.diff`, `render.compare` |
+| Branches | Branch, compare, merge part-level changes (VC-02) | Figma, Git | ✓ | `branch.*` ops; the studio's branch chip, review cards, compare and merge view (`omuzaki-ui/src/shell/branches`) |
+| Diffs | Visual diffs with heatmaps (VC-03) | Figma | ◐ | `history.diff`; `render.preview` and `render.compare` of any two states (#400) |
 | Journal | Crash-safe journal, kill -9 loses nothing (VC-08) | none | ✓ | `omuzaki-doc/src/journal` |
 | Backups | Rolling verified backups (VC-09) | Time Machine | ✗ | spec VC-09 |
 | Git | Git integration with render previews (VC-04) | Git | ✗ | #521 |
@@ -689,7 +689,7 @@ model.
 
 | Problem | Direction | Measure |
 |---|---|---|
-| Merging two artists' changes to one character is impossible in every tool | **Semantic merge of characters:** merge at the level of parts and parameters with visual conflict previews | share of merges completed without manual fix |
+| Merging two artists' changes to one character is impossible in every tool | **Semantic merge of characters:** merge at the level of parts and parameters with visual conflict previews (first cut: `branch.merge` and the studio's merge view, with mine and theirs drawn per conflicting part) | share of merges completed without manual fix |
 
 ## 19. Import, export and interop
 

@@ -181,6 +181,22 @@ impl Core {
         self.app.as_ref()
     }
 
+    /// The project's branches for the studio's branch menu, compare and merge views (`shell::branches`): the app
+    /// core's lane manager and its store of points, with `pictures` to draw states with. `None` over an in-memory
+    /// document, which has no branches.
+    pub fn branching(
+        &self,
+        pictures: Option<crate::shell::branches::StatePictures>,
+    ) -> Option<crate::shell::branches::Branching> {
+        let app = self.app.as_ref()?;
+        let branches = Arc::clone(app.branches());
+        Some(crate::shell::branches::Branching {
+            branches: branches.clone(),
+            trees: Arc::new(HostTrees(branches)),
+            pictures,
+        })
+    }
+
     /// Opens the project's loopback MCP port with `options`, so other apps and `omuzaki mcp` started in the project
     /// folder work on this same document, and returns its URL. `None`, logged, over an in-memory document or when the
     /// port can't be bound (another studio holds it): agents then reach the studio only from inside it.
@@ -229,6 +245,16 @@ pub fn core_on(document: Document, services: Services) -> Result<Core, CoreError
         }
         (Tree::Project(files), None) => in_memory(Box::new(Scratch::of(&files)), services),
         (Tree::Memory(tree), _) => in_memory(Box::new(tree), services),
+    }
+}
+
+/// Points' trees, from the app core's branch store.
+struct HostTrees(Arc<omuzaki_app::branches::HostBranches>);
+
+impl crate::shell::branches::PointTrees for HostTrees {
+    fn tree(&self, point: &omuzaki_history_api::branch::PointId) -> Result<Arc<Value>, String> {
+        use omuzaki_history_api::state::BranchStore as _;
+        self.0.store().tree(point).map_err(|e| e.to_string())
     }
 }
 

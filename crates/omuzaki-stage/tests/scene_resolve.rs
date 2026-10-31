@@ -378,6 +378,25 @@ fn a_transparent_backdrop_is_transparent() {
     assert_eq!(resolved(&def, &figures).background, Background::Transparent);
 }
 
+#[test]
+fn a_rolled_camera_turns_the_picture_clockwise_about_its_lens() {
+    let mut def = scene();
+    def.cameras.insert(camera("level"), CameraDef::preset(Framing::Face));
+    def.cameras.insert(camera("dutch"), CameraDef { roll: 90.0, ..CameraDef::preset(Framing::Face) });
+    let figures = figures([0.0, 0.0]);
+    let out = resolved(&def, &figures);
+    let find = |id: &str| out.cameras.iter().find(|(c, _)| *c == camera(id)).map(|(_, c)| c.transform).unwrap();
+    let (level, dutch) = (find("level"), find("dutch"));
+    // Same place, same view axis; the screen's right now points where its up did, so the world's up shows on the right:
+    // the picture turned a quarter clockwise.
+    assert!(level.w_axis.abs_diff_eq(dutch.w_axis, 1e-5));
+    assert!(level.z_axis.abs_diff_eq(dutch.z_axis, 1e-5));
+    assert!(dutch.x_axis.abs_diff_eq(level.y_axis, 1e-5), "{} vs {}", dutch.x_axis, level.y_axis);
+    assert!(dutch.y_axis.abs_diff_eq(-level.x_axis, 1e-5));
+    def.cameras.insert(camera("bad"), CameraDef { roll: 200.0, ..CameraDef::preset(Framing::Face) });
+    assert!(def.check().is_err(), "a roll past 180 degrees is refused");
+}
+
 fn free_stage_camera(position: [f32; 3], target: [f32; 3]) -> CameraDef {
     CameraDef {
         framing: Framing::Free,

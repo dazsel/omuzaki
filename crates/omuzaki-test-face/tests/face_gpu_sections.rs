@@ -39,7 +39,7 @@ struct Case {
     set: fn(&mut FaceProfile, &mut PaintParams),
 }
 
-const CASES: [Case; 15] = [
+const CASES: [Case; 20] = [
     Case { section: Section::Eyes, name: "neutral", set: |_, _| {} },
     Case { section: Section::Eyes, name: "half-blink", set: |_, p| p.left_eye.close = 0.5 },
     Case { section: Section::Eyes, name: "wide-open", set: |_, p| p.left_eye.open = 1.6 },
@@ -54,6 +54,7 @@ const CASES: [Case; 15] = [
         },
     },
     Case { section: Section::Mouth, name: "open-half", set: |_, p| p.mouth.open = 0.5 },
+    Case { section: Section::Mouth, name: "full-lips", set: |f, _| f.mouth.lips.full = 1.0 },
     Case { section: Section::Brows, name: "neutral", set: |_, _| {} },
     Case {
         section: Section::Brows,
@@ -73,9 +74,20 @@ const CASES: [Case; 15] = [
     },
     Case { section: Section::Nose, name: "tick", set: |f, _| f.nose.kind = NoseKind::Tick },
     Case { section: Section::Nose, name: "dot", set: |f, _| f.nose.kind = NoseKind::Dot },
+    Case { section: Section::Nose, name: "wedge", set: |f, _| f.nose.kind = NoseKind::Wedge },
+    Case { section: Section::Nose, name: "line", set: |f, _| f.nose.kind = NoseKind::Line },
+    Case { section: Section::Nose, name: "button", set: |f, _| f.nose.kind = NoseKind::Button },
     Case { section: Section::Cheeks, name: "neutral", set: |_, _| {} },
     Case { section: Section::Cheeks, name: "blush", set: |_, p| p.blush = 1.0 },
     Case { section: Section::Cheeks, name: "blush-strong", set: |_, p| p.blush = 1.6 },
+    Case {
+        section: Section::Cheeks,
+        name: "face-lines",
+        set: |f, _| {
+            let l = &mut f.cheeks.lines;
+            (l.cheekbone, l.smile, l.under_eye, l.chin, l.jaw_shade) = (1.0, 1.0, 1.0, 1.0, 1.0);
+        },
+    },
 ];
 
 /// The Base layer's spec at probe scale: the projection's rectangle, about [`PROBE_WIDTH_PX`] wide.
