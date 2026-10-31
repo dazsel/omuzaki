@@ -17,7 +17,7 @@ use serde_json::json;
 
 const TEMPLATES: [&str; 4] = ["soft-sd", "mini", "standard", "tall"];
 
-const NAMED: [&str; 10] = [
+const NAMED: [&str; 11] = [
     "long-straight",
     "bob",
     "twin-tails",
@@ -28,6 +28,7 @@ const NAMED: [&str; 10] = [
     "wavy-long",
     "bun",
     "half-up",
+    "swept-up",
 ];
 
 fn part(kind: &str, params: serde_json::Value) -> PartDef {

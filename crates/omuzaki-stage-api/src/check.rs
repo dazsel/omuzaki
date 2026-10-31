@@ -221,6 +221,7 @@ impl SceneDef {
     fn check_camera(&self, path: &str, c: &CameraDef) -> Check {
         within(&format!("{path}.yaw"), c.yaw, -180.0, 180.0)?;
         within(&format!("{path}.pitch"), c.pitch, -90.0, 90.0)?;
+        within(&format!("{path}.roll"), c.roll, -180.0, 180.0)?;
         finite(&format!("{path}.fov"), c.fov)?;
         if c.fov <= 0.0 || c.fov >= 180.0 {
             return refuse(

@@ -62,6 +62,10 @@ pub struct CameraDef {
     /// Degrees: + = from above. `-90..=90`.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub pitch: f32,
+    /// Degrees the picture turns about the lens, a Dutch angle: + turns what it shows clockwise. `-180..=180`. Presets
+    /// and free cameras alike.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub roll: f32,
     /// Vertical field of view in degrees, in `(0, 180)`.
     #[serde(default = "thirty")]
     pub fov: f32,
@@ -91,6 +95,7 @@ impl CameraDef {
             subject: Anchor::Subject,
             yaw: 0.0,
             pitch: 0.0,
+            roll: 0.0,
             fov: 30.0,
             zoom: 1.0,
             shift: [0.0, 0.0],

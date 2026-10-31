@@ -565,7 +565,7 @@ fn resolve_camera(
         Anchor::Stage => None,
     };
     if camera.framing == Framing::Free {
-        return free_camera(id, camera, subject, figures);
+        return free_camera(id, camera, subject, figures).map(|free| rolled(free, camera.roll));
     }
     let figure = figure.ok_or_else(|| {
         scene_error(SceneError::new(
@@ -575,7 +575,17 @@ fn resolve_camera(
     })?;
     let mut framed = frame(camera.framing, &figure.landmarks, camera, aspect)?;
     framed.transform = Mat4::from(figure.root) * framed.transform;
-    Ok(framed)
+    Ok(rolled(framed, camera.roll))
+}
+
+/// `camera` turned `roll` degrees about its own view axis: + turns the picture clockwise (the camera itself turns
+/// counter-clockwise as it looks). Where it stands and what it looks at stay.
+fn rolled(mut camera: Camera, roll: f32) -> Camera {
+    if roll != 0.0 {
+        // The camera looks down its local -Z, so a turn about +Z is counter-clockwise as seen through it.
+        camera.transform *= Mat4::from_rotation_z(roll.to_radians());
+    }
+    camera
 }
 
 /// A free camera: `position` and `target` in its anchor's units (metres for the stage; a member's height otherwise),

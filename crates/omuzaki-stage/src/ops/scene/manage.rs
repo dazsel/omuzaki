@@ -78,7 +78,7 @@ impl Op for DescribeScene {
                     format!("{:?} of {}", c.framing, c.subject).to_lowercase()
                 };
                 json!({ "id": camera.as_str(), "framing": c.framing, "frames": frames, "yaw": c.yaw, "pitch": c.pitch,
-                        "opening": def.scene.camera.as_ref() == Some(camera) })
+                        "roll": c.roll, "opening": def.scene.camera.as_ref() == Some(camera) })
             })
             .collect();
         let cast: Vec<Value> = def
