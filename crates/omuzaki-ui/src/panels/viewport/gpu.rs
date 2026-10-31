@@ -44,6 +44,21 @@ pub struct Job {
     pub error: Option<String>,
     /// The staged character's posed triangles, for clicks; new with each staging.
     pub pick: Option<Arc<PickMesh>>,
+    /// Read each new picture back to the CPU (the reference overlay measures it).
+    pub read_back: bool,
+    /// The last picture read back: its render count, its size and its straight RGBA8 bytes.
+    pub frame: Option<Arc<Frame>>,
+}
+
+/// A picture the stage drew, read back.
+#[derive(Debug)]
+pub struct Frame {
+    /// Which render it is ([`Job::renders`] when it was drawn).
+    pub render: u64,
+    /// Its size in pixels.
+    pub size: UVec2,
+    /// `size.x * size.y` straight sRGB RGBA8 quads.
+    pub rgba8: Vec<u8>,
 }
 
 impl Default for Job {
@@ -56,6 +71,8 @@ impl Default for Job {
             renders: 0,
             error: None,
             pick: None,
+            read_back: false,
+            frame: None,
         }
     }
 }
@@ -187,6 +204,10 @@ impl Gpu {
             let input = FrameInput { channels: ChannelBuf::NEUTRAL, pose: self.base, ..FrameInput::default() };
             stage.redraw(&mut self.renderer, &input).map_err(stage_error)?;
             job.renders += 1;
+            if job.read_back {
+                let image = self.renderer.read_target(target).map_err(render_error)?;
+                job.frame = Some(Arc::new(Frame { render: job.renders, size: image.size, rgba8: image.rgba8 }));
+            }
         }
         if self.bound.is_none() {
             let texture = self.renderer.target_texture(target).map_err(render_error)?;
@@ -398,12 +419,18 @@ impl CallbackTrait for Callback {
                 renders: 0,
                 error: job.error.take(),
                 pick: None,
+                read_back: job.read_back,
+                frame: None,
             }
         };
         gpu.prepare(device, &mut work);
         let binding = gpu.take_binding();
         let mut job = self.job.lock().unwrap_or_else(PoisonError::into_inner);
         job.render = work.render;
+        if let Some(frame) = work.frame.and_then(|frame| Arc::try_unwrap(frame).ok()) {
+            // The callback counts this frame's renders from zero: number the picture as the panel counts them.
+            job.frame = Some(Arc::new(Frame { render: job.renders + frame.render, ..frame }));
+        }
         job.renders += work.renders;
         job.error = work.error;
         if work.pick.is_some() {

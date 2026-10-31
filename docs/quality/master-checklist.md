@@ -63,7 +63,7 @@ Counts are rows in this file only (the deep lists above keep their own).
 | 13 | [Camera, shots and cinematics](#13-camera-shots-and-cinematics) | 3 | 5 | 5 | reference-video owner (shorts, in part) | the timeline (SH-02), takes, auto-clips |
 | 14 | [Broadcast and outputs](#14-broadcast-and-outputs) | 4 | 4 | 5 | **none** | Windows and macOS virtual camera, NDI, direct streaming |
 | 15 | [Interactivity and automation](#15-interactivity-and-automation) | 0 | 6 | 3 | **none** | YouTube events, widgets and alerts |
-| 16 | [Studio UX](#16-studio-ux) | 9 | 3 | 0 | studio UX and agent owner | gizmos for props, lights, guides |
+| 16 | [Studio UX](#16-studio-ux) | 10 | 3 | 0 | studio UX and agent owner | gizmos for props, lights, guides |
 | 17 | [MCP and the agent surface](#17-mcp-and-the-agent-surface) | 10 | 3 | 0 | studio UX and agent owner | the in-studio assistant |
 | 18 | [Versioning, collaboration and the library](#18-versioning-collaboration-and-the-library) | 2 | 4 | 6 | studio UX and agent owner | backups, review links, teams |
 | 19 | [Import, export and interop](#19-import-export-and-interop) | 5 | 5 | 6 | render owner (import, in part) | web player, Unity and Godot, PMX |
@@ -72,7 +72,7 @@ Counts are rows in this file only (the deep lists above keep their own).
 | 22 | [Platforms](#22-platforms) | 1 | 2 | 3 | **none** | web player, phone page |
 | 23 | [Accessibility, localisation, privacy and safety](#23-accessibility-localisation-privacy-and-safety) | 0 | 7 | 3 | **none** | signed exports, colour-blind themes |
 | F | [The whole VTuber](#f-the-whole-vtuber) | 2 | 7 | 2 | Director | time to first character, soak |
-| | **Total** | **89** | **101** | **81** | | |
+| | **Total** | **90** | **101** | **81** | | |
 
 ---
 
@@ -591,6 +591,7 @@ Warudo (live workflow).
 | Shell | Workspaces (Build, Perform, Broadcast, Script, Theatre) with docked panels | Blender | ✓ | `register_workspace!`, `omuzaki-ui/src/shell` |
 | Viewport | The character rendered live in the viewport with orbit, pan, frame | Blender, VRoid | ✓ | `panels/viewport` |
 | Viewport | Click a part to select it, Shift+click to add, the selection boxed as posed | Blender | ✓ | `panels/viewport/pick.rs` |
+| Viewport | A reference over the character (onion, wipe, exact difference map) with the live count of pixels that differ, the stop rule's count | none (new) | ✓ | `panels/viewport/matching.rs` on the `parity.*` targets |
 | Viewport | Move, rotate and scale gizmos for props, lights, cameras, guides and colliders | Blender, Unity | ◐ | accessories: `panels/viewport/gizmo.rs` writing `part.set_attach`, one undo step per drag; props, lights, cameras, guides and colliders are next, #2590 |
 | Panels | Outliner, schema inspector, library, history, agent panel | Blender, Figma | ✓ | `panels/` |
 | Panels | Command palette over every op | Blender F3, VS Code | ✓ | `shell/palette.rs`; a query of three or more words offers "Make a character from these words" |

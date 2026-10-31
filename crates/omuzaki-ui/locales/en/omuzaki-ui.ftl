@@ -2729,6 +2729,43 @@ ui-panels-many-how = Select one part to edit its settings.
 ui-panels-many-selected = { $count } parts selected
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-match = Match
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $name (id, never translated): "hair-b"
+# $off (id, never translated): "hair-b"
+# $pixels (id, never translated): "hair-b"
+# $max (id, never translated): "hair-b"
+ui-panels-match-count = { $name }: { $off } of { $pixels } pixels differ, by up to { $max } levels
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $name (id, never translated): "hair-b"
+ui-panels-match-done = { $name }: every pixel matches
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-match-exact = Difference
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-match-look = Show
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $name (id, never translated): "hair-b"
+ui-panels-match-measuring = { $name }: measuring
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-match-none = No reference
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-match-onion = Onion
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $reason (id, never translated): "hair-b"
+ui-panels-match-unread = The reference can't be shown: { $reason }
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-match-wipe = Wipe
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-move = Move
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.

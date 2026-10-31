@@ -347,6 +347,26 @@ crate::ds::strings::lines! {
     pub const SCALE_PART: &str = "Scale {part}";
     /// A drag that couldn't place the part: the runner's reason follows.
     pub const CANT_PLACE: &str = "This part can't be placed by hand: {reason}";
+    /// The viewport's reference picker (the parity targets), and its empty choice.
+    pub const MATCH: &str = "Match";
+    /// See [`MATCH`].
+    pub const MATCH_NONE: &str = "No reference";
+    /// How the reference shows over the character, and its three looks.
+    pub const MATCH_LOOK: &str = "Show";
+    /// See [`MATCH_LOOK`].
+    pub const MATCH_ONION: &str = "Onion";
+    /// See [`MATCH_LOOK`].
+    pub const MATCH_WIPE: &str = "Wipe";
+    /// See [`MATCH_LOOK`]: the exact difference map.
+    pub const MATCH_EXACT: &str = "Difference";
+    /// Before the first measure of the picture against the reference.
+    pub const MATCH_MEASURING: &str = "{name}: measuring";
+    /// The stop rule's count: pixels where any byte differs.
+    pub const MATCH_COUNT: &str = "{name}: {off} of {pixels} pixels differ, by up to {max} levels";
+    /// The count at 0.
+    pub const MATCH_DONE: &str = "{name}: every pixel matches";
+    /// The chosen reference can't be read.
+    pub const MATCH_UNREAD: &str = "The reference can't be shown: {reason}";
     /// While History shows a past state in the viewport.
     pub const VIEWING_PAST: &str = "Viewing a past state: after {label}";
     /// The way back from it.
