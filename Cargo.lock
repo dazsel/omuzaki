@@ -4981,6 +4981,7 @@ dependencies = [
  "omuzaki-obs",
  "omuzaki-ops",
  "omuzaki-ops-api",
+ "omuzaki-paint-ops",
  "omuzaki-parity",
  "omuzaki-performer-api",
  "omuzaki-render",
@@ -5965,6 +5966,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-paint"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "image",
+ "kurbo",
+ "libm",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-paint-ops"
+version = "0.0.0"
+dependencies = [
+ "image",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-ops-api",
+ "omuzaki-ops-mock",
+ "omuzaki-paint",
+ "omuzaki-store-api",
+ "omuzaki-store-mock",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "omuzaki-parity"
 version = "0.0.0"
 dependencies = [
@@ -6389,6 +6425,7 @@ version = "0.0.0"
 dependencies = [
  "criterion",
  "hound",
+ "image",
  "omuzaki-ai-api",
  "omuzaki-ai-mock",
  "omuzaki-audio-api",
@@ -6739,6 +6776,7 @@ version = "0.0.0"
 dependencies = [
  "criterion",
  "hound",
+ "image",
  "omuzaki-ai",
  "omuzaki-ai-api",
  "omuzaki-ai-litert",
@@ -6891,6 +6929,7 @@ dependencies = [
 name = "omuzaki-ui"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "clap",
  "eframe",
  "egui",
@@ -6940,6 +6979,7 @@ dependencies = [
  "omuzaki-ops-api",
  "omuzaki-ops-mock",
  "omuzaki-osc",
+ "omuzaki-paint-ops",
  "omuzaki-parity",
  "omuzaki-render",
  "omuzaki-render-api",
