@@ -29,6 +29,17 @@ Spec feature IDs (`CB-30`, `BR-02`) point into `docs/product/02-studio-spec-v3.m
 that carries the row; a row marked **new** was filed with this checklist. Status is as of 2026-10-30 (`main` at
 `b5a6d83c`).
 
+## Parity with a reference is pixel parity
+
+The owner's rule (2026-10-30), for every area and every thread that works from an image or a video:
+
+- A row that claims parity with a reference is checked by **overlaying Omuzaki's output on the reference and measuring
+  the per-pixel difference map**, frame by frame. "Looks similar" or "almost" is not parity.
+- The work **iterates until that map shows 0**: every pixel of every frame aligned, every feature and the quality at the
+  bar. It does not stop, or get called done, before it reports a pixel map at 0.
+- The overlays, difference maps, renders, references and notes stay **out of the repository**, in the project's shared
+  files only. The repository holds the tools that make the maps and the numbers they report.
+
 ## The deep lists this one links to
 
 Some areas already have their own exhaustive list, kept current by the thread building them. This checklist gives
@@ -50,7 +61,7 @@ Counts are rows in this file only (the deep lists above keep their own).
 |---|---|---|---|---|---|---|
 | 1 | [Renderer and materials (stylised)](#1-renderer-and-materials-stylised) | 5 | 5 | 7 | render owner; photoreal side: face owner (#2507) | anime face shadows, material editing for imports, texture painting |
 | 2 | [Lighting, post and the look](#2-lighting-post-and-the-look) | 6 | 1 | 5 | render owner | area lights, soft shadows, light matching |
-| 3 | [Creating a character](#3-creating-a-character-the-flow-from-idea-to-finished) | 5 | 4 | 6 | creator parity owner (explore, blend) | the concept workspace (CO-01 to CO-10) and create from a sheet or a description |
+| 3 | [Creating a character](#3-creating-a-character-the-flow-from-idea-to-finished) | 5 | 5 | 5 | creator parity owner (explore, blend); studio UX and agent owner (from a description) | the concept workspace (CO-01 to CO-10) and create from a sheet or a description |
 | 4 | [Head, face and eyes](#4-head-face-and-eyes-the-parts) | 3 | 4 | 2 | eye and face owner | the photoreal eye, 3D nose and jaw |
 | 5 | [Hair, garments and accessories](#5-hair-garments-and-accessories) | 0 | 3 | 0 | hair, garments and accessories owner | 61 system issues, #2511 to #2571 |
 | 6 | [Body, rig and physics](#6-body-rig-and-physics) | 9 | 1 | 6 | **none** | non-human templates, auto-rig, spring gizmos |
@@ -63,16 +74,16 @@ Counts are rows in this file only (the deep lists above keep their own).
 | 13 | [Camera, shots and cinematics](#13-camera-shots-and-cinematics) | 3 | 5 | 5 | reference-video owner (shorts, in part) | the timeline (SH-02), takes, auto-clips |
 | 14 | [Broadcast and outputs](#14-broadcast-and-outputs) | 4 | 4 | 5 | **none** | Windows and macOS virtual camera, NDI, direct streaming |
 | 15 | [Interactivity and automation](#15-interactivity-and-automation) | 0 | 6 | 3 | **none** | YouTube events, widgets and alerts |
-| 16 | [Studio UX](#16-studio-ux) | 8 | 2 | 1 | **none** | viewport gizmos |
-| 17 | [MCP and the agent surface](#17-mcp-and-the-agent-surface) | 9 | 3 | 0 | **none** | the in-studio assistant |
-| 18 | [Versioning, collaboration and the library](#18-versioning-collaboration-and-the-library) | 2 | 4 | 6 | **none** | backups, review links, teams |
+| 16 | [Studio UX](#16-studio-ux) | 10 | 3 | 0 | studio UX and agent owner | gizmos for props, lights, guides |
+| 17 | [MCP and the agent surface](#17-mcp-and-the-agent-surface) | 10 | 3 | 0 | studio UX and agent owner | the in-studio assistant |
+| 18 | [Versioning, collaboration and the library](#18-versioning-collaboration-and-the-library) | 2 | 4 | 6 | studio UX and agent owner | backups, review links, teams |
 | 19 | [Import, export and interop](#19-import-export-and-interop) | 5 | 5 | 6 | render owner (import, in part) | web player, Unity and Godot, PMX |
 | 20 | [Plugins, connectors and scripting](#20-plugins-connectors-and-scripting) | 0 | 3 | 2 | **none** | custom nodes, real connectors |
 | 21 | [Performance and reliability](#21-performance-and-reliability) | 1 | 2 | 2 | **none** | hardware numbers, the soak, adaptive quality |
 | 22 | [Platforms](#22-platforms) | 1 | 2 | 3 | **none** | web player, phone page |
 | 23 | [Accessibility, localisation, privacy and safety](#23-accessibility-localisation-privacy-and-safety) | 0 | 7 | 3 | **none** | signed exports, colour-blind themes |
 | F | [The whole VTuber](#f-the-whole-vtuber) | 2 | 7 | 2 | Director | time to first character, soak |
-| | **Total** | **86** | **98** | **85** | | |
+| | **Total** | **90** | **101** | **81** | | |
 
 ---
 
@@ -177,12 +188,12 @@ randomise, sliders), and AI image tools for concept work.
 | Build | Every part a parametric generator with ops | none | ✓ | 121 part kinds, 414 ops; see [creator-parity.md](creator-parity.md) |
 | Build | Fit proportions to a reference sheet with a difference heatmap (CB-03) | none | ✓ | `fit.reference`, `fit.apply` |
 | Build | Create from a sheet: analysis to build to compare, iterated until the likeness gate passes (CB-90) | none | ✗ | #461 |
-| Build | Create from a text description alone, no sheet: brief to parameters to build to self-check | none ship it | ✗ | **new** #2578 |
+| Build | Create from a text description alone, no sheet: brief to parameters to build to self-check | none ship it | ◐ | `character.create_from_description`, `character.brief_vocabulary` (`omuzaki-brief`); the Setup card and the palette; 20 descriptions build and self-check; the ≥ 70% rater bar is the hand check on #2578 |
 | Build | Part-level variants and branches (CB-91, CB-13) | none | ✓ | `variant.*`, `branch.*` |
 | Check | Character report card: likeness, readability, expression coverage, budget, licence (CB-92) | none | ◐ | `measure.likeness`, `measure.readability`, `face.expression.range_test`; #463 |
 | Check | Stress test: poses and head turns report clipping with images (RG-07) | none | ◐ | `fit` checker and hair clearance; whole-character battery is #2485 for hair, rest open |
 | Edit | Underlay tracing on the face (CB-25) | VRoid (guide image) | ✓ | `face.underlay.set` |
-| Edit | Guide-curve hair editing in the viewport (CB-32) | VRoid | ◐ | `hair.guide.*` ops; no viewport drag (see §16 gizmos) |
+| Edit | Guide-curve hair editing in the viewport (CB-32) | VRoid | ◐ | `hair.guide.*` ops; no viewport drag yet (§16 gizmos place accessories so far) |
 | Edit | Import a mesh as a part, auto-skinned (CB-44) | CC4 | ✗ | #460 |
 
 **Beyond them**
@@ -352,7 +363,7 @@ Warudo (MediaPipe body and hands), XR Animator, mocopi and SlimeVR (body), Leap 
 | Inputs | Keyboard, mouse, gamepad, MIDI, OSC bindings (PF-05) | Warudo | ✓ | `input.binding.*`, `omuzaki-input` |
 | Inputs | Stream Deck: buttons that run ops, with state shown on the keys | VTube Studio and Warudo plugins | ✗ | **new** #2584 |
 | Inputs | Input-driven body motion: hands on the keys, arm to the mouse (PF-29) | VNyan, Warudo | ◐ | #718, #783 |
-| Inputs | A recorded video file as a tracking input (re-track footage offline) | none for VTubing | ✗ | **new** #2585 |
+| Inputs | A recorded video file as a tracking input (re-track footage offline) | none for VTubing | ✓ | `input.open_video`, `omuzaki-track-video`: `.y4m` read directly, MP4, MKV, MOV and WebM through the person's own ffmpeg; plays at the file's rate through the webcam tracker, on every platform |
 | Processing | Guided calibration in one step (PF-20) | VTube Studio | ◐ | `input.calibrate`, `omuzaki-track/src/guided.rs`; #473 |
 | Processing | One-Euro smoothing and a latency dial (PF-21); per-channel curves (PF-22) | VTube Studio | ◐ | `omuzaki-track/src/smoothing.rs`; #474, #475 |
 | Processing | Source blending and ownership per channel (PF-23) | none | ◐ | #476 |
@@ -364,10 +375,13 @@ Warudo (MediaPipe body and hands), XR Animator, mocopi and SlimeVR (body), Leap 
 
 - **The tracking doctor** says what is wrong in plain words and how to fix it; no tracker diagnoses itself.
 - **Everything recorded is re-trackable.** Raw inputs are kept, so a better tracker next year improves last year's
-  takes.
+  takes; any recorded clip already re-tracks today (`input.open_video`), faster than real time offline.
 - **One channel bus** that a webcam, an iPhone, audio, an AI and a hotkey all write to, with ownership per channel.
 - **Scored against the truth.** The kit renders its own character in known poses, so body and hand tracking are
   measured in degrees per bone (`track_body.rs`), not judged by eye.
+  Pixel parity closes the loop: the kit is rendered in a known pose and expression, tracked, the same character is
+  driven by what the tracker saw and re-rendered from the same camera, and the two frames are diffed pixel by pixel;
+  the tracker is done when that map is 0.
 
 **Not invented yet**
 
@@ -590,12 +604,14 @@ Warudo (live workflow).
 |---|---|---|---|---|
 | Shell | Workspaces (Build, Perform, Broadcast, Script, Theatre) with docked panels | Blender | ✓ | `register_workspace!`, `omuzaki-ui/src/shell` |
 | Viewport | The character rendered live in the viewport with orbit, pan, frame | Blender, VRoid | ✓ | `panels/viewport` |
-| Viewport | Move, rotate and scale gizmos for props, lights, cameras, guides and colliders | Blender, Unity | ✗ | **new** #2590 |
+| Viewport | Click a part to select it, Shift+click to add, the selection boxed as posed | Blender | ✓ | `panels/viewport/pick.rs` |
+| Viewport | A reference over the character (onion, wipe, exact difference map) with the live count of pixels that differ, the stop rule's count | none (new) | ✓ | `panels/viewport/matching.rs` on the `parity.*` targets |
+| Viewport | Move, rotate and scale gizmos for props, lights, cameras, guides and colliders | Blender, Unity | ◐ | accessories: `panels/viewport/gizmo.rs` writing `part.set_attach`, one undo step per drag; props, lights, cameras, guides and colliders are next, #2590 |
 | Panels | Outliner, schema inspector, library, history, agent panel | Blender, Figma | ✓ | `panels/` |
-| Panels | Command palette over every op | Blender F3, VS Code | ✓ | `shell/palette.rs` |
+| Panels | Command palette over every op | Blender F3, VS Code | ✓ | `shell/palette.rs`; a query of three or more words offers "Make a character from these words" |
 | Panels | History showing who did what with undo and redo, thumbnails (VC-01) | Figma | ✓ | `shell/history.rs` |
 | Live | Perform workspace with health, channels and stage | Warudo | ✓ | `omuzaki-ui/src/live` |
-| First run | First-run wizard to live in under 2 minutes (SE-01) | VSeeFace (fast), VTube Studio | ◐ | `panels/setup`; QG-03 #1467 |
+| First run | First-run wizard to live in under 2 minutes (SE-01) | VSeeFace (fast), VTube Studio | ◐ | `panels/setup` (sample, describe in words, import); QG-03 #1467 |
 | Save | Autosave and crash recovery (VC-08) | Blender | ✓ | `shell/saver.rs`, `omuzaki-app/src/recover.rs` |
 | Feel | Undo for every action, including an agent's | Figma | ✓ | `omuzaki-ops` executor |
 | Feel | Taste bar: a first-time user understands without a manual (QG-03 hand test) | VRoid | ◐ | hand-only check |
@@ -625,6 +641,7 @@ model.
 | Safety | Sessions, approvals, budgets, scopes, tokens | none | ✓ | `omuzaki-ops/src/sessions.rs`, `approvals.rs`, `budget.rs` |
 | Context | Resources and prompts; recipes | MCP spec | ✓ | `omuzaki-mcp/src/resources`, `prompts.rs`, `recipes` |
 | Seeing | Renders, contact sheets and comparisons returned to the agent | Figma MCP (screenshots) | ✓ | `render.preview`, `render.compare`, `measure.*` |
+| Create | A character from one sentence in one call: every choice reported with its words, what was set aside, a self-check, and the vocabulary to name facets directly | none | ✓ | `character.create_from_description`, `character.brief_vocabulary` |
 | Jobs | Long jobs with progress and cancel | none | ✓ | `omuzaki-ops/src/jobs`, `omuzaki-mcp/src/jobs.rs` |
 | CLI | `omuzaki run, undo, redo, mcp` | Blender CLI | ✓ | `omuzaki-cli` |
 | Script | Rhai script host with macros | Blender Python | ✓ | `omuzaki-script`, `script.*` ops |

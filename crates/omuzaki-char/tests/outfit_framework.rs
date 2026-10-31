@@ -148,7 +148,7 @@ fn a_tube_garment_passes_the_suite_on_every_template_and_shape() {
 #[test]
 fn a_patterned_and_square_cut_tube_passes_too() {
     let params = TubeParams {
-        common: GarmentCommon { ease: 0.006, fabric: plaid(), cloth: ClothSpec::default() },
+        common: GarmentCommon { ease: 0.006, fabric: plaid(), cloth: ClothSpec::default(), sheer: 0.0 },
         exponent: SOFT_SQUARE,
         // Wider and squarer: kept a little lower, clear of the arms (on soft-sd/broad they hang close by).
         span: [0.2, 0.44],

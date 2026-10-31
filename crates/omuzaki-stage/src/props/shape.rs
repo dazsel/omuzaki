@@ -185,6 +185,32 @@ impl Shape {
         self
     }
 
+    /// A flat, one-sided sheet from `origin` along `u` and `v` (it faces `u × v`), cut into `cols` by `rows` cells, each
+    /// vertex painted `paint(s, t)` at its place `(s, t)` in `0..=1` along `u` and `v`: a wall's plaster, a stain.
+    pub fn sheet(&mut self, origin: Vec3, u: Vec3, v: Vec3, (cols, rows): (u32, u32), paint: impl Fn(f32, f32) -> Colour) -> &mut Self {
+        let (cols, rows) = (cols.clamp(1, 512), rows.clamp(1, 512));
+        let base = self.base();
+        let normal = u.cross(v).normalize_or(Vec3::Z);
+        for j in 0..=rows {
+            for i in 0..=cols {
+                #[allow(clippy::cast_precision_loss)] // at most 512 cells a side
+                let (s, t) = (i as f32 / cols as f32, j as f32 / rows as f32);
+                let linear = paint(s, t).to_linear();
+                self.mesh.positions.push(origin + u * s + v * t);
+                self.mesh.normals.push(normal);
+                self.mesh.uvs.push(Vec2::new(s, 1.0 - t));
+                self.mesh.colours.push([linear.x, linear.y, linear.z, 1.0]);
+            }
+        }
+        let at = |i: u32, j: u32| base + j * (cols + 1) + i;
+        for j in 0..rows {
+            for i in 0..cols {
+                self.mesh.indices.extend([at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j), at(i + 1, j + 1), at(i, j + 1)]);
+            }
+        }
+        self
+    }
+
     /// A thin leaf: a lens-shaped blade of `length` and `width` along `at`'s +Y, bent forward by `curl` metres at its
     /// tip, with two sides so it reads from behind.
     pub fn leaf(&mut self, at: At, length: f32, width: f32, curl: f32, colour: Colour) -> &mut Self {

@@ -15,7 +15,7 @@ use omuzaki_render_api::{
 };
 use omuzaki_stage_api::resolve::{AnchorFrame, LightBuf};
 use omuzaki_stage_api::{
-    Anchor, Backdrop, Bars, CameraDef, CameraId, CastMember, EnvironmentSource, Focus, Framing, GroundKind,
+    Anchor, Backdrop, Bars, CameraDef, CameraId, CastMember, EnvironmentSource, Focus, Framing, GroundKind, Lighting,
     MAX_CAMERAS, MemberId, SceneDef, SceneError,
 };
 
@@ -159,6 +159,8 @@ pub struct ResolvedScene {
     pub outline_light: f32,
     /// How strongly lights behind the cast edge its silhouette (the lighting's `back_light_rim`).
     pub back_light_rim: f32,
+    /// How soft shadows are (the lighting's `shadow_softness`).
+    pub shadow_softness: f32,
     /// The ground under the cast.
     pub ground: ResolvedGround,
     /// Overrides every cast skin material's shadow floor while set.
@@ -270,6 +272,7 @@ impl ResolvedScene {
             occlusion: None,
             outline_light: 1.0,
             back_light_rim: 0.0,
+            shadow_softness: 0.0,
             ground: ResolvedGround::default(),
             skin_floor: None,
             fog: None,
@@ -378,9 +381,7 @@ impl ResolvedScene {
             backdrop: replace(&mut self.background, background),
             post: replace(&mut self.post, post) | replace(&mut self.occlusion, occlusion_of(def)),
             ground: replace(&mut self.ground, ground),
-            skin_floor: replace(&mut self.skin_floor, def.lighting.skin_floor)
-                | replace(&mut self.outline_light, def.lighting.outline_light)
-                | replace(&mut self.back_light_rim, def.lighting.back_light_rim),
+            skin_floor: self.replace_look(&def.lighting),
             fog: replace(&mut self.fog, fog),
             sky: self.environment.map(|e| e.source) != environment.map(|e| e.source),
             environment: replace(&mut self.environment, environment),
@@ -515,6 +516,16 @@ fn finite_or_error(lights: &LightBuf, post: &Post, ground: &ResolvedGround) -> R
 }
 
 /// Stores `new` in `slot`; true if that changed it.
+impl ResolvedScene {
+    /// Takes the lighting's skin floor, outline light, back rim and shadow softness; whether any changed.
+    fn replace_look(&mut self, l: &Lighting) -> bool {
+        replace(&mut self.skin_floor, l.skin_floor)
+            | replace(&mut self.outline_light, l.outline_light)
+            | replace(&mut self.back_light_rim, l.back_light_rim)
+            | replace(&mut self.shadow_softness, l.shadow_softness)
+    }
+}
+
 fn replace<T: PartialEq>(slot: &mut T, new: T) -> bool {
     let changed = *slot != new;
     if changed {

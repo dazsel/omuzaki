@@ -2611,6 +2611,10 @@ ui-panels-back = Back
 ui-panels-back-to-now = Back to now
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $reason (id, never translated): "hair-b"
+ui-panels-cant-place = This part can't be placed by hand: { $reason }
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-delete = Delete
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
@@ -2702,6 +2706,9 @@ ui-panels-grants-session-only = This session only
 ui-panels-grants-spent = { $spent } of
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-handles = Handles
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-inspector = Inspector
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
@@ -2722,7 +2729,51 @@ ui-panels-many-how = Select one part to edit its settings.
 ui-panels-many-selected = { $count } parts selected
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-match = Match
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $name (id, never translated): "hair-b"
+# $off (id, never translated): "hair-b"
+# $pixels (id, never translated): "hair-b"
+# $max (id, never translated): "hair-b"
+ui-panels-match-count = { $name }: { $off } of { $pixels } pixels differ, by up to { $max } levels
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $name (id, never translated): "hair-b"
+ui-panels-match-done = { $name }: every pixel matches
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-match-exact = Difference
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-match-look = Show
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $name (id, never translated): "hair-b"
+ui-panels-match-measuring = { $name }: measuring
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-match-none = No reference
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-match-onion = Onion
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $reason (id, never translated): "hair-b"
+ui-panels-match-unread = The reference can't be shown: { $reason }
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-match-wipe = Wipe
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-move = Move
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-move-down = Move down
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $part (id, never translated): "hair-b"
+ui-panels-move-part = Move { $part }
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-move-up = Move up
@@ -2851,6 +2902,20 @@ ui-panels-rollback-keep = Keep the change
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-rollback-retry = Try again
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-rotate = Rotate
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $part (id, never translated): "hair-b"
+ui-panels-rotate-part = Rotate { $part }
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-scale = Scale
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $part (id, never translated): "hair-b"
+ui-panels-scale-part = Scale { $part }
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-scope-broadcast = Go live and switch scenes: your audience sees what it does.
@@ -2993,6 +3058,27 @@ ui-panels-setup-continue = Continue
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-setup-customise = Customise the character
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-setup-describe-empty = Write a few words first
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-setup-describe-go = Make it
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-setup-describe-hint = A sleepy librarian with long silver hair, round glasses and a blue cardigan
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-setup-describe-label = Describe your character
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $name (id, never translated): "hair-b"
+# $count (id, never translated): "hair-b"
+ui-panels-setup-described = Made { $name } from { $count } choices
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $words (id, never translated): "hair-b"
+ui-panels-setup-described-unknown = Not used yet: { $words }
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-setup-done = You're set
@@ -3172,10 +3258,10 @@ ui-panels-setup-sample = Use the sample
 ui-panels-setup-sample-line = Ready now. It is already on the stage.
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
-ui-panels-setup-sheet = Create from a sheet or idea
+ui-panels-setup-sheet = Describe a character
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
-ui-panels-setup-sheet-line = Describe a character or bring a reference sheet, and build it step by step.
+ui-panels-setup-sheet-line = Say who they are in a sentence, and the kit builds them. Change anything after.
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-setup-skip = Skip setup
@@ -4507,6 +4593,9 @@ ui-shell-palette-copy-cli = Copy as CLI
 
 # The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
 ui-shell-palette-copy-mcp = Copy as MCP call
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-palette-describe = Make a character from these words
 
 # The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
 # $op (id, never translated): "hair-b"

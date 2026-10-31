@@ -21,6 +21,8 @@ omuzaki-live-api = { path = "../omuzaki-live-api" }
 omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
 # The `voice.*` ops.
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+# `voice.compare` writes its spectrogram overlay as a PNG.
+image.workspace = true
 # The performer's speech seam (`Voice`, `SpeechHandle`, `VoiceLead`) the TTS host implements.
 omuzaki-performer-api = { path = "../omuzaki-performer-api" }
 # The person's voice-command phrases and on/off are their own settings.

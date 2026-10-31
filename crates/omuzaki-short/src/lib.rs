@@ -27,6 +27,7 @@ pub mod def;
 pub mod draft;
 pub mod encode;
 pub mod error;
+pub mod insert;
 pub mod ops;
 pub mod perform;
 pub mod puppet;

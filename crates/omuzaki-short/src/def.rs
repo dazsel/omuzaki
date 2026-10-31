@@ -108,6 +108,54 @@ pub struct ShortDef {
     /// The lines, in order.
     #[serde(rename = "line", default)]
     pub lines: Vec<LineDef>,
+    /// Faces and shots placed at a moment of the short rather than on a line's words (`[[cue]]`), in any order: a
+    /// cut timed to a frame, or a face held through a pause. A cue wins over a line's face or shot that lands at the
+    /// same moment, and holds until the next change from either.
+    #[serde(rename = "cue", default, skip_serializing_if = "Vec::is_empty")]
+    pub cues: Vec<CueDef>,
+    /// Drawn cards that take over the frame for a moment (a cutaway to a cartoon reaction), each with its own backdrop
+    /// and shapes; captions still draw over them.
+    #[serde(rename = "insert", default, skip_serializing_if = "Vec::is_empty")]
+    pub inserts: Vec<crate::insert::InsertDef>,
+    /// How much the handheld camera drifts: 1 is a person holding a phone (the default), 0 a locked-off camera, up
+    /// to [`MAX_HANDHELD`]. A shot's `shake` comes on top.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub handheld: f32,
+}
+
+/// The most handheld drift a short may ask for.
+pub const MAX_HANDHELD: f32 = 4.0;
+
+#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if takes a reference")]
+fn is_one(v: &f32) -> bool {
+    (*v - 1.0).abs() < f32::EPSILON
+}
+
+/// A cue: a face, a shot or both, at a moment of the short.
+///
+/// ```toml
+/// [[cue]]
+/// at = 2.6
+/// face = "stare+gloom"
+/// camera = { zoom = 1.3, roll = -6.0 }
+/// ```
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CueDef {
+    /// When it lands, in seconds from the start of the short.
+    pub at: f32,
+    /// The face from then on: one expression or several, layered in order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub face: Option<FaceCue>,
+    /// Channels set on top of the face, by name (`angerVein = 1.0`). With no `face`, they go over the face in force.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub channels: BTreeMap<String, f32>,
+    /// The shot from then on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<ShotCue>,
+    /// How long a shot's push in takes, seconds; until the next cue or line that changes the shot when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold: Option<f32>,
 }
 
 /// The light and backdrop of a short, over its scene.
@@ -224,6 +272,50 @@ pub struct CaptionsDef {
     /// The most characters on a caption before a phrase is split.
     #[serde(default = "default_caption_chars")]
     pub max_chars: usize,
+    /// The look the letters start from: `punchy` (the default), `clean` or `outline`. The fields below change one
+    /// thing about it each.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub look: CaptionLook,
+    /// The weight of the type, from [`CAPTION_WEIGHT_MIN`] (light) to [`CAPTION_WEIGHT_MAX`] (extra bold).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<f32>,
+    /// The width of the dark outline, as a share of the letter height, `0..=0.3` (0 for none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outline: Option<f32>,
+    /// How dark the drop shadow is, `0..=1` (0 for none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<f32>,
+    /// Whether a caption pops in slightly larger and settles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pop: Option<bool>,
+    /// The letters' colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<Colour>,
+    /// The outline's colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<Colour>,
+}
+
+/// The lightest caption weight the bundled face draws.
+pub const CAPTION_WEIGHT_MIN: f32 = 200.0;
+/// The heaviest caption weight the bundled face draws.
+pub const CAPTION_WEIGHT_MAX: f32 = 800.0;
+
+/// A caption look to start from: each sets the weight, outline, shadow and pop together.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptionLook {
+    /// Extra bold white with a heavy dark outline and a drop shadow, popping in: the loud short-form caption.
+    #[default]
+    Punchy,
+    /// Bold white with a thin dark edge and a faint shadow, steady: the subtitle look of a talking-head clip.
+    Clean,
+    /// Semibold white with a dark outline and no shadow, steady.
+    Outline,
+}
+
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
 }
 
 const fn yes() -> bool {
@@ -244,7 +336,19 @@ const fn default_caption_chars() -> usize {
 
 impl Default for CaptionsDef {
     fn default() -> Self {
-        Self { enabled: true, y: default_caption_y(), size: default_caption_size(), max_chars: default_caption_chars() }
+        Self {
+            enabled: true,
+            y: default_caption_y(),
+            size: default_caption_size(),
+            max_chars: default_caption_chars(),
+            look: CaptionLook::default(),
+            weight: None,
+            outline: None,
+            shadow: None,
+            pop: None,
+            fill: None,
+            line: None,
+        }
     }
 }
 
@@ -454,6 +558,11 @@ pub struct ShotNumbers {
     /// Seconds to ease from the shot before; 0 cuts.
     #[serde(default)]
     pub ease: f32,
+    /// How wide the head (hair, ears and hats included) is across the frame, as a share of its width: 0.8 fills most
+    /// of the frame with it. The framing's own size when left out. `zoom`, `punch` and `push` scale it from there, so
+    /// a punch-in still lands. A 3D character's; a puppet keeps its framing's size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_width: Option<f32>,
 }
 
 const fn one() -> f32 {
@@ -484,6 +593,7 @@ impl Default for ShotNumbers {
             push: 0.0,
             shake: 0.0,
             ease: 0.0,
+            head_width: None,
         }
     }
 }
@@ -579,6 +689,9 @@ impl ShortDef {
             voice: VoiceDef::default(),
             captions: CaptionsDef::default(),
             lines: Vec::new(),
+            cues: Vec::new(),
+            inserts: Vec::new(),
+            handheld: 1.0,
         }
     }
 
@@ -638,6 +751,21 @@ impl ShortDef {
         if !(0.01..=0.2).contains(&self.captions.size) {
             return Err(ShortError::invalid("captions.size", format!("{} is outside 0.01 to 0.2", self.captions.size)));
         }
+        let captions = &self.captions;
+        for (field, value, range) in [
+            ("captions.weight", captions.weight, CAPTION_WEIGHT_MIN..=CAPTION_WEIGHT_MAX),
+            ("captions.outline", captions.outline, 0.0..=0.3),
+            ("captions.shadow", captions.shadow, 0.0..=1.0),
+        ] {
+            if let Some(value) = value
+                && !range.contains(&value)
+            {
+                return Err(ShortError::invalid(
+                    field,
+                    format!("{value} is outside {} to {}", range.start(), range.end()),
+                ));
+            }
+        }
         if !(4..=80).contains(&self.captions.max_chars) {
             return Err(ShortError::invalid(
                 "captions.max_chars",
@@ -652,6 +780,24 @@ impl ShortDef {
         }
         for (i, line) in self.lines.iter().enumerate() {
             check_line(i, line)?;
+        }
+        if !(0.0..=MAX_HANDHELD).contains(&self.handheld) {
+            return Err(ShortError::invalid("handheld", format!("{} is outside 0 to {MAX_HANDHELD}", self.handheld)));
+        }
+        if self.cues.len() > MAX_CUES {
+            return Err(ShortError::invalid("cue", format!("{} cues; at most {MAX_CUES}", self.cues.len())));
+        }
+        for (i, cue) in self.cues.iter().enumerate() {
+            check_cue(i, cue)?;
+        }
+        if self.inserts.len() > crate::insert::MAX_INSERTS {
+            return Err(ShortError::invalid(
+                "insert",
+                format!("{} inserts; at most {}", self.inserts.len(), crate::insert::MAX_INSERTS),
+            ));
+        }
+        for (i, insert) in self.inserts.iter().enumerate() {
+            crate::insert::check(i, insert, MAX_SECONDS)?;
         }
         Ok(())
     }
@@ -700,6 +846,40 @@ fn check_line(i: usize, line: &LineDef) -> Result<(), ShortError> {
     Ok(())
 }
 
+/// The most cues a short holds: one every frame of a minute at 30 fps would be 1800; a cut a second for ten minutes
+/// is 600.
+pub const MAX_CUES: usize = 2000;
+
+fn check_cue(i: usize, cue: &CueDef) -> Result<(), ShortError> {
+    let field = |name: &str| format!("cue[{i}].{name}");
+    if !(0.0..=MAX_SECONDS).contains(&cue.at) {
+        return Err(ShortError::invalid(field("at"), format!("{} s is outside 0 to {MAX_SECONDS}", cue.at)));
+    }
+    if cue.face.is_none() && cue.channels.is_empty() && cue.camera.is_none() {
+        return Err(ShortError::invalid(format!("cue[{i}]"), "a cue changes a face, channels or a shot"));
+    }
+    if let Some(face) = &cue.face
+        && face.ids().is_empty()
+    {
+        return Err(ShortError::invalid(field("face"), "name at least one expression"));
+    }
+    for (name, value) in &cue.channels {
+        if !value.is_finite() {
+            return Err(ShortError::invalid(field(&format!("channels.{name}")), "not a number"));
+        }
+    }
+    if let Some(hold) = cue.hold
+        && !(0.05..=60.0).contains(&hold)
+    {
+        return Err(ShortError::invalid(field("hold"), format!("{hold} s is outside 0.05 to 60")));
+    }
+    if let Some(camera) = &cue.camera {
+        let n = camera.numbers().map_err(|e| e.at(field("camera")))?;
+        check_shot(&field("camera"), &n)?;
+    }
+    Ok(())
+}
+
 fn check_shot(field: &str, n: &ShotNumbers) -> Result<(), ShortError> {
     let ranges = [
         ("yaw", n.yaw, -180.0, 180.0),
@@ -715,6 +895,11 @@ fn check_shot(field: &str, n: &ShotNumbers) -> Result<(), ShortError> {
         if !(lo..=hi).contains(&value) {
             return Err(ShortError::invalid(format!("{field}.{name}"), format!("{value} is outside {lo} to {hi}")));
         }
+    }
+    if let Some(w) = n.head_width
+        && !(0.05..=4.0).contains(&w)
+    {
+        return Err(ShortError::invalid(format!("{field}.head_width"), format!("{w} is outside 0.05 to 4")));
     }
     for (name, value) in [("punch", n.punch), ("push", n.push)] {
         if value != 0.0 && !(1.0..=3.0).contains(&value) {
@@ -787,6 +972,38 @@ text = "Second line."
         assert!(ShortDef::from_toml(&fast).unwrap_err().to_string().contains("voice.speed"));
         let unnamed = spoken.replace("kokoro-82m/af_heart", "af_heart");
         assert!(ShortDef::from_toml(&unnamed).unwrap_err().to_string().contains("voice.voice"));
+    }
+
+    #[test]
+    fn reads_cues_and_the_handheld_drift_and_checks_them() {
+        let text = format!(
+            "handheld = 0.0\n{SAMPLE}\n[[cue]]\nat = 1.5\nface = \"stare+gloom\"\ncamera = {{ zoom = 1.3, roll = -6.0 }}\n"
+        );
+        let def = ShortDef::from_toml(&text).unwrap();
+        assert!(def.handheld.abs() < f32::EPSILON);
+        assert_eq!(def.cues.len(), 1);
+        assert_eq!(def.cues[0].face.as_ref().unwrap().ids(), ["stare", "gloom"]);
+        assert_eq!(ShortDef::from_toml(&def.to_toml().unwrap()).unwrap(), def);
+        let empty = format!("{SAMPLE}\n[[cue]]\nat = 1.0\n");
+        assert!(ShortDef::from_toml(&empty).unwrap_err().to_string().contains("cue[0]"));
+        let wild = text.replace("roll = -6.0", "roll = -60.0");
+        assert!(ShortDef::from_toml(&wild).unwrap_err().to_string().contains("cue[0].camera.roll"));
+        let shaky = text.replace("handheld = 0.0", "handheld = 9.0");
+        assert!(ShortDef::from_toml(&shaky).unwrap_err().to_string().contains("handheld"));
+        assert!(!ShortDef::from_toml(SAMPLE).unwrap().to_toml().unwrap().contains("handheld"), "the default stays out");
+    }
+
+    #[test]
+    fn reads_a_caption_look_and_its_changes_and_checks_them() {
+        let text = format!("{SAMPLE}\n[captions]\nlook = \"clean\"\nweight = 650\nline = \"#202030\"\n");
+        let def = ShortDef::from_toml(&text).unwrap();
+        assert_eq!(def.captions.look, CaptionLook::Clean);
+        assert_eq!(def.captions.weight, Some(650.0));
+        assert_eq!(def.captions.line, Some(Colour::rgb(0x20, 0x20, 0x30)));
+        assert_eq!(ShortDef::from_toml(&def.to_toml().unwrap()).unwrap(), def);
+        let heavy = text.replace("weight = 650", "weight = 950");
+        assert!(ShortDef::from_toml(&heavy).unwrap_err().to_string().contains("captions.weight"));
+        assert!(!ShortDef::from_toml(SAMPLE).unwrap().to_toml().unwrap().contains("punchy"), "the default stays out");
     }
 
     #[test]

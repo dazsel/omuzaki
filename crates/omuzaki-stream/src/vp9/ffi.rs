@@ -44,6 +44,8 @@ pub const DL_GOOD_QUALITY: c_ulong = 1_000_000;
 pub const SET_CPUUSED: c_int = 13;
 /// `VP8E_SET_CQ_LEVEL`.
 pub const SET_CQ_LEVEL: c_int = 25;
+/// `VP9E_SET_LOSSLESS`.
+pub const SET_LOSSLESS: c_int = 32;
 /// `VP9E_SET_TILE_COLUMNS` (log2).
 pub const SET_TILE_COLUMNS: c_int = 33;
 /// `VP9E_SET_COLOR_SPACE`: the colour space written in the bitstream (the image's `cs` is not).

@@ -1,19 +1,20 @@
-//! Burned-in captions: a phrase in heavy white letters with a dark outline and a soft drop shadow, centred at the
-//! caption line, popping in slightly larger and settling over [`POP_S`], as short-form clips caption speech.
+//! Burned-in captions: a phrase in white letters with a dark outline and a soft drop shadow, centred at the caption
+//! line, as short-form clips caption speech. The look ([`CaptionLook`]) sets the weight, the outline, the shadow and
+//! whether a caption pops in slightly larger and settles over [`POP_S`]; the short's `[captions]` can change each.
 //!
-//! The face is Bricolage Grotesque (SIL OFL 1.1, `assets/fonts/`), a variable font drawn at weight [`WEIGHT`]. Glyphs
+//! The face is Bricolage Grotesque (SIL OFL 1.1, `assets/fonts/`), a variable font drawn at the look's weight. Glyphs
 //! are laid out on one line with the font's advances and kerning (no shaping: the captions are the script's own words)
 //! and shrunk to fit [`MAX_WIDTH_SHARE`] of the frame.
 
 use ab_glyph::{Font, FontRef, Glyph, PxScale, ScaleFont, VariableFont, point};
 
-use crate::def::CaptionStyle;
+use crate::def::{CaptionLook, CaptionStyle, CaptionsDef};
 use crate::error::ShortError;
 use crate::timeline::CaptionSpan;
 
 static FACE: &[u8] = include_bytes!("../assets/fonts/BricolageGrotesque.ttf");
 
-/// The weight the variable face is drawn at.
+/// The weight the variable face is drawn at by the punchy look.
 pub const WEIGHT: f32 = 800.0;
 /// The widest a caption may be, as a share of the frame width.
 pub const MAX_WIDTH_SHARE: f32 = 0.9;
@@ -21,16 +22,64 @@ pub const MAX_WIDTH_SHARE: f32 = 0.9;
 pub const POP_S: f32 = 0.09;
 /// How much larger a caption starts.
 const POP_SCALE: f32 = 1.12;
-/// The outline's width, as a share of the letter height.
-const OUTLINE_SHARE: f32 = 0.13;
 /// The shadow's drop, as a share of the letter height.
 const SHADOW_SHARE: f32 = 0.06;
 const FILL: [f32; 3] = [1.0, 1.0, 1.0];
 const LINE: [f32; 3] = [0.06, 0.05, 0.07];
 
+/// How a short's captions are drawn: its look with the short's changes applied.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ink {
+    /// The weight of the type.
+    pub weight: f32,
+    /// The outline's width, as a share of the letter height; 0 for none.
+    pub outline: f32,
+    /// The drop shadow's darkness, `0..=1`.
+    pub shadow: f32,
+    /// Whether a caption pops in.
+    pub pop: bool,
+    /// The letters' colour, `0..=1` sRGB.
+    pub fill: [f32; 3],
+    /// The outline's colour, `0..=1` sRGB.
+    pub line: [f32; 3],
+}
+
+impl Ink {
+    /// The ink of `look` as it stands.
+    pub fn of_look(look: CaptionLook) -> Self {
+        let (weight, outline, shadow, pop) = match look {
+            CaptionLook::Punchy => (WEIGHT, 0.13, 0.45, true),
+            CaptionLook::Clean => (700.0, 0.065, 0.25, false),
+            CaptionLook::Outline => (600.0, 0.1, 0.0, false),
+        };
+        Self { weight, outline, shadow, pop, fill: FILL, line: LINE }
+    }
+
+    /// The ink of `captions`: its look, with each field it sets in place of the look's.
+    pub fn of(captions: &CaptionsDef) -> Self {
+        let look = Self::of_look(captions.look);
+        let rgb = |c: omuzaki_render_api::Colour| [c.r, c.g, c.b].map(|v| f32::from(v) / 255.0);
+        Self {
+            weight: captions.weight.unwrap_or(look.weight),
+            outline: captions.outline.unwrap_or(look.outline),
+            shadow: captions.shadow.unwrap_or(look.shadow),
+            pop: captions.pop.unwrap_or(look.pop),
+            fill: captions.fill.map_or(look.fill, rgb),
+            line: captions.line.map_or(look.line, rgb),
+        }
+    }
+}
+
+impl Default for Ink {
+    fn default() -> Self {
+        Self::of_look(CaptionLook::default())
+    }
+}
+
 /// Draws captions onto frames.
 pub struct Captioner {
     font: FontRef<'static>,
+    ink: Ink,
 }
 
 impl std::fmt::Debug for Captioner {
@@ -45,22 +94,22 @@ struct Mask {
     height: usize,
     /// Fill coverage, `0..1`.
     fill: Vec<f32>,
-    /// Outline coverage (the fill grown by the outline width), `0..1`.
+    /// Outline coverage (the fill grown by the outline width; the fill itself when there is no outline), `0..1`.
     line: Vec<f32>,
     /// Shadow drop, pixels.
     drop: usize,
 }
 
 impl Captioner {
-    /// A captioner with the bundled face.
+    /// A captioner with the bundled face, drawing in `ink`.
     ///
     /// # Errors
     /// [`ShortError::Render`] if the bundled face doesn't load (a build fault).
-    pub fn new() -> Result<Self, ShortError> {
+    pub fn new(ink: Ink) -> Result<Self, ShortError> {
         let mut font =
             FontRef::try_from_slice(FACE).map_err(|e| ShortError::Render(format!("the caption face: {e}")))?;
-        font.set_variation(b"wght", WEIGHT);
-        Ok(Self { font })
+        font.set_variation(b"wght", ink.weight);
+        Ok(Self { font, ink })
     }
 
     /// The letter height of `style` on a frame `width` pixels wide, at caption size `size` (share of the width).
@@ -104,7 +153,8 @@ impl Captioner {
         let height = if natural > max_width { height * max_width / natural } else { height };
         let (glyphs, advance) = self.layout(text, height);
         let scaled = self.font.as_scaled(PxScale::from(height));
-        let line = (height * OUTLINE_SHARE).max(1.0);
+        let line = height * self.ink.outline;
+        let line = if line > 0.0 { line.max(1.0) } else { 0.0 };
         let pad = line.ceil() as usize + 2;
         let drop = (height * SHADOW_SHARE).round() as usize;
         let text_h = (scaled.ascent() - scaled.descent()).ceil() as usize;
@@ -124,7 +174,8 @@ impl Captioner {
                 });
             }
         }
-        Mask { width, height: rows, line: grow(&fill, width, rows, line), fill, drop }
+        let line = if line > 0.0 { grow(&fill, width, rows, line) } else { fill.clone() };
+        Mask { width, height: rows, line, fill, drop }
     }
 
     /// Draws `caption` onto `rgba` (straight alpha, `size` pixels) at `t` seconds, its middle at `y` (share of the
@@ -138,7 +189,7 @@ impl Captioner {
     )]
     pub fn draw(&self, rgba: &mut [u8], size: [u32; 2], caption: &CaptionSpan, t: f32, y: f32, letter: f32) {
         let [width, height] = size;
-        let pop = ((t - caption.start) / POP_S).clamp(0.0, 1.0);
+        let pop = if self.ink.pop { ((t - caption.start) / POP_S).clamp(0.0, 1.0) } else { 1.0 };
         let scale = POP_SCALE + (1.0 - POP_SCALE) * (1.0 - (1.0 - pop) * (1.0 - pop));
         let letter = Self::height(caption.style, width, letter) * scale;
         let mask = self.mask(&caption.text, letter, width as f32 * MAX_WIDTH_SHARE);
@@ -162,15 +213,15 @@ impl Captioner {
             for mx in 0..mask.width {
                 let Some(i) = at(mx, my) else { continue };
                 let shadow = my.checked_sub(mask.drop).map_or(0.0, |sy| mask.line[sy * mask.width + mx]);
-                if shadow > 0.0 {
-                    blend(rgba, i, [0.0, 0.0, 0.0], shadow * 0.45);
+                if shadow > 0.0 && self.ink.shadow > 0.0 {
+                    blend(rgba, i, [0.0, 0.0, 0.0], shadow * self.ink.shadow);
                 }
                 let k = my * mask.width + mx;
-                if mask.line[k] > 0.0 {
-                    blend(rgba, i, LINE, mask.line[k]);
+                if mask.line[k] > 0.0 && self.ink.outline > 0.0 {
+                    blend(rgba, i, self.ink.line, mask.line[k]);
                 }
                 if mask.fill[k] > 0.0 {
-                    blend(rgba, i, FILL, mask.fill[k]);
+                    blend(rgba, i, self.ink.fill, mask.fill[k]);
                 }
             }
         }
@@ -222,7 +273,7 @@ mod tests {
 
     #[test]
     fn a_caption_draws_white_letters_with_a_dark_line_inside_the_frame() {
-        let captioner = Captioner::new().unwrap();
+        let captioner = Captioner::new(Ink::default()).unwrap();
         let (w, h) = (360u32, 640u32);
         let mut rgba = vec![0u8; (w * h * 4) as usize];
         for px in rgba.chunks_mut(4) {
@@ -241,8 +292,50 @@ mod tests {
 
     #[test]
     fn a_long_caption_shrinks_to_fit_the_frame() {
-        let captioner = Captioner::new().unwrap();
+        let captioner = Captioner::new(Ink::default()).unwrap();
         let mask = captioner.mask("A VERY LONG SHOUTED CAPTION THAT GOES ON", 80.0, 300.0);
         assert!(mask.width <= 300 + 40, "{}", mask.width);
+    }
+
+    #[test]
+    fn a_look_changes_the_weight_the_outline_and_the_pop() {
+        let draw = |ink: Ink, t: f32| {
+            let captioner = Captioner::new(ink).unwrap();
+            let (w, h) = (360u32, 640u32);
+            let mut rgba = vec![0u8; (w * h * 4) as usize];
+            for px in rgba.chunks_mut(4) {
+                px.copy_from_slice(&[90, 120, 200, 255]);
+            }
+            let caption =
+                CaptionSpan { start: 0.0, end: 1.0, text: "Hello there!".into(), style: CaptionStyle::Normal };
+            captioner.draw(&mut rgba, [w, h], &caption, t, 0.5, 0.06);
+            let white = rgba.chunks(4).filter(|p| p[0] > 245 && p[1] > 245 && p[2] > 245).count();
+            let dark = rgba.chunks(4).filter(|p| p[0] < 30 && p[1] < 30 && p[2] < 30).count();
+            (white, dark)
+        };
+        let (punchy_white, punchy_dark) = draw(Ink::of_look(CaptionLook::Punchy), 0.5);
+        let (clean_white, clean_dark) = draw(Ink::of_look(CaptionLook::Clean), 0.5);
+        assert!(clean_white < punchy_white, "lighter type: {clean_white} vs {punchy_white}");
+        assert!(clean_dark * 2 < punchy_dark, "a thin edge: {clean_dark} vs {punchy_dark}");
+        let bare = Ink { outline: 0.0, shadow: 0.0, ..Ink::of_look(CaptionLook::Clean) };
+        assert_eq!(draw(bare, 0.5).1, 0, "no outline and no shadow leave nothing dark");
+        // A steady look draws the same at its first frame as later; the punchy one starts larger.
+        assert_eq!(draw(Ink::of_look(CaptionLook::Clean), 0.0), draw(Ink::of_look(CaptionLook::Clean), 0.5));
+        assert!(draw(Ink::of_look(CaptionLook::Punchy), 0.0).0 > punchy_white, "it pops in larger");
+    }
+
+    #[test]
+    fn a_short_changes_one_thing_about_its_look() {
+        let captions = CaptionsDef {
+            look: CaptionLook::Clean,
+            outline: Some(0.0),
+            fill: Some(omuzaki_render_api::Colour::rgb(255, 240, 200)),
+            ..CaptionsDef::default()
+        };
+        let ink = Ink::of(&captions);
+        assert!((ink.weight - 700.0).abs() < 1e-6, "the look's weight stays");
+        assert!(ink.outline.abs() < 1e-6);
+        assert!((ink.fill[2] - 200.0 / 255.0).abs() < 1e-6);
+        assert_eq!(Ink::of(&CaptionsDef::default()), Ink::default());
     }
 }

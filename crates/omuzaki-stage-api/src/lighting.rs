@@ -450,6 +450,10 @@ pub struct Lighting {
     /// default) lights with the toon ramp alone.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub back_light_rim: f32,
+    /// How soft shadows are, `0..=1`: 0 (the default) is the shadow maps' tight edge, 1 an overcast or window-light
+    /// penumbra of about 8 cm.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub shadow_softness: f32,
     /// Overrides every cast skin material's shadow floor while set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skin_floor: Option<f32>,
@@ -487,6 +491,7 @@ impl Default for Lighting {
             background: Colour::BLACK,
             outline_light: 1.0,
             back_light_rim: 0.0,
+            shadow_softness: 0.0,
             skin_floor: None,
             ambient: Ambient::default(),
             bloom: None,

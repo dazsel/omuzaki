@@ -746,6 +746,10 @@ pub struct Scene {
     /// above 0 each light also adds its colour on the lit surfaces' fresnel edge, scaled by how far behind the surface
     /// it sits as the camera sees it. 0 (the default) leaves the shading as it was.
     pub back_light_rim: f32,
+    /// How soft shadows are, `0..=1` (#2666): 0 (the default) is the shadow maps' own tight edge; above it every
+    /// shadow's edge widens into a penumbra, to about 8 cm at 1, for daylight through a window or an overcast sky.
+    /// [`Scene::clear`] leaves it as it is.
+    pub shadow_softness: f32,
     /// Lines where the depth jumps, if wanted (#2319). [`Scene::clear`] leaves them as they are.
     pub edges: Option<EdgeLines>,
     /// Ambient occlusion and contact shadows, if wanted (#2507). [`Scene::clear`] leaves them as they are.
@@ -770,6 +774,7 @@ impl Scene {
             environment: None,
             outline_light: 1.0,
             back_light_rim: 0.0,
+            shadow_softness: 0.0,
             edges: None,
             occlusion: None,
             post: Post::default(),
@@ -780,9 +785,9 @@ impl Scene {
     /// for the next frame.
     ///
     /// Everything else stays as it was: `camera`, `frame`, `background`, `fog`, `environment`, `outline_light`,
-    /// `back_light_rim`, `edges`, `occlusion` and `post`. Lights do go, so a scene that wants the same lights every
-    /// frame must push them again after each `clear`. To keep lights across frames, leave them out of the reset and
-    /// clear only what changes:
+    /// `back_light_rim`, `shadow_softness`, `edges`, `occlusion` and `post`. Lights do go, so a scene that wants the
+    /// same lights every frame must push them again after each `clear`. To keep lights across frames, leave them out of
+    /// the reset and clear only what changes:
     ///
     /// ```ignore
     /// scene.instances.clear();
@@ -821,6 +826,9 @@ impl Scene {
         }
         if !(self.back_light_rim >= 0.0 && self.back_light_rim.is_finite()) {
             return Err(RenderError::invalid("scene", "back_light_rim must be a finite number >= 0"));
+        }
+        if !(0.0..=1.0).contains(&self.shadow_softness) {
+            return Err(RenderError::invalid("scene", "shadow_softness must be in 0..=1"));
         }
         self.lights.iter().try_for_each(Light::validate)?;
         self.fog.iter().try_for_each(Fog::validate)?;

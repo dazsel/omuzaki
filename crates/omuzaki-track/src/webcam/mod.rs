@@ -512,6 +512,10 @@ impl Tracker for WebcamTracker {
     fn body_status(&self) -> BodyStatus {
         self.body.status()
     }
+
+    fn add_video(&mut self, path: &std::path::Path) -> Result<CameraInfo, TrackError> {
+        self.camera.add_file(path)
+    }
 }
 
 impl Drop for WebcamTracker {

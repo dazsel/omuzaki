@@ -113,6 +113,34 @@ fn the_vp9_pair_round_trips_colour_and_alpha() {
 }
 
 #[test]
+fn quality_level_0_is_lossless() {
+    if !libvpx() {
+        return;
+    }
+    let settings = EncoderSettings {
+        width: SIZE.x,
+        height: SIZE.y,
+        fps: (30, 1),
+        cq_level: 0,
+        cpu_used: 3,
+        threads: 2,
+        studio_range: true,
+        realtime: false,
+    };
+    let mut encoder = Vp9Encoder::new(settings).unwrap();
+    let mut decoder = Vp9Decoder::new().unwrap();
+    let (mut colour, mut alpha, mut got) = (I420::default(), I420::default(), I420::default());
+    for n in 0..4 {
+        let rgba = straight(&picture(n * 3));
+        assert!(rgba_to_i420(&rgba, SIZE.x, SIZE.y, &mut colour, &mut alpha));
+        let mut packets = Vec::new();
+        encoder.encode(&colour, i64::from(n), n == 0, &mut packets).unwrap();
+        decoder.decode(&packets[0].data, &mut got).unwrap();
+        assert_eq!((got.y == colour.y, got.u == colour.u, got.v == colour.v), (true, true, true), "frame {n}");
+    }
+}
+
+#[test]
 fn a_webm_take_keeps_its_alpha_and_its_timeline() {
     if !libvpx() {
         return;
