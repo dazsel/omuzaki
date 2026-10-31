@@ -60,6 +60,9 @@ pub enum HornShape {
     Oni,
     /// A swept-back beam with one fork.
     Antler,
+    /// An arch: up from the root, over and back down behind it, an inverted U (with `flat`, the arched fins of a
+    /// headset or a mecha's ear covers).
+    Arch,
 }
 
 /// Horns on the skull.
@@ -197,6 +200,13 @@ fn guide(p: &HornsParams, root: DVec3, out: DVec3, s: f64, rows: usize) -> Vec<D
             drop: 0.0,
         },
         HornShape::Antler => Turn { start: out, about: About::TowardBack, degrees: 25.0, ease: 1.0, drop: 0.0 },
+        HornShape::Arch => Turn {
+            start: (out * 0.25 + DVec3::Y + front * 0.35).normalize_or_zero(),
+            about: About::TowardBack,
+            degrees: 200.0,
+            ease: 1.0,
+            drop: 0.0,
+        },
         HornShape::Ram => Turn {
             start: (lat * 0.8 + back * 0.4 + DVec3::Y * 0.35).normalize_or_zero(),
             about: About::Vertical,
