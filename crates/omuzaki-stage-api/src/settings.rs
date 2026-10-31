@@ -277,6 +277,49 @@ impl Default for Timing {
     }
 }
 
+/// Squash and stretch (#animated motion): the cast's bodies stretch along the up axis as they move up or down and
+/// squash when that motion stops or turns (a landing, the push of a hop), keeping their volume, as a cartoon body
+/// does. The weight is a damped spring on the hips: it lags behind a sudden move and bounces after it, so an impact
+/// squashes and then settles. Drawn only: the rig, the physics and the face see the body as posed. Off (both gains 0)
+/// by default.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Squash {
+    /// How much the body stretches for each metre per second it moves up or down: `0.1` stretches it 10% at 1 m/s.
+    /// `0..=1`.
+    #[schemars(range(min = 0.0, max = 1.0))]
+    pub stretch: f32,
+    /// How much it squashes for each metre per second of the weight's lag behind the hips (a sudden stop): the
+    /// landing and the push-off. `0..=1`.
+    #[schemars(range(min = 0.0, max = 1.0))]
+    pub squash: f32,
+    /// How fast the weight bounces back after an impact, hertz. `0.5..=12`.
+    #[schemars(range(min = 0.5, max = 12.0))]
+    pub bounce_hz: f32,
+    /// How quickly the bounce dies: `1` settles with no wobble, `0.1` jiggles. `0.05..=1`.
+    #[schemars(range(min = 0.05, max = 1.0))]
+    pub damping: f32,
+    /// The most the height changes either way, as a share of it. `0..=0.6`.
+    #[schemars(range(min = 0.0, max = 0.6))]
+    pub limit: f32,
+}
+
+impl Squash {
+    /// No squash and stretch.
+    pub const OFF: Self = Self { stretch: 0.0, squash: 0.0, bounce_hz: 3.0, damping: 0.35, limit: 0.25 };
+
+    /// True when nothing deforms.
+    pub fn is_off(&self) -> bool {
+        (self.stretch <= 0.0 && self.squash <= 0.0) || self.limit <= 0.0
+    }
+}
+
+impl Default for Squash {
+    fn default() -> Self {
+        Self::OFF
+    }
+}
+
 /// `scene.toml`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -301,6 +344,9 @@ pub struct SceneSettings {
     /// How the cast moves in time: every frame, or held on twos or threes.
     #[serde(default, skip_serializing_if = "Timing::is_smooth")]
     pub timing: Timing,
+    /// Squash and stretch of the cast's bodies.
+    #[serde(default, skip_serializing_if = "Squash::is_off")]
+    pub squash: Squash,
 }
 
 impl SceneSettings {
@@ -314,6 +360,7 @@ impl SceneSettings {
             ground: Ground::default(),
             post: PostDef::default(),
             timing: Timing::SMOOTH,
+            squash: Squash::OFF,
         }
     }
 }
@@ -350,6 +397,16 @@ mod tests {
             Backdrop::Environment {}
         );
         assert!(serde_json::from_value::<Backdrop>(json!({"kind": "lighting", "colour": "#fff"})).is_err());
+    }
+
+    #[test]
+    fn squash_is_left_out_while_off_and_reads_with_defaults() {
+        let s = SceneSettings::named("Main");
+        assert!(serde_json::to_value(&s).unwrap().get("squash").is_none());
+        let on: SceneSettings = serde_json::from_value(json!({"name": "Main", "squash": {"stretch": 0.1}})).unwrap();
+        assert_eq!(on.squash, Squash { stretch: 0.1, ..Squash::OFF });
+        assert!(!on.squash.is_off());
+        assert!(serde_json::from_value::<Squash>(json!({"wobble": 1})).is_err());
     }
 
     #[test]

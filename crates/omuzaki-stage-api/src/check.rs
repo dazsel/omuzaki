@@ -117,6 +117,12 @@ impl SceneDef {
         for (path, hz) in [("scene.timing.body_hz", s.timing.body_hz), ("scene.timing.face_hz", s.timing.face_hz)] {
             within(path, hz, 0.0, 60.0)?;
         }
+        let q = &s.squash;
+        within("scene.squash.stretch", q.stretch, 0.0, 1.0)?;
+        within("scene.squash.squash", q.squash, 0.0, 1.0)?;
+        within("scene.squash.bounce_hz", q.bounce_hz, 0.5, 12.0)?;
+        within("scene.squash.damping", q.damping, 0.05, 1.0)?;
+        within("scene.squash.limit", q.limit, 0.0, 0.6)?;
         if let Some(stylize) = &s.post.stylize
             && let Err(omuzaki_render_api::RenderError::Invalid { reason, .. }) = stylize.validate()
         {

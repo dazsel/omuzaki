@@ -1,9 +1,9 @@
-//! What a scene looks like around its cast (design D2, D8): `stage.set_backdrop`, `stage.set_ground` and
-//! `stage.set_post`.
+//! What a scene looks like around its cast (design D2, D8): `stage.set_backdrop`, `stage.set_ground`,
+//! `stage.set_post`, and how its cast moves as drawn animation: `stage.set_timing` and `stage.set_squash`.
 
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use omuzaki_render_api::{BackdropFit, Colour, Stylize, Tonemap};
-use omuzaki_stage_api::{Backdrop, Bars, DepthOfFieldDef, GradeDef, GroundKind, OcclusionDef, SceneId};
+use omuzaki_stage_api::{Backdrop, Bars, DepthOfFieldDef, GradeDef, GroundKind, OcclusionDef, SceneId, Squash};
 use omuzaki_store_api::{ContentHash, Store};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -429,3 +429,121 @@ impl Op for SetTiming {
 }
 
 register_op!(SetTiming);
+
+/// Sets how a scene's cast squashes and stretches: bodies stretch as they move up or down and squash when that motion
+/// stops or turns, keeping their volume. Drawn only: the rig, the physics and the face see the body as posed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [{"preset": "cartoon"}, {"preset": "subtle"}, {"preset": "rubber", "limit": 0.3}, {"stretch": 0.08, "squash": 0.15}, {"preset": "off"}],
+    "x-omuzaki-fixture" = "scenes"
+))]
+pub struct SetSquash {
+    /// The scene; the one the project opens in when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<SceneId>,
+    /// A starting point by name: `off`, `subtle` (a lively body that still reads as solid), `cartoon` (the classic
+    /// bounce) or `rubber` (a soft, jiggling one). The fields below adjust it; left out, they adjust the scene's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<SquashPreset>,
+    /// Stretch for each metre per second the body moves up or down, `0..=1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stretch: Option<f32>,
+    /// Squash for each metre per second of the weight's lag at a sudden stop or start, `0..=1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub squash: Option<f32>,
+    /// How fast the weight bounces back after an impact, hertz, `0.5..=12`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounce_hz: Option<f32>,
+    /// How quickly the bounce dies, `0.05..=1` (1 settles with no wobble).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub damping: Option<f32>,
+    /// The most the height changes either way, as a share of it, `0..=0.6`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<f32>,
+}
+
+/// A named squash and stretch.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SquashPreset {
+    /// None: the body as posed.
+    Off,
+    /// A lively body that still reads as solid.
+    Subtle,
+    /// The classic cartoon bounce.
+    Cartoon,
+    /// A soft body that jiggles after every landing.
+    Rubber,
+}
+
+impl SquashPreset {
+    /// The settings it names.
+    pub fn settings(self) -> Squash {
+        match self {
+            Self::Off => Squash::OFF,
+            Self::Subtle => Squash { stretch: 0.04, squash: 0.08, bounce_hz: 3.5, damping: 0.55, limit: 0.1 },
+            Self::Cartoon => Squash { stretch: 0.1, squash: 0.2, bounce_hz: 3.0, damping: 0.35, limit: 0.25 },
+            Self::Rubber => Squash { stretch: 0.16, squash: 0.35, bounce_hz: 4.5, damping: 0.18, limit: 0.4 },
+        }
+    }
+}
+
+/// `value` if given, checked to `lo..=hi`.
+fn squash_field(field: &str, value: Option<f32>, lo: f32, hi: f32) -> Result<Option<f32>, OpError> {
+    match value {
+        Some(v) if !(v.is_finite() && (lo..=hi).contains(&v)) => {
+            Err(OpError::invalid(field, format!("{v} is outside {lo} to {hi}")))
+        }
+        _ => Ok(value),
+    }
+}
+
+impl Op for SetSquash {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "stage.set_squash",
+            summary: "Give a scene's cast squash and stretch: bodies stretch as they rise or fall and squash on a landing \
+                      or a push-off, keeping their volume, then bounce back. A preset (`subtle`, `cartoon`, `rubber`) or \
+                      the gains by hand; `off` draws bodies as posed.",
+            kind: OpKind::Edit,
+            scope: Scope::EditScene,
+            undo: Undo::Auto,
+        }
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let stretch = squash_field("stretch", self.stretch, 0.0, 1.0)?;
+        let squash = squash_field("squash", self.squash, 0.0, 1.0)?;
+        let bounce = squash_field("bounce_hz", self.bounce_hz, 0.5, 12.0)?;
+        let damping = squash_field("damping", self.damping, 0.05, 1.0)?;
+        let limit = squash_field("limit", self.limit, 0.0, 0.6)?;
+        let mut edit = SceneEdit::open(ctx.doc, self.scene.as_ref())?;
+        let q = &mut edit.def.scene.squash;
+        if let Some(preset) = self.preset {
+            *q = preset.settings();
+        }
+        q.stretch = stretch.unwrap_or(q.stretch);
+        q.squash = squash.unwrap_or(q.squash);
+        q.bounce_hz = bounce.unwrap_or(q.bounce_hz);
+        q.damping = damping.unwrap_or(q.damping);
+        q.limit = limit.unwrap_or(q.limit);
+        let now = *q;
+        let id = edit.id.clone();
+        let plan = edit.finish(ctx, serde_json::Value::Null)?;
+        let output = json!({
+            "scene": id.as_str(),
+            "stretch": now.stretch,
+            "squash": now.squash,
+            "bounce_hz": now.bounce_hz,
+            "damping": now.damping,
+            "limit": now.limit,
+            "on": !now.is_off(),
+            "changed": changed(&plan.patch),
+        });
+        Ok(Plan { output: Some(output), ..plan })
+    }
+}
+
+register_op!(SetSquash);
+

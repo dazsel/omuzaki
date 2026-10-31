@@ -16,7 +16,7 @@ use omuzaki_render_api::{
 use omuzaki_stage_api::resolve::{AnchorFrame, LightBuf};
 use omuzaki_stage_api::{
     Anchor, Backdrop, Bars, CameraDef, CameraId, CastMember, EnvironmentSource, Focus, Framing, GroundKind,
-    MAX_CAMERAS, MemberId, SceneDef, SceneError, Timing,
+    MAX_CAMERAS, MemberId, SceneDef, SceneError, Squash, Timing,
 };
 
 use super::backdrop::ImagePixels;
@@ -125,6 +125,8 @@ pub struct Changes {
     pub prop_builds: bool,
     /// The animated timing changed.
     pub timing: bool,
+    /// The squash and stretch changed.
+    pub squash: bool,
 }
 
 impl Changes {
@@ -184,6 +186,8 @@ pub struct ResolvedScene {
     pub props: ResolvedProps,
     /// How the cast moves in time: every frame, or held on twos or threes (`scene.timing`).
     pub timing: Timing,
+    /// How the cast's bodies squash and stretch (`scene.squash`).
+    pub squash: Squash,
 }
 
 /// An image backdrop as the renderer takes it: the picture's asset, how it fits, and the bars' gradient.
@@ -284,6 +288,7 @@ impl ResolvedScene {
             effects: SceneEffects::default(),
             props: ResolvedProps::default(),
             timing: Timing::SMOOTH,
+            squash: Squash::OFF,
         }
     }
 
@@ -403,6 +408,7 @@ impl ResolvedScene {
             props: prop_changes.placements,
             prop_builds: prop_changes.builds,
             timing: replace(&mut self.timing, def.scene.timing),
+            squash: replace(&mut self.squash, def.scene.squash),
             ..Changes::default()
         };
         changes.backdrop |= replace(&mut self.backdrop_image, backdrop_image);
