@@ -2,8 +2,8 @@
 #
 # An adult with realistic-stylized proportions (not a big head). Round, open eyes with a lot of white around a small
 # iris, a soft crease and fine strand lashes; a sculpted nose read through shade and a light on its bridge; a wide
-# mouth with full, tinted lips; contoured cheeks; strong, shaped brows. Soft, volumetric shading halfway between cel
-# and physical, so the face turns like a lit sculpture rather than a drawing.
+# mouth with full, tinted lips; contoured cheeks; strong, shaped brows. Shaded with the `animated-feature` look: soft wrapped light,
+# warm skin terminators and lit-edge rims, so the face turns like a lit sculpture rather than a drawing.
 id = "animated-feature"
 name = "Animated feature"
 family = "western"
@@ -12,8 +12,7 @@ origin = "Design target: the stylized-character conventions of feature animation
 templates = ["tall"]
 profile = "egg-oval"
 hair = "half-up"
-look = "soft-sd"
-shading = 0.55
+look = "animated-feature"
 
 [face.layout]
 eye_width = 0.047

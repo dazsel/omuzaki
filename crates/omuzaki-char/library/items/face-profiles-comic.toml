@@ -5,7 +5,7 @@ section = "face-profiles"
 kind = "setting"
 target = "character"
 title = "Comic"
-summary = "Inked comic book: narrow eyes under a heavy crease, thick brows, a long shadowed nose, a wide mouth and a heroic build, in hard cel."
+summary = "Inked comic book: narrow eyes under a heavy crease, thick brows, a long shadowed nose, a wide mouth and a heroic build, in halftone-printed cel."
 tags = ["face", "style", "western", "comic"]
 origin = "the kit's comic art style (#2696)"
 compat = { kinds = ["humanoid"], requires = ["head", "body"] }

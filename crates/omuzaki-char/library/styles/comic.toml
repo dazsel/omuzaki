@@ -2,16 +2,17 @@
 #
 # Smaller, narrower eyes with a small iris and a pin of light, a heavy inked crease and lower lid, no strand lashes;
 # thick, shaped brows; a long drawn nose with a strong shadow; a wide mouth; cheekbones hatched in. A heroic build:
-# broad shoulders, muscle, long legs. Hard cel shading with heavy lines.
+# broad shoulders, muscle, long legs. Shaded with the `comic-halftone` look: hard cel, heavy
+# ink lines, halftone dots and hatching in the shade, on paper.
 id = "comic"
 name = "Comic"
 family = "western"
-summary = "Inked comic book: narrow eyes under a heavy crease, thick brows, a long shadowed nose, a wide mouth and a heroic build, in hard cel."
+summary = "Inked comic book: narrow eyes under a heavy crease, thick brows, a long shadowed nose, a wide mouth and a heroic build, in halftone-printed cel."
 origin = "Design target: the Western comic-book drawing conventions (smaller eyes with a heavy crease and lower lid, anatomical noses and mouths drawn with shadow shapes, heroic proportions near eight heads), tuned by eye on the kit's own renders; no traced likeness."
 templates = ["tall"]
 profile = "egg-oval"
 hair = "messy-short"
-look = "cel-flat"
+look = "comic-halftone"
 shading = 1.0
 
 [face.layout]
