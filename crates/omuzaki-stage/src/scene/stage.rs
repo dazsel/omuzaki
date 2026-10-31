@@ -462,6 +462,7 @@ impl SceneStage {
             if self.resolved.backdrop_image.is_some() {
                 self.resolved.load_backdrop(store)?;
             }
+            self.resolved.props.load_images(store);
         }
         if let AnyStage::Kit(lead) = self.cast.lead() {
             // A kit character's look sets part of the frame too, as in every render of it.

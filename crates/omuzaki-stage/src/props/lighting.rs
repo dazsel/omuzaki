@@ -162,6 +162,9 @@ pub struct WindowParams {
     /// Pleated sheer curtains drawn behind the glass, in this colour: the daylight glows through their folds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sheers: Option<Colour>,
+    /// A transom over the window holding a starburst of crystal shards round a gem, the shards this colour.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub starburst: Option<Colour>,
 }
 
 /// How a window's glass is divided.
@@ -195,6 +198,7 @@ impl Default for WindowParams {
             arch: false,
             fanlight: false,
             sheers: None,
+            starburst: None,
         }
     }
 }
@@ -205,7 +209,8 @@ impl PropKind for Window {
     const SUMMARY: &'static str = "A window to set on a wall, facing +Z, from y = 0 at its sill: a frame with panes \
                                    over a daylit sky, curtains if a colour is given, and daylight shining in as a spot \
                                    light (colour, intensity, elevation). Upright, leaded diamond or lozenge glazing, square \
-                                   or round-headed with a fanlight, and pleated sheers behind the glass.";
+                                   or round-headed with a fanlight, pleated sheers behind the glass, and a crystal \
+                                   starburst in a transom above.";
 
     fn validate(p: &WindowParams) -> Result<(), String> {
         between("width", p.width, 0.4, 3.0)?;
@@ -273,6 +278,9 @@ impl PropKind for Window {
         let mut glass = glass(p, h);
         if p.glazing == Glazing::Lozenge {
             lozenges(&mut frame, &mut glass, p, (h, thin, depth));
+        }
+        if let Some(crystal) = p.starburst {
+            starburst(&mut frame, &mut glass, p, (h, bar, depth), crystal);
         }
         let mut glass_material = glowing(Colour::WHITE);
         glass_material.vertex_colours = true;
@@ -343,6 +351,48 @@ fn round_head(frame: &mut Shape, width: f32, h: f32, (bar, depth): (f32, f32), c
         })
         .collect();
     frame.tube(&points, bar * 0.35, 8, colour);
+}
+
+/// A transom over the window (glass `h` tall): framed glass graded like the sky, and in front of it a starburst of
+/// faceted crystal shards, long and short in turn, round a gem.
+fn starburst(frame: &mut Shape, glass: &mut Shape, p: &WindowParams, (h, bar, depth): (f32, f32, f32), crystal: Colour) {
+    let w = p.width * 0.5;
+    let (y0, tall) = (h + bar, p.width * 0.42);
+    let y1 = y0 + tall;
+    frame.block(Vec3::new(-w - bar, y0, 0.0), Vec3::new(-w, y1, depth), p.frame);
+    frame.block(Vec3::new(w, y0, 0.0), Vec3::new(w + bar, y1, depth), p.frame);
+    frame.block(Vec3::new(-w - bar * 1.4, y1, 0.0), Vec3::new(w + bar * 1.4, y1 + bar * 1.2, depth + 0.02), p.frame);
+    let rows = 4_u8;
+    for r in 0..rows {
+        let t = f32::from(r) / f32::from(rows);
+        let colour = mix(p.sky, darker(p.sky, 0.25), t);
+        glass.block(Vec3::new(-w, y0 + tall * t, 0.008), Vec3::new(w, y0 + tall * (t + 1.0 / f32::from(rows)), 0.016), colour);
+    }
+    let centre = Vec3::new(0.0, y0 + tall * 0.5, depth * 0.6);
+    let (rx, ry) = (w * 0.94, tall * 0.47);
+    let rays = 16_u8;
+    for k in 0..rays {
+        let a = std::f32::consts::TAU * f32::from(k) / f32::from(rays);
+        let (sin, cos) = a.sin_cos();
+        // The longest a ray can be and stay in the transom, then long and short in turn.
+        let reach = (rx / sin.abs().max(1e-3)).min(ry / cos.abs().max(1e-3));
+        let length = reach * if k % 2 == 0 { 1.0 } else { 0.58 };
+        let base = tall * if k % 2 == 0 { 0.07 } else { 0.05 };
+        let shade = mix(crystal, Colour::WHITE, if k % 4 == 0 { 0.45 } else { 0.1 });
+        glass.frustum(At::pos(centre).roll(-a.to_degrees()), base, 0.0, length, 4, (true, false), shade);
+    }
+    glass.ellipsoid(At::pos(centre + Vec3::Z * 0.01), Vec3::new(tall * 0.1, tall * 0.13, tall * 0.05), 3, 6, mix(crystal, Colour::WHITE, 0.6));
+    frame.tube(
+        &(0..=24_u8)
+            .map(|i| {
+                let a = std::f32::consts::TAU * f32::from(i) / 24.0;
+                centre + Vec3::new(a.sin() * tall * 0.12, a.cos() * tall * 0.15, 0.0)
+            })
+            .collect::<Vec<_>>(),
+        bar * 0.18,
+        6,
+        p.frame,
+    );
 }
 
 /// The glass of window `p` (`h` tall): a thin slab behind the bars, the sky graded from the top to the horizon.
@@ -458,6 +508,24 @@ mod tests {
         assert!(hi(&b) <= hi(&a) + 1e-4, "nothing pokes above the head");
         let folds: std::collections::BTreeSet<u32> = b.parts[1].mesh.colours.iter().map(|c| c[0].to_bits()).collect();
         assert!(folds.len() > 8, "the folds alternate light and shade");
+    }
+
+    #[test]
+    fn a_starburst_crowns_the_window_inside_its_transom() {
+        let plain = WindowParams { curtains: None, ..WindowParams::default() };
+        let crowned = WindowParams { starburst: Some(Colour::hex(0x00cf_e4ff)), ..plain.clone() };
+        let (a, b) = (Window::build(&plain).expect("builds"), Window::build(&crowned).expect("builds"));
+        let extent = |o: &PropOutput| {
+            o.parts.iter().flat_map(|q| q.mesh.positions.iter()).fold((f32::NEG_INFINITY, f32::NEG_INFINITY), |(x, y), q| (x.max(q.x.abs()), y.max(q.y)))
+        };
+        let ((ax, ay), (bx, by)) = (extent(&a), extent(&b));
+        assert!(by > ay + crowned.width * 0.4, "the transom stands over the window: {ay} -> {by}");
+        assert!(bx <= ax + 1e-4, "no shard pokes out past the frame's sides: {ax} -> {bx}");
+        let shards = b.parts[1].mesh.positions.iter().filter(|q| q.y > crowned.height + 0.05).count();
+        assert!(shards > 16 * 4, "sixteen faceted shards and a gem in the transom, {shards} vertices");
+        for part in &b.parts {
+            part.mesh.validate().expect("valid mesh");
+        }
     }
 
     #[test]

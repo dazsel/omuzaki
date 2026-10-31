@@ -155,6 +155,7 @@ fn the_kinds_are_listed_from_the_registry_with_their_params() {
         "room",
         "rug",
         "shelf",
+        "staircase",
         "urn",
         "window",
     ] {

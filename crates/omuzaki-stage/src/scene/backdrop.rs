@@ -39,11 +39,16 @@ impl ImagePixels {
     /// # Errors
     /// [`StageError::Scene`] at `scene.backdrop.asset` for bytes that aren't a PNG or a JPEG.
     pub fn decode(asset: ContentHash, bytes: &[u8]) -> Result<Self, StageError> {
+        Self::decode_for("scene.backdrop.asset", asset, bytes)
+    }
+
+    /// [`decode`](Self::decode) for an image named at `path` in the scene.
+    ///
+    /// # Errors
+    /// [`StageError::Scene`] at `path` for bytes that aren't a PNG or a JPEG.
+    pub fn decode_for(path: &str, asset: ContentHash, bytes: &[u8]) -> Result<Self, StageError> {
         let image = image::load_from_memory(bytes).map_err(|e| StageError::Scene {
-            source: SceneError::new(
-                "scene.backdrop.asset",
-                format!("the image {asset} can't be read as a PNG or JPEG: {e}"),
-            ),
+            source: SceneError::new(path, format!("the image {asset} can't be read as a PNG or JPEG: {e}")),
         })?;
         let rgba = image.into_rgba8();
         let size = UVec2::new(rgba.width(), rgba.height());
@@ -58,6 +63,18 @@ impl ImagePixels {
     /// Width and height in pixels.
     pub fn size(&self) -> UVec2 {
         self.size
+    }
+
+    /// Width over height.
+    pub fn aspect(&self) -> f32 {
+        #[allow(clippy::cast_precision_loss, reason = "image sides are far below 2^24")]
+        let aspect = self.size.x as f32 / self.size.y.max(1) as f32;
+        aspect
+    }
+
+    /// The pixels: straight sRGB RGBA8, rows top to bottom.
+    pub(crate) fn rgba(&self) -> &[u8] {
+        &self.rgba
     }
 }
 
