@@ -324,6 +324,39 @@ fn a_sided_dial_moves_one_side_only() {
     assert!(left > 2e-3 && right < 1e-5, "left {left}, right {right}");
 }
 
+/// The reach along x of the body vertices that `dial` at `value` moves more than a millimetre, and its largest move
+/// within 4 cm of the middle (the torso).
+fn reach_of(base_def: &CharacterDef, base: &BuiltCharacter, dial: &str, value: f64) -> (f32, f32) {
+    let mut def = base_def.clone();
+    let id = design_library().unwrap().dials.iter().find(|d| d.id.as_str() == dial).unwrap().id.clone();
+    def.design.dials.insert(id, DialSetting::new(value));
+    let built = build(&def);
+    let (pa, pb) = (positions(base, "body"), positions(&built, "body"));
+    let (mut lo, mut hi, mut middle) = (f32::MAX, f32::MIN, 0.0f32);
+    for (p, q) in pa.iter().zip(&pb) {
+        let d = p.distance(*q);
+        if p.x.abs() < 0.04 {
+            middle = middle.max(d);
+        }
+        if d > 1e-3 && p.x > 0.0 {
+            lo = lo.min(p.x);
+            hi = hi.max(p.x);
+        }
+    }
+    (hi - lo, middle)
+}
+
+#[test]
+fn a_girth_dial_holds_along_the_whole_limb() {
+    omuzaki_char::link();
+    let base_def = bare(kit("standard"));
+    let base = build(&base_def);
+    let (bump, _) = reach_of(&base_def, &base, "upper_arm_size", -1.0);
+    let (girth, middle) = reach_of(&base_def, &base, "arm_girth", -1.0);
+    assert!(girth > 1.7 * bump, "the girth dial reaches {girth} m along the arm, the upper-arm dial {bump} m");
+    assert!(middle < 1e-4, "the torso moves {middle} m");
+}
+
 /// The head point of a stroke made at bind-space `p` on `def`'s head.
 fn head_point(def: &CharacterDef, p: Vec3) -> PartPoint {
     locate(&CharId::new("kit").unwrap(), def, &PartId::new("head").unwrap(), p, &BuildOptions::default(), &services())

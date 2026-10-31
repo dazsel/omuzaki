@@ -349,3 +349,23 @@ fn render_the_skirt_over_tights_when_asked() {
         render::render(&stack, render::Framing::parts(&stack, &["skirt", "legwear"]), template, directory.as_ref());
     }
 }
+
+/// A skirt without a plaid stays without one through a project file (TOML has no null) and through JSON; left out,
+/// the plaid is the default one.
+#[test]
+fn a_skirt_without_a_plaid_keeps_none_through_a_project_file() {
+    let plain = SkirtParams { plaid: None, ..SkirtParams::default() };
+    let text = toml::to_string(&plain).expect("writes");
+    assert!(text.contains("plaid = false"), "{text}");
+    let back: SkirtParams = toml::from_str(&text).expect("reads");
+    assert_eq!(back.plaid, None);
+    let json = serde_json::to_value(&plain).expect("writes");
+    assert_eq!(json["plaid"], serde_json::json!(false));
+    let from_null: SkirtParams = serde_json::from_value(serde_json::json!({ "plaid": null })).expect("reads");
+    assert_eq!(from_null.plaid, None);
+    let default: SkirtParams = serde_json::from_value(serde_json::json!({})).expect("reads");
+    assert_eq!(default.plaid, SkirtParams::default().plaid);
+    let plaid = SkirtParams::default();
+    let back: SkirtParams = toml::from_str(&toml::to_string(&plaid).expect("writes")).expect("reads");
+    assert_eq!(back.plaid, plaid.plaid);
+}

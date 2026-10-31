@@ -287,6 +287,11 @@ pub enum LayerKind {
         #[serde(default)]
         seed: u32,
     },
+    /// A cut-out: the part's surface is taken away wherever the layer's masks (times its opacity) are over a half, and
+    /// its edge is cut cleanly along their plane and ellipsoid masks. A keyhole or a waist cut-out in a bodysuit, side
+    /// tails cut from a skirt, a sleeve ending at a slant: whatever was under the part shows through. A part with a
+    /// runtime (cloth, or hair drawn by a program) addresses its vertices by index and is never cut.
+    Cut,
 }
 
 /// Where a layer shows.
@@ -480,7 +485,7 @@ impl MaterialLayer {
         };
         unit("opacity", self.opacity)?;
         match &self.kind {
-            LayerKind::Tint { .. } | LayerKind::Polish { .. } => {}
+            LayerKind::Tint { .. } | LayerKind::Polish { .. } | LayerKind::Cut => {}
             LayerKind::Detail { scale, contrast, .. } => {
                 unit("kind/contrast", *contrast)?;
                 positive("kind/scale", *scale)?;
@@ -805,6 +810,7 @@ fn apply_layer(r: &Resolved<'_>, v: &Vertex, frames: &Frames, colour: &mut Vec3,
             *colour *= 1.0 - 0.55 * w * amount * fold;
             skin[1] = skin[1].min(1.0 - w * amount * fold);
         }
+        LayerKind::Cut => {}
         LayerKind::Spots { density, amount, seed, .. } => {
             let c = cells(v.p * *density, *seed);
             let spot = 1.0 - smoothstep(0.10, 0.22, c);
@@ -944,9 +950,11 @@ pub fn apply(
                 | LayerKind::Polish { colour: c }
                 | LayerKind::Decal { colour: c, .. }
                 | LayerKind::Spots { colour: c, .. } => colour(c)?,
-                LayerKind::Paint { .. } | LayerKind::Wet { .. } | LayerKind::Grey { .. } | LayerKind::Cavity { .. } => {
-                    Vec3::ONE
-                }
+                LayerKind::Paint { .. }
+                | LayerKind::Wet { .. }
+                | LayerKind::Grey { .. }
+                | LayerKind::Cavity { .. }
+                | LayerKind::Cut => Vec3::ONE,
             };
             let dabs = match &layer.kind {
                 LayerKind::Paint { dabs } => dabs.iter().map(|d| colour(&d.colour)).collect::<Result<_, _>>()?,
@@ -979,6 +987,7 @@ pub fn apply(
         let skin = skin_classes.contains(&mi);
         if may_cut && !program && !mesh.dynamic {
             cut_along_edges(mesh, &resolved, &frames);
+            cut_out(mesh, &resolved, &frames, category);
         }
         let vertices = vertices(mesh, frames.part.as_ref(), category, uses_curvature || skin);
         let mut colours = if mesh.geometry.colours.is_empty() {
@@ -1031,6 +1040,42 @@ pub fn apply(
 /// Where a layer's plane and ellipsoid masks are cut into the mesh: the levels of their product near either end of
 /// their soft edge, so the triangles between hold just the edge.
 const EDGE_LEVELS: [f32; 2] = [0.02, 0.98];
+/// Where a cut-out's masks are cut into the mesh, and above which its surface is taken away.
+const CUT_LEVEL: f32 = 0.5;
+
+/// Takes away the triangles of `mesh` that each [`LayerKind::Cut`] layer covers: those whose middle (every attribute
+/// a mask reads averaged over its corners) the layer covers over [`CUT_LEVEL`], its opacity times its masks. Read at
+/// the middle, not the corners, so a triangle with two corners on a cut's edge falls on the side its third is on. The
+/// vertices stay, unused, so nothing addressed by index moves.
+fn cut_out(mesh: &mut PartMesh, resolved: &[Resolved<'_>], frames: &Frames, category: PartCategory) {
+    let cuts: Vec<&MaterialLayer> =
+        resolved.iter().map(|r| r.layer).filter(|l| matches!(l.kind, LayerKind::Cut)).collect();
+    if cuts.is_empty() {
+        return;
+    }
+    let vertices = vertices(mesh, frames.part.as_ref(), category, false);
+    let middle = |t: &[u32; 3]| {
+        let [a, b, c] = t.map(|i| &vertices[i as usize]);
+        let mut m = Membership::default();
+        for (k, slot) in m.0.iter_mut().enumerate() {
+            *slot = (a.m.0[k] + b.m.0[k] + c.m.0[k]) / 3.0;
+        }
+        Vertex {
+            p: (a.p + b.p + c.p) / 3.0,
+            n: (a.n + b.n + c.n).normalize_or(a.n),
+            m,
+            height: (a.height + b.height + c.height) / 3.0,
+            curvature: (a.curvature + b.curvature + c.curvature) / 3.0,
+            distal: (a.distal + b.distal + c.distal) / 3.0,
+        }
+    };
+    let covered = |v: &Vertex| {
+        cuts.iter().any(|l| l.opacity * l.masks.iter().map(|m| mask_value(m, v, frames)).product::<f32>() > CUT_LEVEL)
+    };
+    let kept: Vec<u32> =
+        mesh.geometry.indices.as_chunks::<3>().0.iter().filter(|t| !covered(&middle(t))).flatten().copied().collect();
+    mesh.geometry.indices = kept;
+}
 
 /// Cuts `mesh` along the soft edges of each layer's plane and ellipsoid masks ([`super::refine`]), so an edge is drawn
 /// as crisp as its softness rather than as wide as the triangles it crosses.
@@ -1051,6 +1096,12 @@ fn cut_along_edges(mesh: &mut PartMesh, resolved: &[Resolved<'_>], frames: &Fram
         };
         for level in EDGE_LEVELS {
             super::refine::split_along(&mut mesh.geometry, &field, level);
+        }
+        // A cut-out's edge, where its surface is taken away. The other masks (a region, a height) are read from
+        // vertex data a point between vertices doesn't have, so a cut follows its plane and ellipsoid masks exactly.
+        if matches!(r.layer.kind, LayerKind::Cut) {
+            let opacity = r.layer.opacity;
+            super::refine::split_along(&mut mesh.geometry, &|p| opacity * field(p), CUT_LEVEL);
         }
     }
 }
@@ -1332,6 +1383,95 @@ mod tests {
                 .check()
                 .is_err()
         );
+    }
+
+    /// A flat grid over the unit square in the xy plane, `n` cells a side, as a part mesh.
+    fn sheet(n: u32) -> PartMesh {
+        let mut positions = Vec::new();
+        for j in 0..=n {
+            for i in 0..=n {
+                #[allow(clippy::cast_precision_loss)]
+                positions.push(Vec3::new(i as f32 / n as f32 * 2.0 - 1.0, j as f32 / n as f32 * 2.0 - 1.0, 0.0));
+            }
+        }
+        let mut indices = Vec::new();
+        for j in 0..n {
+            for i in 0..n {
+                let (a, b, c, d) =
+                    (j * (n + 1) + i, j * (n + 1) + i + 1, (j + 1) * (n + 1) + i + 1, (j + 1) * (n + 1) + i);
+                indices.extend([a, b, c, a, c, d]);
+            }
+        }
+        let count = positions.len();
+        PartMesh {
+            name: "sheet".to_owned(),
+            geometry: omuzaki_core::mesh::MeshData {
+                normals: vec![Vec3::Z; count],
+                positions,
+                indices,
+                ..omuzaki_core::mesh::MeshData::default()
+            },
+            joint_bones: Vec::new(),
+            material: crate::MaterialName::new("cloth").unwrap(),
+            casts_shadow: true,
+            render_order: 0,
+            dynamic: false,
+        }
+    }
+
+    fn area(m: &PartMesh) -> f32 {
+        let g = &m.geometry;
+        g.indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|t| {
+                let [a, b, c] = [t[0], t[1], t[2]].map(|i| g.positions[i as usize]);
+                0.5 * (b - a).cross(c - a).length()
+            })
+            .sum()
+    }
+
+    #[test]
+    fn a_cut_takes_the_surface_away_along_its_masks_edge() {
+        let part = PartFrame { min: Vec3::splat(-1.0), max: Vec3::splat(1.0) };
+        let frames = Frames { body: None, head: None, part: Some(part) };
+        // Everything right of x = 0.3 (a plane through the box point at x = 0.3, pointing +x) is cut away.
+        let at = PartPoint::Box { at: [0.65, 0.5, 0.5] };
+        let layer = MaterialLayer {
+            masks: vec![Mask { mask: MaskKind::plane(at, [1.0, 0.0, 0.0], 0.0, false), invert: false }],
+            ..MaterialLayer::new(LayerId::new("slit").unwrap(), LayerKind::Cut)
+        };
+        assert!(layer.check().is_ok());
+        let resolved = [Resolved { layer: &layer, colour: Vec3::ONE, dabs: Vec::new() }];
+        let mut mesh = sheet(7);
+        assert!((area(&mesh) - 4.0).abs() < 1e-4);
+        cut_along_edges(&mut mesh, &resolved, &frames);
+        cut_out(&mut mesh, &resolved, &frames, PartCategory::Garment);
+        mesh.geometry.validate().unwrap();
+        // The square is 2 wide: 1.3 of it is left, to within the mesh's cut (exact along the plane).
+        assert!((area(&mesh) - 2.0 * 1.3).abs() < 1e-3, "area {}", area(&mesh));
+        let used: std::collections::BTreeSet<u32> = mesh.geometry.indices.iter().copied().collect();
+        assert!(used.iter().all(|&i| mesh.geometry.positions[i as usize].x <= 0.3 + 1e-4), "nothing right of the edge");
+        // At no opacity nothing is cut; a mirrored cut takes both sides.
+        let faint = MaterialLayer { opacity: 0.0, ..layer.clone() };
+        let mut whole = sheet(7);
+        cut_out(
+            &mut whole,
+            &[Resolved { layer: &faint, colour: Vec3::ONE, dabs: Vec::new() }],
+            &frames,
+            PartCategory::Garment,
+        );
+        assert!((area(&whole) - 4.0).abs() < 1e-4);
+        let both = MaterialLayer {
+            masks: vec![Mask { mask: MaskKind::plane(at, [1.0, 0.0, 0.0], 0.0, true), invert: false }],
+            ..layer
+        };
+        let resolved = [Resolved { layer: &both, colour: Vec3::ONE, dabs: Vec::new() }];
+        let mut mesh = sheet(7);
+        cut_along_edges(&mut mesh, &resolved, &frames);
+        cut_out(&mut mesh, &resolved, &frames, PartCategory::Garment);
+        assert!((area(&mesh) - 2.0 * 0.6).abs() < 1e-3, "a strip 0.6 wide is left: {}", area(&mesh));
     }
 
     #[test]

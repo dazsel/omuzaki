@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use super::rigid::{Detail, kit_error};
 use super::shells::{Shells, Slot, closed_tube, head_frames, recolour};
 use crate::kit::KitError;
-use crate::kit::curve::{clamp, fraction, lerp};
+use crate::kit::curve::{clamp, fraction, lerp, sstep};
 use crate::kit::sweep::{Sweep, frames};
 
 /// How far into the head the horn's base starts, as a fraction of the base radius: enough that the rim of the base is
@@ -60,6 +60,9 @@ pub enum HornShape {
     Oni,
     /// A swept-back beam with one fork.
     Antler,
+    /// An arch: up from the root, over and back down behind it, an inverted U (with `flat`, the arched fins of a
+    /// headset or a mecha's ear covers).
+    Arch,
 }
 
 /// Horns on the skull.
@@ -168,6 +171,9 @@ struct Turn {
     ease: f64,
     /// How much the tangent sinks per unit of `t`, so a spiral descends.
     drop: f64,
+    /// Turn in the middle only, over a smooth step from a fifth of the way to four fifths, so the ends run straight (an
+    /// arch's legs); `ease` is then unused.
+    middle: bool,
 }
 
 /// The axis of a [`Turn`].
@@ -188,21 +194,35 @@ fn guide(p: &HornsParams, root: DVec3, out: DVec3, s: f64, rows: usize) -> Vec<D
     let front = DVec3::Z;
     let sign = if s == 0.0 { 1.0 } else { s };
     let turn = match p.shape {
-        HornShape::SweptBack => Turn { start: out, about: About::TowardBack, degrees: 50.0, ease: 1.2, drop: 0.0 },
+        HornShape::SweptBack => {
+            Turn { start: out, about: About::TowardBack, degrees: 50.0, ease: 1.2, drop: 0.0, middle: false }
+        }
         HornShape::Oni => Turn {
             start: (out * 0.4 + DVec3::Y * 0.9).normalize_or_zero(),
             about: About::TowardFront,
             degrees: 25.0,
             ease: 1.0,
             drop: 0.0,
+            middle: false,
         },
-        HornShape::Antler => Turn { start: out, about: About::TowardBack, degrees: 25.0, ease: 1.0, drop: 0.0 },
+        HornShape::Antler => {
+            Turn { start: out, about: About::TowardBack, degrees: 25.0, ease: 1.0, drop: 0.0, middle: false }
+        }
+        HornShape::Arch => Turn {
+            start: (out * 0.25 + DVec3::Y + front * 0.35).normalize_or_zero(),
+            about: About::TowardBack,
+            degrees: 190.0,
+            ease: 1.0,
+            drop: 0.0,
+            middle: true,
+        },
         HornShape::Ram => Turn {
             start: (lat * 0.8 + back * 0.4 + DVec3::Y * 0.35).normalize_or_zero(),
             about: About::Vertical,
             degrees: 260.0,
             ease: 0.9,
             drop: 0.3,
+            middle: false,
         },
     };
     // Tilt back (about the axis across the head), then spread outward (about the front axis).
@@ -223,7 +243,8 @@ fn guide(p: &HornsParams, root: DVec3, out: DVec3, s: f64, rows: usize) -> Vec<D
     let mut points = vec![root];
     for k in 0..rows {
         let t = (usize_f(k) + 0.5) / usize_f(rows);
-        let angle = handed * (turn.degrees * p.curl).to_radians() * t.powf(turn.ease);
+        let turned = if turn.middle { sstep(0.2, 0.8, t) } else { t.powf(turn.ease) };
+        let angle = handed * (turn.degrees * p.curl).to_radians() * turned;
         let mut d = DQuat::from_axis_angle(axis, angle) * d0;
         d.y -= turn.drop * t;
         point += d.normalize_or_zero() * ds;

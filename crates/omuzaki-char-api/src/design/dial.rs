@@ -52,6 +52,11 @@ fn is_zero(v: &f64) -> bool {
     *v == 0.0
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)] // as `is_zero`
+fn is_zero_f32(v: &f32) -> bool {
+    *v == 0.0
+}
+
 impl DialSetting {
     /// The same value on both sides.
     pub fn new(value: f64) -> Self {
@@ -161,6 +166,11 @@ pub enum DialEffect {
         t: f32,
         /// How far either side of `t` it reaches, as a fraction of the region.
         span: f32,
+        /// How far either side of `t` it holds at full strength before falling off over `span`, as a fraction of the
+        /// region: `0` (the default) is a bump, and a hold of `0.5` at `t = 0.5` reaches the whole region (a limb's
+        /// girth from root to end).
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        hold: f32,
         /// Its shape round the section.
         lobes: Lobes,
         /// The radius's change at value `+1`, as a fraction (0.15: 15% fuller).
@@ -284,7 +294,7 @@ impl DialDef {
         }
         for effect in &self.effects {
             match effect {
-                DialEffect::Body { region, t, span, amount, .. } => {
+                DialEffect::Body { region, t, span, hold, amount, .. } => {
                     if self.sided && region.side() < 0.0 {
                         return Err(format!("dial `{id}`: a sided dial is written for the left side"));
                     }
@@ -293,6 +303,9 @@ impl DialDef {
                     }
                     if !(0.0..=1.0).contains(t) || span.is_nan() || *span <= 0.0 || !amount.is_finite() {
                         return Err(format!("dial `{id}`: t must be 0 to 1, span positive and amount finite"));
+                    }
+                    if !(0.0..=1.0).contains(hold) {
+                        return Err(format!("dial `{id}`: hold must be 0 to 1"));
                     }
                 }
                 DialEffect::Head { landmark, dir, reach, amount, .. } => {
@@ -327,6 +340,7 @@ mod tests {
                 region: RegionGroup::LegLeft,
                 t: 0.7,
                 span: 0.2,
+                hold: 0.0,
                 lobes: Lobes { back: 1.0, ..Lobes::default() },
                 amount: 0.15,
                 amount_down: None,
@@ -361,6 +375,7 @@ mod tests {
             region: RegionGroup::LegRight,
             t: 0.5,
             span: 0.2,
+            hold: 0.0,
             lobes: Lobes::default(),
             amount: 0.1,
             amount_down: None,
