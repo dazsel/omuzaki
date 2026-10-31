@@ -9,7 +9,7 @@ use omuzaki_char_api::{BuiltCharacter, BuiltMesh, MaterialName, MaterialSpec, Pa
 use omuzaki_face_api::{DEFAULT_PX_PER_M, FaceLayerId, FaceLayerSpec};
 use omuzaki_core::mesh::MeshData;
 use omuzaki_render_api::{
-    Material, MaterialId, MeshId, MeshOptions, MeshUsage, RenderError, Renderer, Shading, TextureId,
+    Material, MaterialId, MeshId, MeshOptions, MeshUsage, RenderError, Renderer, Shading, SurfaceFx, TextureId,
 };
 
 use self::release::{discard_textures, release_in_order};
@@ -74,6 +74,8 @@ pub struct StageCharacter {
     /// The scene's override of every skin material's shadow floor (design scenes D3), `None` for each material's own.
     /// Every material sent to the renderer carries it, so a palette change or a variant swap keeps it.
     skin_floor: Option<f32>,
+    /// The surface fx every material not spared is drawn with, and the spared names' substrings.
+    surface_fx: Option<(SurfaceFx, Vec<String>)>,
     /// Set by `release`; checked by `Drop` (see `release.rs`).
     pub(crate) released: bool,
 }
@@ -138,6 +140,7 @@ impl StageCharacter {
             face_layers: BTreeMap::new(),
             face_px_per_m,
             skin_floor: None,
+            surface_fx: None,
             released: false,
         }
     }
@@ -177,7 +180,7 @@ impl StageCharacter {
         }
         self.face_layers = create_face_layers(renderer, built, self.face_px_per_m)?;
         for (name, spec) in &built.materials {
-            let material = self.floored(material_of(name, spec, &self.textures, &self.face_layers)?);
+            let material = self.floored(name, material_of(name, spec, &self.textures, &self.face_layers)?);
             let id = renderer
                 .create_material(&material)
                 .map_err(|source| StageError::render(format!("material '{name}'"), source))?;
@@ -222,14 +225,50 @@ impl StageCharacter {
         self.materials.get(name).copied()
     }
 
-    /// `material` with the scene's skin floor, if the stage has one and the material is toon skin.
-    fn floored(&self, mut material: Material) -> Material {
+    /// `material` (called `name`) with the scene's skin floor, if the stage has one and the material is toon skin, and
+    /// with the stage's surface fx unless `name` is spared.
+    fn floored(&self, name: &MaterialName, mut material: Material) -> Material {
         if let (Some(floor), Shading::Toon(toon)) = (self.skin_floor, &mut material.shading)
             && let Some(skin) = toon.skin.as_mut()
         {
             skin.floor = floor;
         }
+        if let Some((fx, spared)) = &self.surface_fx
+            && !spared.iter().any(|part| name.as_str().contains(part.as_str()))
+        {
+            material.fx = Some(*fx);
+        }
         material
+    }
+
+    /// The surface fx the materials are drawn with, and the material-name substrings it spares.
+    pub fn surface_fx(&self) -> Option<(&SurfaceFx, &[String])> {
+        self.surface_fx.as_ref().map(|(fx, spared)| (fx, spared.as_slice()))
+    }
+
+    /// Draws every material of `built` whose name contains none of `spare` with the surface fx `fx` (`None`: each
+    /// material's own), updated in place: a burn, a dissolve or a petrify running over the whole character. If the
+    /// renderer refuses an update, the earlier ones are put back. Returns how many were updated.
+    ///
+    /// # Errors
+    /// As [`update_materials`](Self::update_materials).
+    pub(crate) fn set_surface_fx(
+        &mut self,
+        renderer: &mut dyn Renderer,
+        built: &BuiltCharacter,
+        fx: Option<SurfaceFx>,
+        spare: &[String],
+    ) -> Result<u32, StageError> {
+        let names: Vec<MaterialName> = built.materials.keys().cloned().collect();
+        let previous = std::mem::replace(&mut self.surface_fx, fx.map(|fx| (fx, spare.to_vec())));
+        let updated = self.update_materials(renderer, built, &names);
+        if updated.is_err() {
+            self.surface_fx = previous;
+            if let Err(error) = self.update_materials(renderer, built, &names) {
+                tracing::warn!(%error, "putting the surface fx back after a refused update failed too");
+            }
+        }
+        updated
     }
 
     /// The scene's skin floor every skin material is drawn with, `None` for each material's own.
@@ -285,7 +324,7 @@ impl StageCharacter {
         for name in names {
             let unknown = || StageError::NotUploaded { what: "material", name: name.as_str().to_owned() };
             let (Some(spec), Some(id)) = (built.materials.get(name), self.material(name)) else { return Err(unknown()) };
-            updates.push((id, name, self.floored(material_of(name, spec, &self.textures, &self.face_layers)?)));
+            updates.push((id, name, self.floored(name, material_of(name, spec, &self.textures, &self.face_layers)?)));
         }
         for (id, name, material) in &updates {
             renderer
@@ -384,8 +423,8 @@ impl StageCharacter {
                 Ok(Repoint {
                     name: name.clone(),
                     id,
-                    old: self.floored(material_of(name, spec, &self.textures, &self.face_layers)?),
-                    new: self.floored(material_of(name, spec, &self.textures, layers)?),
+                    old: self.floored(name, material_of(name, spec, &self.textures, &self.face_layers)?),
+                    new: self.floored(name, material_of(name, spec, &self.textures, layers)?),
                 })
             })
             .collect()
@@ -635,9 +674,9 @@ impl StageCharacter {
         let mut materials = BTreeMap::new();
         let mut updates = Vec::new();
         for (name, spec) in &new.materials {
-            let wanted = self.floored(material_of(name, spec, &textures, &layers)?);
+            let wanted = self.floored(name, material_of(name, spec, &textures, &layers)?);
             let id = if let Some((id, was)) = self.materials.get(name).copied().zip(old.materials.get(name)) {
-                let before = self.floored(material_of(name, was, &self.textures, &self.face_layers)?);
+                let before = self.floored(name, material_of(name, was, &self.textures, &self.face_layers)?);
                 if before != wanted {
                     updates.push(Repoint { name: name.clone(), id, old: before, new: wanted });
                 }

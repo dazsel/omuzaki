@@ -1,0 +1,59 @@
+# Animated feature: the stylized look of 3D feature animation and of game cinematics made in real-time engines. Soft,
+# wrapped light with tinted shade (never grey), a warm band where light turns on skin, a broad soft highlight on cloth,
+# the key light catching the lit edge, fine lines, and a lens: a light vignette, a whisper of fringe and a gentle
+# teal-and-orange split.
+id = "animated-feature"
+name = "Animated feature"
+summary = "Soft wrapped light, warm skin terminators, broad soft highlights, lit-edge rims, fine lines and a filmic lens."
+origin = """Design target: the stylized feature-animation look (soft wrapped diffuse, a saturated terminator on skin, \
+lit-edge rims, lens vignette), recreated with Omuzaki's own `stylized` program and stylize pass. Numbers are this \
+preset's own, chosen by rendering the kit character."""
+
+[params.all]
+outline_width_scale = 0.35
+outline_colour = "material"
+
+[params.skin.program]
+name = "stylized"
+
+[params.skin.program.params]
+wrap = { float = 0.65 }
+shade-2-strength = { float = 0.0 }
+terminator = { colour = "#ffb4a0" }
+terminator-width = { float = 0.3 }
+rim-width = { float = 0.16 }
+rim-strength = { float = 0.55 }
+rim-colour = { colour = "#fff1e0" }
+
+[params.cloth.program]
+name = "stylized"
+
+[params.cloth.program.params]
+wrap = { float = 0.55 }
+shade-2-strength = { float = 0.35 }
+spec-strength = { float = 0.08 }
+spec-size = { float = 0.4 }
+spec-softness = { float = 0.9 }
+rim-width = { float = 0.14 }
+rim-strength = { float = 0.45 }
+
+[params.scene]
+bloom = true
+
+[params.scene.grade]
+saturation = 1.08
+contrast = 1.05
+
+[params.scene.stylize]
+fringe = 0.0006
+
+[params.scene.stylize.vignette]
+strength = 0.22
+radius = 0.8
+softness = 1.0
+
+[params.scene.stylize.split_tone]
+shadows = "#2a6f8a"
+highlights = "#ffb67a"
+balance = 0.0
+strength = 0.12

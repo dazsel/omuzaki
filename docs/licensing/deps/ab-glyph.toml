@@ -1,7 +1,7 @@
 section = "rust"
 item = "ab_glyph (and ab_glyph_rasterizer, owned_ttf_parser, ttf-parser)"
 kind = "crate"
-used_for = "rasterises the character-sheet text (labels, title block, swatch codes) from the embedded font (`omuzaki-stage` `sheet::layout`, EX-10)"
+used_for = "rasterises the character-sheet text (labels, title block, swatch codes) from the embedded font (`omuzaki-stage` `sheet::layout`, EX-10), and the text and chart labels of the `omuzaki-sequence` motion-graphics layers"
 status = "yes"
 condition = "Apache-2.0 (ab_glyph, ab_glyph_rasterizer, owned_ttf_parser), MIT OR Apache-2.0 (ttf-parser): keep the notices; no shaping, so kerning and tabular digits are baked into the font subset"
 audit = "(crates.io: Apache-2.0)"

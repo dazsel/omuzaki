@@ -1,0 +1,7 @@
+# omuzaki-ui and omuzaki-stage: branches in the studio, and pictures of any state
+
+- The status bar has a branch chip: the folder branch's name, and how many branches wait for review. Its menu makes, switches, renames, deletes and restores branches as the person, groups them (yours, agents', kept for you, the bin), asks before a switch that leaves agents on the old branch, and shows each refusal with its hint (#440).
+- An agent's ready work is a review card with its note: Compare, Merge into the folder branch at the reviewed point, or Send back with a comment (#440).
+- Compare shows 2 to 6 branches side by side at one camera: dragging any picture turns them all, each column lists what it changes against the reference by part with Select, and Refresh brings an open branch up to date (#442).
+- The merge view previews `branch.merge`: a card per part both sides changed, with mine and theirs drawn (and the base on request), the base, mine and theirs values, and Keep mine, Take theirs, Keep both or Choose per parameter. Merge waits for every choice, sends one `branch.merge` with `resolve`, `exclude`, `at` and `expect`, and is one undo step. The result is drawn beside the cards as the choices change. Unticking a clean part makes the merge a pick, and a folder branch that moved on is refused and previewed again (#445).
+- `render.preview` takes a `state` and `render.compare` takes two states (a transaction, snapshot, point, branch or now) at one camera, built from the state's tree without touching the live document (#400).

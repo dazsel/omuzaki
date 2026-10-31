@@ -44,13 +44,15 @@ mod quality;
 mod renderer;
 mod resource;
 mod scene;
+mod stylize;
 
 pub use environment::{EnvironmentDesc, EnvironmentUse, sky_radiance};
 pub use error::RenderError;
 pub use handle::{EnvironmentId, MaterialId, MeshId, ParticleSystemId, ResourceRef, TargetId, TextureId};
 pub use material::{
-    AlphaMode, HairShadow, Mapping, Material, Outline, OutlineStyle, OutlineWidthMode, Overlay, ParamValue,
-    ProgramParams, Rim, Shading, Skin, Toon, UvTransform,
+    AlphaMode, HairShadow, MAX_SURFACE_FX_AMOUNT, MAX_SURFACE_FX_EDGE, MAX_SURFACE_FX_GLOW, Mapping, Material, Outline,
+    OutlineStyle, OutlineWidthMode, Overlay, ParamValue, ProgramParams, Rim, SURFACE_FX_SIZES, Shading, Skin,
+    SurfaceFx, SurfaceFxAt, SurfaceFxKind, Toon, UvTransform,
 };
 pub use morph::{MeshOptions, MeshUsage, MorphSet, SparseMorph};
 pub use mtoon::Mtoon;
@@ -72,3 +74,4 @@ pub use scene::{
     BackdropFit, Background, Bloom, Camera, ColourGrade, DepthOfField, EdgeLines, FilmGrain, Fog, FrameInfo, Instance,
     JointRange, Light, MorphRange, Occlusion, Post, Projection, SKY_LENS_DEG, Scene, Tonemap, gradient_at,
 };
+pub use stylize::{Halftone, Hatching, MAX_POSTERIZE, Paper, SplitTone, Stylize, Vignette};

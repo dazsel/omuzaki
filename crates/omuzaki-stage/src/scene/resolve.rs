@@ -16,7 +16,7 @@ use omuzaki_render_api::{
 use omuzaki_stage_api::resolve::{AnchorFrame, LightBuf};
 use omuzaki_stage_api::{
     Anchor, Backdrop, Bars, CameraDef, CameraId, CastMember, EnvironmentSource, Focus, Framing, GroundKind, Lighting,
-    MAX_CAMERAS, MemberId, SceneDef, SceneError,
+    MAX_CAMERAS, MemberId, SceneDef, SceneError, Squash, Timing,
 };
 
 use super::backdrop::ImagePixels;
@@ -123,6 +123,10 @@ pub struct Changes {
     /// A prop was added, removed or rebuilt (a kind or a param changed). Apply uploads it, so this is not a value-only
     /// change.
     pub prop_builds: bool,
+    /// The animated timing changed.
+    pub timing: bool,
+    /// The squash and stretch changed.
+    pub squash: bool,
 }
 
 impl Changes {
@@ -182,6 +186,10 @@ pub struct ResolvedScene {
     pub effects: SceneEffects,
     /// The props: their builds, where each is drawn, and their lights (already in `lights`).
     pub props: ResolvedProps,
+    /// How the cast moves in time: every frame, or held on twos or threes (`scene.timing`).
+    pub timing: Timing,
+    /// How the cast's bodies squash and stretch (`scene.squash`).
+    pub squash: Squash,
 }
 
 /// An image backdrop as the renderer takes it: the picture's asset, how it fits, and the bars' gradient.
@@ -282,6 +290,18 @@ impl ResolvedScene {
             image: None,
             effects: SceneEffects::default(),
             props: ResolvedProps::default(),
+            timing: Timing::SMOOTH,
+            squash: Squash::OFF,
+        }
+    }
+
+    /// Lets go of the pixels of an HDRI or a backdrop picture the scene no longer uses, here, off the render thread.
+    fn release_unused(&mut self) {
+        if self.hdri.as_ref().map(HdriPixels::asset) != self.environment.as_ref().and_then(ResolvedEnvironment::hdri) {
+            self.hdri = None;
+        }
+        if self.image.as_ref().map(ImagePixels::asset) != self.backdrop_image.map(|i| i.asset) {
+            self.image = None;
         }
     }
 
@@ -388,16 +408,12 @@ impl ResolvedScene {
             image: self.backdrop_image.map(|i| i.asset) != backdrop_image.map(|i| i.asset),
             props: prop_changes.placements,
             prop_builds: prop_changes.builds,
+            timing: replace(&mut self.timing, def.scene.timing),
+            squash: replace(&mut self.squash, def.scene.squash),
             ..Changes::default()
         };
         changes.backdrop |= replace(&mut self.backdrop_image, backdrop_image);
-        // Pixels of an HDRI the scene no longer uses are let go here, off the render thread.
-        if self.hdri.as_ref().map(HdriPixels::asset) != self.environment.as_ref().and_then(ResolvedEnvironment::hdri) {
-            self.hdri = None;
-        }
-        if self.image.as_ref().map(ImagePixels::asset) != self.backdrop_image.map(|i| i.asset) {
-            self.image = None;
-        }
+        self.release_unused();
         if lights != self.lights {
             self.lights = lights;
             changes.lights = true;
@@ -560,7 +576,7 @@ fn resolve_camera(
         Anchor::Stage => None,
     };
     if camera.framing == Framing::Free {
-        return free_camera(id, camera, subject, figures);
+        return free_camera(id, camera, subject, figures).map(|free| rolled(free, camera.roll));
     }
     let figure = figure.ok_or_else(|| {
         scene_error(SceneError::new(
@@ -570,7 +586,17 @@ fn resolve_camera(
     })?;
     let mut framed = frame(camera.framing, &figure.landmarks, camera, aspect)?;
     framed.transform = Mat4::from(figure.root) * framed.transform;
-    Ok(framed)
+    Ok(rolled(framed, camera.roll))
+}
+
+/// `camera` turned `roll` degrees about its own view axis: + turns the picture clockwise (the camera itself turns
+/// counter-clockwise as it looks). Where it stands and what it looks at stay.
+fn rolled(mut camera: Camera, roll: f32) -> Camera {
+    if roll != 0.0 {
+        // The camera looks down its local -Z, so a turn about +Z is counter-clockwise as seen through it.
+        camera.transform *= Mat4::from_rotation_z(roll.to_radians());
+    }
+    camera
 }
 
 /// A free camera: `position` and `target` in its anchor's units (metres for the stage; a member's height otherwise),
@@ -652,6 +678,7 @@ fn resolve_post(
         depth_of_field,
         grain: p.grain.map(|strength| FilmGrain { strength }),
         grade: p.grade.map(Into::into),
+        stylize: p.stylize.unwrap_or_default(),
     })
 }
 

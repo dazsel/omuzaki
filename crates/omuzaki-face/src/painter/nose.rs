@@ -1,5 +1,6 @@
-//! The nose: the prototype's tiny tick with a dot of light above it (`face.js` 411-416), or a plain dot, and the
-//! creases a sneer wrinkles over its bridge.
+//! The nose: the prototype's tiny tick with a dot of light above it (`face.js` 411-416), or a plain dot; the toon
+//! noses of Western animation and comics (a cel-shadow wedge, an inked line, a button); and the creases a sneer
+//! wrinkles over its bridge.
 //!
 //! Offsets are from the nose line (`layout.nose_y`, face plane) and in metres, the prototype's own numbers; the
 //! style's `size` scales every length of the mark about `(0, nose_y)`.
@@ -45,6 +46,29 @@ const TIP_RADIUS: f32 = 0.0016;
 const HIGHLIGHT_ALPHA: f32 = 0.6;
 /// Colour used when a palette slot reached the painter unresolved (it should not: the host resolves them).
 const FALLBACK_COLOUR: Colour = Colour::rgb(0xbe, 0x78, 0x78);
+/// How far a toon nose (wedge or line) reaches up from the nose line at `length` 1, metres.
+const BRIDGE_RISE: f32 = 0.012;
+/// The wedge: a cel shadow on the shadow side (the character's right, -x), as offsets from the nose line. `y` of the
+/// top two points scales with the length; the rest is the tip. Its opacity, and the nostril hook drawn over it.
+const WEDGE: [Vec2; 5] = [
+    Vec2::new(-0.0006, 1.0),
+    Vec2::new(-0.0024, 1.0),
+    Vec2::new(-0.0046, 0.0012),
+    Vec2::new(-0.0016, -0.0010),
+    Vec2::new(-0.0008, 0.0030),
+];
+const WEDGE_OPACITY: f32 = 0.75;
+const NOSTRIL: [Vec2; 3] = [Vec2::new(-0.0042, 0.0006), Vec2::new(-0.0030, -0.0016), Vec2::new(-0.0010, -0.0012)];
+const NOSTRIL_LIGHT: [Vec2; 3] = [Vec2::new(0.0032, 0.0004), Vec2::new(0.0024, -0.0012), Vec2::new(0.0010, -0.0012)];
+const NOSTRIL_OPACITY: f32 = 0.9;
+const NOSTRIL_LIGHT_OPACITY: f32 = 0.45;
+/// The line: down the shadow side of the bridge (top `y` scales with the length), round the tip and back under it.
+const LINE: [Vec2; 4] =
+    [Vec2::new(-0.0010, 1.0), Vec2::new(-0.0034, 0.0024), Vec2::new(-0.0016, -0.0016), Vec2::new(0.0014, -0.0008)];
+/// The button: an arc under a round tip, from one side to the other through the bottom, and two nostril dots.
+const BUTTON_RADIUS: f32 = 0.0040;
+const BUTTON_DOT: Vec2 = Vec2::new(0.0017, -0.0003);
+const BUTTON_DOT_RADIUS: f32 = 0.0006;
 
 /// Paints the nose on the Base layer.
 pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
@@ -82,6 +106,11 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
             let dot = list.path().ellipse(origin, DOT_RADIUS * size, DOT_RADIUS * size).finish();
             list.push(Cmd::Fill { path: dot, paint: Paint::Solid(colour), opacity: DOT_OPACITY });
         }
+        NoseKind::Wedge | NoseKind::Line | NoseKind::Button => {
+            let length = narrow(style.length).clamp(0.5, 3.0);
+            let width = narrow(style.line_width).max(0.0) * size;
+            toon(list, style.kind, &at, (colour, width, length), size);
+        }
     }
     // The sneer wrinkles the bridge, whatever the nose's kind: the mark that tells disgust from a frown.
     let sneer = ctx.params.nose_sneer.clamp(0.0, 1.0);
@@ -101,6 +130,59 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
                 });
             }
         }
+    }
+}
+
+/// A toon nose of `kind`: `at` places an offset from the nose line, `ink` is the colour, line width and length.
+fn toon(list: &mut DrawList, kind: NoseKind, at: &dyn Fn(Vec2) -> Vec2, ink: (Colour, f32, f32), size: f32) {
+    let (colour, width, length) = ink;
+    // Points whose `y` is 1.0 are the bridge top: that far up at the nose's length.
+    let rise = |p: Vec2| if p.y >= 1.0 { Vec2::new(p.x, BRIDGE_RISE * length) } else { p };
+    let stroke = |list: &mut DrawList, path, opacity| {
+        list.push(Cmd::Stroke {
+            path,
+            paint: Paint::Solid(colour),
+            width,
+            cap: Cap::Round,
+            join: Join::Round,
+            opacity,
+        });
+    };
+    match kind {
+        NoseKind::Wedge => {
+            let p = WEDGE.map(|p| at(rise(p)));
+            let wedge =
+                list.path().move_to(p[0]).line_to(p[1]).quad_to(p[2], p[3]).quad_to(p[4], p[0]).close().finish();
+            list.push(Cmd::Fill { path: wedge, paint: Paint::Solid(colour), opacity: WEDGE_OPACITY });
+            let n = NOSTRIL.map(at);
+            let hook = list.path().move_to(n[0]).quad_to(n[1], n[2]).finish();
+            stroke(list, hook, NOSTRIL_OPACITY);
+            let n = NOSTRIL_LIGHT.map(at);
+            let hook = list.path().move_to(n[0]).quad_to(n[1], n[2]).finish();
+            stroke(list, hook, NOSTRIL_LIGHT_OPACITY);
+        }
+        NoseKind::Line => {
+            let p = LINE.map(|p| at(rise(p)));
+            let line = list.path().move_to(p[0]).quad_to(p[1], p[2]).line_to(p[3]).finish();
+            stroke(list, line, NOSTRIL_OPACITY);
+        }
+        NoseKind::Button => {
+            let r = BUTTON_RADIUS * size;
+            let c = at(Vec2::ZERO);
+            let arc = list
+                .path()
+                .move_to(c + Vec2::new(-r, 0.4 * r))
+                .cubic_to(c + Vec2::new(-r, -0.9 * r), c + Vec2::new(r, -0.9 * r), c + Vec2::new(r, 0.4 * r))
+                .finish();
+            stroke(list, arc, NOSTRIL_OPACITY);
+            for side in [1.0, -1.0] {
+                let dot = at(Vec2::new(BUTTON_DOT.x * side, BUTTON_DOT.y));
+                let r = BUTTON_DOT_RADIUS * size;
+                let dot = list.path().ellipse(dot, r, r).finish();
+                list.push(Cmd::Fill { path: dot, paint: Paint::Solid(colour), opacity: NOSTRIL_OPACITY });
+            }
+        }
+        NoseKind::None | NoseKind::Dot | NoseKind::Tick => {}
     }
 }
 

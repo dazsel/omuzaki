@@ -89,6 +89,7 @@ fn on_the_gpu_every_prop_kind_at_its_default_and_an_extreme() {
         ("chair", json!({"back": 0.0, "cushion": null})),
         ("cup", json!({"height": 0.14, "radius": 0.03, "saucer": true, "colour": "#f4efe6"})),
         ("desk", json!({"width": 2.2, "drawers": false})),
+        ("glow", json!({"radius": 0.12, "height": 0.3, "colour": "#ffb070", "core": 0.4})),
         ("lamp", json!({"style": "table", "height": 0.5, "shade": "#b9d8c8"})),
         ("plant", json!({"height": 1.8, "leaves": 50, "seed": 2})),
         ("room", json!({"width": 3.0, "depth": 3.0, "wainscot": null, "walls": "#c9d8e8"})),

@@ -45,6 +45,7 @@ impl CrateKind {
             | "omuzaki-stage"
             | "omuzaki-cohost"
             | "omuzaki-short"
+            | "omuzaki-sequence"
             | "omuzaki-brief"
             | "omuzaki-link-probe"
             | "omuzaki-model-worker"

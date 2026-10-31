@@ -85,7 +85,7 @@ tar = { version = "0.4", default-features = false } # unpacks the ONNX Runtime.t
 sys-locale = "0.3" # the OS language list (MIT OR Apache-2.0), omuzaki-l10n-api
 tempfile = "3.27"
 thiserror = "2"
-tiny-skia = { version = "0.12", default-features = false, features = ["std"] }   # tests only: the oracle for the CPU face rasteriser's stroker (BSD-3-Clause)
+tiny-skia = { version = "0.12", default-features = false, features = ["std"] }   # the oracle for the CPU face rasteriser's stroker in tests; the motion-graphics layers of omuzaki-sequence (BSD-3-Clause)
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "io-std"] }
 tokio-util = "0.7"
 toml = "1.1"
@@ -158,6 +158,9 @@ opt-level = 2                # the design layer's shape field and material layer
 
 [profile.dev.package.omuzaki-face]
 opt-level = 2                # the face painter: its sweep tests paint and rasterise thousands of frames (#2289)
+
+[profile.dev.package.omuzaki-sequence]
+opt-level = 2                # a sequence meshes its toon volumes and paints its layers on every frame
 
 [profile.dev.package.omuzaki-measure]
 opt-level = 2                # the likeness measures: their ladder and repeatability tests draw and measure hundreds of faces
