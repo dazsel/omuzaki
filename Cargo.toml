@@ -57,6 +57,7 @@ inventory = "0.3"
 cpal = { version = "0.18", default-features = false }   # audio device I/O for the live engine (Apache-2.0); `asio` stays off (docs/licensing/deps/cpal.toml), omuzaki-audio-engine
 libc = "0.2"   # the Linux virtual camera's device calls (open, ioctl, write) (MIT OR Apache-2.0), omuzaki-vcam; already in the lock
 memmap2 = "0.9"   # maps the live show's shared-memory objects (MIT OR Apache-2.0), omuzaki-shm (docs/design/supervisor.md §4.3); already in the lock
+kurbo = { version = "=0.13.1", default-features = false, features = ["std"] }   # paths, SVG path data and curve flattening for the painter (Apache-2.0 OR MIT), omuzaki-paint; already in the lock through vello
 libm = "0.2"   # transcendental maths bit-identical on every platform (the CPU rasteriser's stroker, ADR 0009)
 loom = "0.7"   # model checker for the metrics seqlock (MIT), omuzaki-metrics-api dev-dependency; only built with --cfg loom
 # ONNX Runtime wrapper. `load-dynamic`: the app loads Microsoft's official MIT library from a path we choose, so Pyke's prebuilt binaries

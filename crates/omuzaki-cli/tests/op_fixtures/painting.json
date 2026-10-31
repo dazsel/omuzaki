@@ -1,0 +1,31 @@
+{
+  "about": "A painted bust `bust` (1080x1920 on black) with a `sketch` layer, `flats`, a skin `skin-shadow` clipped to the flats with a blush tagged `blush, left`, a `hair` group holding `fringe`, `hair-shadow` and `hair-glow`, and `lines` on top with three ink strokes. The base for the paint.* ops that edit, read, render or export a painting.",
+  "steps": [
+    { "op": "paint.new", "args": { "id": "bust", "name": "Painted bust", "width": 1080, "height": 1920, "background": "#000000" } },
+    { "op": "paint.add_layer", "args": { "painting": "bust", "id": "sketch", "name": "Sketch" } },
+    { "op": "paint.add_layer", "args": { "painting": "bust", "id": "flats", "name": "Flats" } },
+    { "op": "paint.add_layer", "args": { "painting": "bust", "id": "skin-shadow", "name": "Skin shadow", "clip": true, "blend": "multiply" } },
+    { "op": "paint.add_layer", "args": { "painting": "bust", "id": "hair", "name": "Hair", "kind": "group" } },
+    { "op": "paint.add_layer", "args": { "painting": "bust", "id": "fringe", "name": "Fringe" } },
+    { "op": "paint.add_layer", "args": { "painting": "bust", "id": "hair-shadow", "name": "Hair shadow", "parent": "hair" } },
+    { "op": "paint.add_layer", "args": { "painting": "bust", "id": "hair-glow", "name": "Hair glow", "parent": "hair", "blend": "screen" } },
+    { "op": "paint.add_layer", "args": { "painting": "bust", "id": "lines", "name": "Line art" } },
+    { "op": "paint.draw", "args": { "painting": "bust", "layer": "sketch", "marks": [
+      { "type": "stroke", "brush": "pencil", "colour": "#7a8aa0", "size": 3, "points": [[380, 500], [540, 430], [700, 500], [690, 820], [540, 900], [390, 820]], "closed": true, "tag": "head" }
+    ] } },
+    { "op": "paint.draw", "args": { "painting": "bust", "layer": "flats", "marks": [
+      { "type": "shape", "geometry": { "kind": "spline", "points": [[390, 500], [540, 440], [690, 500], [680, 810], [540, 890], [400, 810]] }, "fill": "#f3d9c8", "tag": "skin" }
+    ] } },
+    { "op": "paint.draw", "args": { "painting": "bust", "layer": "skin-shadow", "marks": [
+      { "type": "shape", "geometry": { "kind": "ellipse", "cx": 450, "cy": 690, "rx": 40, "ry": 16 }, "fill": "#f2a7ae", "feather": 8, "tag": "blush, left" }
+    ] } },
+    { "op": "paint.draw", "args": { "painting": "bust", "layer": "hair-shadow", "marks": [
+      { "type": "shape", "geometry": { "kind": "ellipse", "cx": 540, "cy": 470, "rx": 220, "ry": 90 }, "fill": "#5a4a6a", "tag": "crown shadow" }
+    ] } },
+    { "op": "paint.draw", "args": { "painting": "bust", "layer": "lines", "marks": [
+      { "type": "stroke", "brush": "g_pen", "colour": "#1b1420", "size": 4, "points": [[400, 610, 0.3], [470, 590, 1], [540, 600, 0.6]], "tag": "upper lid, left" },
+      { "type": "stroke", "brush": "g_pen", "colour": "#1b1420", "size": 4, "points": [[560, 600, 0.6], [630, 590, 1], [690, 610, 0.3]], "tag": "upper lid, right" },
+      { "type": "stroke", "brush": "maru_pen", "colour": "#6a3a40", "size": 3, "points": [[510, 790, 0.4], [540, 796, 1], [570, 790, 0.4]], "tag": "mouth" }
+    ] } }
+  ]
+}
