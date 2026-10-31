@@ -309,7 +309,9 @@ pub fn still_light(name: &str) -> Result<StillLight, OpError> {
         LightRig::load(name).map_err(|e| OpError::internal(format!("the light rig '{name}' doesn't load: {e}")))?;
     let lights =
         rig.to_lights().map_err(|e| OpError::internal(format!("the light rig '{name}' has no lights: {e}")))?;
-    Ok(StillLight::new(lights, rig.background(), rig.post(true)).with_back_light_rim(rig.back_light_rim))
+    Ok(StillLight::new(lights, rig.background(), rig.post(true))
+        .with_back_light_rim(rig.back_light_rim)
+        .with_shadow_softness(rig.shadow_softness))
 }
 
 /// Character `id` from the job's document, with `variant` applied, built by the injected builder.

@@ -29,6 +29,17 @@ Spec feature IDs (`CB-30`, `BR-02`) point into `docs/product/02-studio-spec-v3.m
 that carries the row; a row marked **new** was filed with this checklist. Status is as of 2026-10-30 (`main` at
 `b5a6d83c`).
 
+## Parity with a reference is pixel parity
+
+The owner's rule (2026-10-30), for every area and every thread that works from an image or a video:
+
+- A row that claims parity with a reference is checked by **overlaying Omuzaki's output on the reference and measuring
+  the per-pixel difference map**, frame by frame. "Looks similar" or "almost" is not parity.
+- The work **iterates until that map shows 0**: every pixel of every frame aligned, every feature and the quality at the
+  bar. It does not stop, or get called done, before it reports a pixel map at 0.
+- The overlays, difference maps, renders, references and notes stay **out of the repository**, in the project's shared
+  files only. The repository holds the tools that make the maps and the numbers they report.
+
 ## The deep lists this one links to
 
 Some areas already have their own exhaustive list, kept current by the thread building them. This checklist gives
@@ -352,7 +363,7 @@ Warudo (MediaPipe body and hands), XR Animator, mocopi and SlimeVR (body), Leap 
 | Inputs | Keyboard, mouse, gamepad, MIDI, OSC bindings (PF-05) | Warudo | ✓ | `input.binding.*`, `omuzaki-input` |
 | Inputs | Stream Deck: buttons that run ops, with state shown on the keys | VTube Studio and Warudo plugins | ✗ | **new** #2584 |
 | Inputs | Input-driven body motion: hands on the keys, arm to the mouse (PF-29) | VNyan, Warudo | ◐ | #718, #783 |
-| Inputs | A recorded video file as a tracking input (re-track footage offline) | none for VTubing | ✗ | **new** #2585 |
+| Inputs | A recorded video file as a tracking input (re-track footage offline) | none for VTubing | ✓ | `input.open_video`, `omuzaki-track-video`: `.y4m` read directly, MP4, MKV, MOV and WebM through the person's own ffmpeg; plays at the file's rate through the webcam tracker, on every platform |
 | Processing | Guided calibration in one step (PF-20) | VTube Studio | ◐ | `input.calibrate`, `omuzaki-track/src/guided.rs`; #473 |
 | Processing | One-Euro smoothing and a latency dial (PF-21); per-channel curves (PF-22) | VTube Studio | ◐ | `omuzaki-track/src/smoothing.rs`; #474, #475 |
 | Processing | Source blending and ownership per channel (PF-23) | none | ◐ | #476 |
@@ -364,10 +375,13 @@ Warudo (MediaPipe body and hands), XR Animator, mocopi and SlimeVR (body), Leap 
 
 - **The tracking doctor** says what is wrong in plain words and how to fix it; no tracker diagnoses itself.
 - **Everything recorded is re-trackable.** Raw inputs are kept, so a better tracker next year improves last year's
-  takes.
+  takes; any recorded clip already re-tracks today (`input.open_video`), faster than real time offline.
 - **One channel bus** that a webcam, an iPhone, audio, an AI and a hotkey all write to, with ownership per channel.
 - **Scored against the truth.** The kit renders its own character in known poses, so body and hand tracking are
   measured in degrees per bone (`track_body.rs`), not judged by eye.
+  Pixel parity closes the loop: the kit is rendered in a known pose and expression, tracked, the same character is
+  driven by what the tracker saw and re-rendered from the same camera, and the two frames are diffed pixel by pixel;
+  the tracker is done when that map is 0.
 
 **Not invented yet**
 
