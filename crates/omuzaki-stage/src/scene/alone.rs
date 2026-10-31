@@ -195,7 +195,8 @@ pub fn occlusion_in_look(occlusion: &mut Option<Occlusion>, look: &SceneLook) {
 
 /// `post` with a character's frame look over it (LK-05): bloom and depth of field switched off when the look says so (a
 /// look that switches one on keeps the scene's, as only the scene's lighting and camera carry their settings), film
-/// grain at the look's strength (0 removes it), and the look's colour grade. Unset fields keep the scene's.
+/// grain at the look's strength (0 removes it), the look's colour grade, and its drawn stylize look in place of the
+/// scene's. Unset fields keep the scene's.
 pub fn post_in_look(post: &mut Post, look: &SceneLook) {
     if look.bloom == Some(false) {
         post.bloom = None;
@@ -208,5 +209,8 @@ pub fn post_in_look(post: &mut Post, look: &SceneLook) {
     }
     if let Some(grade) = look.grade.to_grade() {
         post.grade = Some(grade);
+    }
+    if let Some(stylize) = look.stylize {
+        post.stylize = stylize;
     }
 }

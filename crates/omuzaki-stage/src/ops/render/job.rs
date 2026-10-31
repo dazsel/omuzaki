@@ -154,6 +154,20 @@ pub fn character_bytes(
     variant: Option<&VariantId>,
     quality: RenderQuality,
 ) -> Result<u64, OpError> {
+    character_bytes_in(ctx, ctx.doc, id, variant, quality)
+}
+
+/// [`character_bytes`] of the character as `doc` holds it (a past state or another branch, #400).
+///
+/// # Errors
+/// As [`character_bytes`].
+pub fn character_bytes_in(
+    ctx: &OpCtx<'_>,
+    doc: &dyn DocRead,
+    id: &CharId,
+    variant: Option<&VariantId>,
+    quality: RenderQuality,
+) -> Result<u64, OpError> {
     let (Ok(builder), Ok(build), Ok(store)) =
         (ctx.service::<dyn CharacterBuilder>(), ctx.service::<BuildServices>(), ctx.service::<dyn Store>())
     else {
@@ -161,7 +175,7 @@ pub fn character_bytes(
     };
     let mtoon = ctx.service::<Capabilities>().map_or(MtoonSupport::NONE, |c| c.mtoon);
     let services = BodyServices::new(builder, build, store, mtoon, ctx.clock);
-    let body = load_body(ctx.doc, &services, id, variant, quality.detail())?;
+    let body = load_body(doc, &services, id, variant, quality.detail())?;
     Ok(body.gpu_bytes(UploadOptions::default()))
 }
 

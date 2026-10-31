@@ -5,6 +5,7 @@
 pub mod compare;
 pub mod contact_sheet;
 pub mod eye;
+pub mod history;
 pub mod job;
 pub mod picture;
 pub mod pose;

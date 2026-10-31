@@ -481,6 +481,7 @@ fn nothing_the_caller_sets_on_the_scene_reaches_the_sheet() {
             depth_of_field: Some(DepthOfField { focus_distance: 1.0, focus_range: 0.1, max_blur: 4.0 }),
             grain: Some(FilmGrain { strength: 0.5 }),
             grade: Some(ColourGrade { saturation: 0.0, contrast: 2.0 }),
+            ..Post::default()
         };
         let before = stage.scene().clone();
         let sheet = render_turnaround(stage, renderer, &spec()).expect("the sheet renders");

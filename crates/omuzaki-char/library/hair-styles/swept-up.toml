@@ -1,0 +1,169 @@
+id = "swept-up"
+name = "Swept up"
+summary = "Short sides and back with the top swept up off the forehead and back over the crown in a loose quiff."
+origin = "a written description of the cut (short back and sides, the top brushed up and back with lift at the front), built from the kit's generators and guide clumps and tuned by eye on the kit's renders"
+
+[volume]
+whorl = { polar_deg = 30.0, azimuth_deg = 180.0 }
+fullness = 1.05
+crown = 1.25
+back = 0.95
+
+[groups.a-cap]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.a-cap.generator]
+type = "cap"
+hairline_front_deg = 60.0
+
+[groups.c-nape]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.c-nape.generator]
+type = "curtain"
+length_front = 0.05
+length_back = 0.07
+drape_deg = 80.0
+envelope = [[3.0, 0.13], [0.0, 0.13]]
+count = 30
+columns = 2
+wave = { amplitude = 0.0, frequency = 1.0, curl = 0.0 }
+width = { start = 0.06, mid = 0.07, tip = 0.02, tip_at = 0.75 }
+
+[groups.b-quiff]
+dynamics = { simulate = false, follow = "head" }
+lock = { tip = "fork", spread = 0.4 }
+
+[groups.b-quiff.generator]
+type = "guides"
+
+[[groups.b-quiff.generator.clumps]]
+points = [{ surface = [56.0, -45.0, 0.009] }, { surface = [42.0, -42.8, 0.030] }, { surface = [26.0, -38.2, 0.050] }, { surface = [12.0, -27.0, 0.045] }, { surface = [14.0, -148.5, 0.035] }, { surface = [32.0, -139.5, 0.030] }, { surface = [56.0, -135.0, 0.012] }]
+width = { start = 0.050, mid = 0.056, tip = 0.014, tip_at = 0.7 }
+shade = 1.00
+
+[[groups.b-quiff.generator.clumps]]
+points = [{ surface = [56.0, -33.0, 0.009] }, { surface = [42.0, -31.3, 0.030] }, { surface = [26.0, -28.1, 0.050] }, { surface = [12.0, -19.8, 0.045] }, { surface = [14.0, -156.9, 0.035] }, { surface = [32.0, -150.3, 0.030] }, { surface = [56.0, -147.0, 0.012] }]
+width = { start = 0.050, mid = 0.056, tip = 0.014, tip_at = 0.7 }
+shade = 0.80
+
+[[groups.b-quiff.generator.clumps]]
+points = [{ surface = [56.0, -21.0, 0.009] }, { surface = [42.0, -19.9, 0.030] }, { surface = [26.0, -17.8, 0.050] }, { surface = [12.0, -12.6, 0.045] }, { surface = [14.0, -165.3, 0.035] }, { surface = [32.0, -161.1, 0.030] }, { surface = [56.0, -159.0, 0.012] }]
+width = { start = 0.050, mid = 0.056, tip = 0.014, tip_at = 0.7 }
+shade = 1.00
+
+[[groups.b-quiff.generator.clumps]]
+points = [{ surface = [56.0, -9.0, 0.009] }, { surface = [42.0, -8.5, 0.030] }, { surface = [26.0, -7.6, 0.050] }, { surface = [12.0, -5.4, 0.045] }, { surface = [14.0, -173.7, 0.035] }, { surface = [32.0, -171.9, 0.030] }, { surface = [56.0, -171.0, 0.012] }]
+width = { start = 0.050, mid = 0.056, tip = 0.014, tip_at = 0.7 }
+shade = 0.80
+
+[[groups.b-quiff.generator.clumps]]
+points = [{ surface = [56.0, 3.0, 0.009] }, { surface = [42.0, 2.8, 0.030] }, { surface = [26.0, 2.5, 0.050] }, { surface = [12.0, 1.8, 0.045] }, { surface = [14.0, 177.9, 0.035] }, { surface = [32.0, 177.3, 0.030] }, { surface = [56.0, 177.0, 0.012] }]
+width = { start = 0.050, mid = 0.056, tip = 0.014, tip_at = 0.7 }
+shade = 1.00
+
+[[groups.b-quiff.generator.clumps]]
+points = [{ surface = [56.0, 15.0, 0.009] }, { surface = [42.0, 14.2, 0.030] }, { surface = [26.0, 12.8, 0.050] }, { surface = [12.0, 9.0, 0.045] }, { surface = [14.0, 169.5, 0.035] }, { surface = [32.0, 166.5, 0.030] }, { surface = [56.0, 165.0, 0.012] }]
+width = { start = 0.050, mid = 0.056, tip = 0.014, tip_at = 0.7 }
+shade = 0.80
+
+[[groups.b-quiff.generator.clumps]]
+points = [{ surface = [56.0, 27.0, 0.009] }, { surface = [42.0, 25.6, 0.030] }, { surface = [26.0, 22.9, 0.050] }, { surface = [12.0, 16.2, 0.045] }, { surface = [14.0, 161.1, 0.035] }, { surface = [32.0, 155.7, 0.030] }, { surface = [56.0, 153.0, 0.012] }]
+width = { start = 0.050, mid = 0.056, tip = 0.014, tip_at = 0.7 }
+shade = 1.00
+
+[[groups.b-quiff.generator.clumps]]
+points = [{ surface = [56.0, 39.0, 0.009] }, { surface = [42.0, 37.0, 0.030] }, { surface = [26.0, 33.1, 0.050] }, { surface = [12.0, 23.4, 0.045] }, { surface = [14.0, 152.7, 0.035] }, { surface = [32.0, 144.9, 0.030] }, { surface = [56.0, 141.0, 0.012] }]
+width = { start = 0.050, mid = 0.056, tip = 0.014, tip_at = 0.7 }
+shade = 0.80
+
+[[groups.b-quiff.generator.clumps]]
+points = [{ surface = [56.0, 51.0, 0.009] }, { surface = [42.0, 48.4, 0.030] }, { surface = [26.0, 43.4, 0.050] }, { surface = [12.0, 30.6, 0.045] }, { surface = [14.0, 144.3, 0.035] }, { surface = [32.0, 134.1, 0.030] }, { surface = [56.0, 129.0, 0.012] }]
+width = { start = 0.050, mid = 0.056, tip = 0.014, tip_at = 0.7 }
+shade = 1.00
+
+[[groups.b-quiff.generator.clumps]]
+points = [{ surface = [50.0, -39.0, 0.009] }, { surface = [42.0, -37.0, 0.023] }, { surface = [26.0, -33.1, 0.038] }, { surface = [12.0, -23.4, 0.034] }, { surface = [14.0, -152.7, 0.027] }, { surface = [32.0, -144.9, 0.030] }, { surface = [56.0, -141.0, 0.012] }]
+width = { start = 0.045, mid = 0.050, tip = 0.013, tip_at = 0.7 }
+shade = 0.80
+
+[[groups.b-quiff.generator.clumps]]
+points = [{ surface = [50.0, -27.0, 0.009] }, { surface = [42.0, -25.6, 0.023] }, { surface = [26.0, -22.9, 0.038] }, { surface = [12.0, -16.2, 0.034] }, { surface = [14.0, -161.1, 0.027] }, { surface = [32.0, -155.7, 0.030] }, { surface = [56.0, -153.0, 0.012] }]
+width = { start = 0.045, mid = 0.050, tip = 0.013, tip_at = 0.7 }
+shade = 1.00
+
+[[groups.b-quiff.generator.clumps]]
+points = [{ surface = [50.0, -15.0, 0.009] }, { surface = [42.0, -14.2, 0.023] }, { surface = [26.0, -12.8, 0.038] }, { surface = [12.0, -9.0, 0.034] }, { surface = [14.0, -169.5, 0.027] }, { surface = [32.0, -166.5, 0.030] }, { surface = [56.0, -165.0, 0.012] }]
+width = { start = 0.045, mid = 0.050, tip = 0.013, tip_at = 0.7 }
+shade = 0.80
+
+[[groups.b-quiff.generator.clumps]]
+points = [{ surface = [50.0, -3.0, 0.009] }, { surface = [42.0, -2.8, 0.023] }, { surface = [26.0, -2.5, 0.038] }, { surface = [12.0, -1.8, 0.034] }, { surface = [14.0, -177.9, 0.027] }, { surface = [32.0, -177.3, 0.030] }, { surface = [56.0, -177.0, 0.012] }]
+width = { start = 0.045, mid = 0.050, tip = 0.013, tip_at = 0.7 }
+shade = 1.00
+
+[[groups.b-quiff.generator.clumps]]
+points = [{ surface = [50.0, 9.0, 0.009] }, { surface = [42.0, 8.5, 0.023] }, { surface = [26.0, 7.6, 0.038] }, { surface = [12.0, 5.4, 0.034] }, { surface = [14.0, 173.7, 0.027] }, { surface = [32.0, 171.9, 0.030] }, { surface = [56.0, 171.0, 0.012] }]
+width = { start = 0.045, mid = 0.050, tip = 0.013, tip_at = 0.7 }
+shade = 0.80
+
+[[groups.b-quiff.generator.clumps]]
+points = [{ surface = [50.0, 21.0, 0.009] }, { surface = [42.0, 19.9, 0.023] }, { surface = [26.0, 17.8, 0.038] }, { surface = [12.0, 12.6, 0.034] }, { surface = [14.0, 165.3, 0.027] }, { surface = [32.0, 161.1, 0.030] }, { surface = [56.0, 159.0, 0.012] }]
+width = { start = 0.045, mid = 0.050, tip = 0.013, tip_at = 0.7 }
+shade = 1.00
+
+[[groups.b-quiff.generator.clumps]]
+points = [{ surface = [50.0, 33.0, 0.009] }, { surface = [42.0, 31.3, 0.023] }, { surface = [26.0, 28.1, 0.038] }, { surface = [12.0, 19.8, 0.034] }, { surface = [14.0, 156.9, 0.027] }, { surface = [32.0, 150.3, 0.030] }, { surface = [56.0, 147.0, 0.012] }]
+width = { start = 0.045, mid = 0.050, tip = 0.013, tip_at = 0.7 }
+shade = 0.80
+
+[[groups.b-quiff.generator.clumps]]
+points = [{ surface = [50.0, 45.0, 0.009] }, { surface = [42.0, 42.8, 0.023] }, { surface = [26.0, 38.2, 0.038] }, { surface = [12.0, 27.0, 0.034] }, { surface = [14.0, 148.5, 0.027] }, { surface = [32.0, 139.5, 0.030] }, { surface = [56.0, 135.0, 0.012] }]
+width = { start = 0.045, mid = 0.050, tip = 0.013, tip_at = 0.7 }
+shade = 1.00
+
+[[groups.b-quiff.generator.clumps]]
+points = [{ surface = [46.0, -14.0, 0.030] }, { surface = [32.0, -11.2, 0.050] }, { surface = [40.0, -19.6, 0.045] }, { surface = [56.0, -25.2, 0.020] }]
+width = { start = 0.020, mid = 0.022, tip = 0.005, tip_at = 0.7 }
+shade = 0.80
+
+[[groups.b-quiff.generator.clumps]]
+points = [{ surface = [46.0, 22.0, 0.030] }, { surface = [32.0, 17.6, 0.050] }, { surface = [40.0, 30.8, 0.045] }, { surface = [56.0, 39.6, 0.020] }]
+width = { start = 0.020, mid = 0.022, tip = 0.005, tip_at = 0.7 }
+shade = 0.90
+
+[groups.d-sides]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.d-sides.generator]
+type = "guides"
+
+[[groups.d-sides.generator.clumps]]
+points = [{ surface = [64.0, -104.0, 0.009] }, { surface = [58.0, -124.0, 0.014] }, { surface = [66.0, -149.0, 0.010] }, { surface = [80.0, -166.0, 0.009] }]
+width = { start = 0.041, mid = 0.045, tip = 0.011, tip_at = 0.7 }
+shade = 0.80
+
+[[groups.d-sides.generator.clumps]]
+points = [{ surface = [64.0, -86.0, 0.009] }, { surface = [58.0, -106.0, 0.014] }, { surface = [66.0, -131.0, 0.010] }, { surface = [80.0, -148.0, 0.009] }]
+width = { start = 0.041, mid = 0.045, tip = 0.011, tip_at = 0.7 }
+shade = 0.80
+
+[[groups.d-sides.generator.clumps]]
+points = [{ surface = [64.0, -68.0, 0.009] }, { surface = [58.0, -88.0, 0.014] }, { surface = [66.0, -113.0, 0.010] }, { surface = [80.0, -130.0, 0.009] }]
+width = { start = 0.041, mid = 0.045, tip = 0.011, tip_at = 0.7 }
+shade = 0.80
+
+[[groups.d-sides.generator.clumps]]
+points = [{ surface = [64.0, 68.0, 0.009] }, { surface = [58.0, 88.0, 0.014] }, { surface = [66.0, 113.0, 0.010] }, { surface = [80.0, 130.0, 0.009] }]
+width = { start = 0.041, mid = 0.045, tip = 0.011, tip_at = 0.7 }
+shade = 0.80
+
+[[groups.d-sides.generator.clumps]]
+points = [{ surface = [64.0, 86.0, 0.009] }, { surface = [58.0, 106.0, 0.014] }, { surface = [66.0, 131.0, 0.010] }, { surface = [80.0, 148.0, 0.009] }]
+width = { start = 0.041, mid = 0.045, tip = 0.011, tip_at = 0.7 }
+shade = 0.80
+
+[[groups.d-sides.generator.clumps]]
+points = [{ surface = [64.0, 104.0, 0.009] }, { surface = [58.0, 124.0, 0.014] }, { surface = [66.0, 149.0, 0.010] }, { surface = [80.0, 166.0, 0.009] }]
+width = { start = 0.041, mid = 0.045, tip = 0.011, tip_at = 0.7 }
+shade = 0.80

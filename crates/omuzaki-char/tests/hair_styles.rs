@@ -29,6 +29,7 @@ const NAMED: [&str; 14] = [
     "bun",
     "updo-slick",
     "half-up",
+    "swept-up",
     "anime-bob",
     "anime-long",
     "crown-braid",

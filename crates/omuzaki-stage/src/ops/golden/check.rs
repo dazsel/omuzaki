@@ -257,7 +257,7 @@ impl Op for GoldenCheck {
                     };
                     if matches!(report.outcome, Outcome::Changed | Outcome::Intended) && report.bounds.is_some() {
                         let picture = |mode| -> Result<String, OpError> {
-                            let compare = Compare { a: golden.clone(), b: hash.clone(), mode, threshold: if target.golden.pixel_exact { 0 } else { scene.tolerance.per_channel } };
+                            let compare = Compare { a: golden.clone().into(), b: hash.clone().into(), shot: None, mode, threshold: if target.golden.pixel_exact { 0 } else { scene.tolerance.per_channel } };
                             let result: CompareResult = serde_json::from_value(compare.work(job)?)
                                 .map_err(|e| OpError::internal(format!("reading a comparison: {e}")))?;
                             Ok(result.uri)

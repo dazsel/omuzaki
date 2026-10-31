@@ -22,17 +22,22 @@ pub mod pose;
 pub(crate) mod rig;
 pub(crate) mod runtimes;
 pub(crate) mod scene;
+pub(crate) mod squash;
+pub(crate) mod timing;
 
 use omuzaki_anim_api::{ChannelBuf, HumanoidPose, IkGoals, Reaches, Tick};
 use omuzaki_char_api::{BuiltCharacter, LookParams, StepCtx};
 use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_core::time::Seconds;
 use omuzaki_render_api::{FrameInfo, FrameReport, Quality, Renderer, Scene, TargetId};
+use omuzaki_stage_api::Timing;
 
 use self::face::FaceRig;
+use self::timing::{HoldFrame, Holds};
 use self::rig::{RigFrame, SkinPose};
 use self::runtimes::DynamicMeshes;
 use self::scene::ScenePlan;
+use self::squash::Jelly;
 use crate::effects::frame::{EffectsFrame, FrameCtx, palette_colours};
 use crate::effects::log::EffectLimits;
 use crate::effects::service::StageEffects;
@@ -209,6 +214,10 @@ pub struct Stage {
     pinned: Option<Tick>,
     /// Particle effects, once attached ([`Stage::attach_effects`]).
     effects: Option<Box<EffectsFrame>>,
+    /// The scene's animated timing: which frames move the body, the secondary motion and the face.
+    holds: Holds,
+    /// The scene's squash and stretch of the drawn body.
+    squash: Jelly,
 }
 
 impl Stage {
@@ -258,6 +267,8 @@ impl Stage {
                 clock,
                 pinned: None,
                 effects: None,
+                holds: Holds::default(),
+                squash: Jelly::default(),
             }),
             Err(error) => {
                 if let Err(cleanup) = character.release(renderer) {
@@ -306,23 +317,34 @@ impl Stage {
             }
         }
         let tick = self.pinned.unwrap_or_else(|| self.clock.next(input.dt, input.time));
-        self.input_root = input.root;
-        self.root = self.subject_root * input.root;
-        self.pose = input.pose;
-        self.goals = input.goals;
+        // A pinned frame shows exactly the pose it is given, whatever the timing.
+        let hold = if self.pinned.is_some() { HoldFrame::all(tick.dt) } else { self.holds.frame(tick) };
+        if hold.body {
+            // A held pose holds where it stands too: the character's root moves with its pose.
+            self.input_root = input.root;
+            self.pose = input.pose;
+            self.goals = input.goals;
+            self.rig.set_reaches(&input.reach);
+            self.rig.solve_with_channels(tick, &input.pose, &input.goals, &input.channels);
+        }
+        self.root = self.subject_root * self.input_root;
         self.tick = tick;
-        self.rig.set_reaches(&input.reach);
-        self.rig.solve_with_channels(tick, &input.pose, &input.goals, &input.channels);
-        let pose = SkinPose { character: &self.built.rig, skin: self.rig.skin(), root: self.root };
-        let ctx = StepCtx::new(tick.dt, tick.time, &pose, input.wind);
-        DynamicMeshes::step(&mut self.built.runtimes, &ctx);
-        let prepared = self
-            .dynamic
-            .upload(&self.built.runtimes, renderer)
-            .and_then(|uploads| self.update_face(renderer, tick, input).map(|()| uploads));
+        if hold.body && self.pinned.is_none() {
+            let hips = kit_bone_world(&self.built, &self.rig, self.root, omuzaki_anim_api::HumanoidBone::Hips);
+            self.squash.step(tick.time.0, hips.map_or(f32::NAN, |m| m.w_axis.y));
+        }
+        if let Some(dt) = hold.secondary_dt {
+            let pose = SkinPose { character: &self.built.rig, skin: self.rig.skin(), root: self.root };
+            let ctx = StepCtx::new(dt, tick.time, &pose, input.wind);
+            DynamicMeshes::step(&mut self.built.runtimes, &ctx);
+        }
+        let prepared = self.dynamic.upload(&self.built.runtimes, renderer).and_then(|uploads| {
+            if hold.face { self.update_face(renderer, tick, input) } else { Ok(()) }.map(|()| uploads)
+        });
         // Filled even when the frame can't be prepared: a variant swapped in at the top of this tick, and the scene
         // must not go on naming the character it retired (its meshes are released).
-        self.plan.fill(&mut self.scene, self.rig.skin(), self.root);
+        let drawn = self.drawn_root();
+        self.plan.fill(&mut self.scene, self.rig.skin(), drawn);
         self.ground.push(&mut self.scene);
         self.push_props();
         if let Some(effects) = self.effects.as_mut() {
@@ -384,7 +406,8 @@ impl Stage {
             (pin.tick, pin.root, pin.input_root, pin.pose, pin.goals);
         // A solve for no time: the bones follow the restored pose and channels without stepping the springs.
         self.rig.solve_with_channels(Tick { dt: 0.0, ..pin.tick }, &pin.pose, &pin.goals, &pin.channels);
-        self.plan.fill(&mut self.scene, self.rig.skin(), pin.root);
+        let drawn = self.drawn_root();
+        self.plan.fill(&mut self.scene, self.rig.skin(), drawn);
         self.ground.push(&mut self.scene);
         self.push_props();
         self.scene.frame = FrameInfo { index: pin.tick.index, time: pin.tick.time };
@@ -395,7 +418,7 @@ impl Stage {
     /// renderer), a skinned mesh blended by the current joint palette, as the renderer does, and everything under the
     /// character's root. Morph targets are not applied. Cold: allocates.
     pub fn drawn_vertices(&self) -> Vec<Vec3> {
-        let skin = self.rig.skin();
+        let (skin, root) = (self.rig.skin(), self.drawn_root());
         let mut out = Vec::new();
         for built_mesh in &self.built.meshes {
             let mesh = &built_mesh.mesh;
@@ -412,7 +435,7 @@ impl Stage {
                     }
                     _ => *p,
                 };
-                out.push(self.root.transform_point3(local));
+                out.push(root.transform_point3(local));
             }
         }
         out
@@ -487,8 +510,28 @@ impl Stage {
             self.scene.background = picture;
         }
         self.props.take(&resolved.props);
+        self.holds.set(resolved.timing);
+        self.squash.set(resolved.squash);
         self.set_subject_root(subject_root);
         owed
+    }
+
+    /// The animated timing in force (`scene.timing`, from the last [`set_scene`](Self::set_scene)).
+    pub fn timing(&self) -> Timing {
+        self.holds.timing()
+    }
+
+    /// The squash and stretch drawn now (`scene.squash`): the body's height scale, `1` as posed. A pinned stage draws
+    /// the body as posed.
+    pub fn squash_scale(&self) -> f32 {
+        if self.pinned.is_some() { 1.0 } else { self.squash.scale() }
+    }
+
+    /// The character's world matrix as drawn: the root under the squash and stretch about its ground point. The rig,
+    /// the physics, the face and the touches use the posed root; only what is drawn (the instances, the props in its
+    /// hands) takes this.
+    fn drawn_root(&self) -> Mat4 {
+        if self.pinned.is_some() { self.root } else { self.squash.matrix(self.root.w_axis.truncate()) * self.root }
     }
 
     /// Moves the subject member alone: the scene's camera, lights and look stay as they are. Takes effect from the next
@@ -571,7 +614,8 @@ impl Stage {
         // A pin set since the last tick holds here too: the face and the frame info see the pinned time.
         let tick = self.pinned.unwrap_or(self.tick);
         self.update_face(renderer, tick, input)?;
-        self.plan.fill(&mut self.scene, self.rig.skin(), self.root);
+        let drawn = self.drawn_root();
+        self.plan.fill(&mut self.scene, self.rig.skin(), drawn);
         self.ground.push(&mut self.scene);
         self.push_props();
         // What the last tick wrote into the scene, so a redraw before any tick doesn't render the caller's frame info.
@@ -608,7 +652,7 @@ impl Stage {
     /// The scene's props into the frame: the unattached ones where they stand, the ones on the character's bones
     /// where the frame posed them. Hot: allocation-free.
     fn push_props(&mut self) {
-        let (built, rig, root) = (&self.built, &self.rig, self.root);
+        let (built, rig, root) = (&self.built, &self.rig, self.drawn_root());
         self.props.push(&mut self.scene, &|bone| kit_bone_world(built, rig, root, bone));
     }
 

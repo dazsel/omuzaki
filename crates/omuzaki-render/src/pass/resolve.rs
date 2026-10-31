@@ -20,8 +20,8 @@
 use bytemuck::{Pod, Zeroable};
 use omuzaki_core::glam::Vec2;
 use omuzaki_render_api::{
-    AlphaEncoding, Background, Colour, ColourGrade, FilmGrain, Pass, RenderError, TextureDesc, TextureId, Tonemap,
-    gradient_at,
+    AlphaEncoding, Background, Colour, ColourGrade, FilmGrain, Pass, RenderError, Stylize, TextureDesc, TextureId,
+    Tonemap, gradient_at,
 };
 
 use super::dof::layers_layout;
@@ -65,8 +65,18 @@ struct Params {
     top: [f32; 4],
     bottom: [f32; 4],
     uv_offset: [f32; 2],
-    _pad: [f32; 2],
+    style_flags: u32,
+    posterize: f32,
+    style: [[f32; 4]; 10],
 }
+
+const STYLE_FRINGE: u32 = 1;
+const STYLE_POSTERIZE: u32 = 2;
+const STYLE_SPLIT: u32 = 4;
+const STYLE_HALFTONE: u32 = 8;
+const STYLE_HATCH: u32 = 16;
+const STYLE_PAPER: u32 = 32;
+const STYLE_VIGNETTE: u32 = 64;
 
 const BACKDROP_GRADIENT: u32 = 1;
 const BACKDROP_TEXTURE: u32 = 2;
@@ -317,6 +327,71 @@ impl BackdropParams {
         Self { kind: 0, flags: 0, uv_scale: [1.0; 2], uv_offset: [0.0; 2], top: [0.0; 4], bottom: [0.0; 4] };
 }
 
+/// The drawn look for the shader: which parts are on (`STYLE_*`), the tone levels and the packed settings (see `style`
+/// in `shader/post_resolve.wgsl`), sizes turned from fractions of the height into output pixels. A part that would change
+/// nothing is off, so the empty look costs nothing.
+fn style_params(stylize: &Stylize, target: Vec2) -> (u32, f32, [[f32; 4]; 10]) {
+    let mut style = [[0.0; 4]; 10];
+    let mut flags = 0;
+    let height = target.y;
+    // Display values: the shader multiplies sRGB-encoded colour by them.
+    let encoded = |c: Colour| [f32::from(c.r) / 255.0, f32::from(c.g) / 255.0, f32::from(c.b) / 255.0];
+    let turn = |deg: f32| {
+        let (sin, cos) = deg.to_radians().sin_cos();
+        [cos, sin]
+    };
+    // At least one output pixel: a screen finer than the pixels would only alias.
+    let pixels = |fraction: f32| (fraction * height).max(1.0);
+    if stylize.fringe > 0.0 {
+        flags |= STYLE_FRINGE;
+        style[6][2] = stylize.fringe;
+    }
+    if stylize.posterize >= 2 {
+        flags |= STYLE_POSTERIZE;
+    }
+    if let Some(split) = stylize.split_tone.filter(|s| s.strength > 0.0) {
+        flags |= STYLE_SPLIT;
+        let [r, g, b] = encoded(split.shadows);
+        style[7] = [r, g, b, split.strength];
+        let [r, g, b] = encoded(split.highlights);
+        style[8] = [r, g, b, 0.0];
+        style[6][3] = split.balance;
+    }
+    if let Some(dots) = stylize.halftone.filter(|h| h.strength > 0.0) {
+        flags |= STYLE_HALFTONE;
+        let [cos, sin] = turn(dots.angle_deg);
+        style[0] = [pixels(dots.cell), cos, sin, dots.threshold];
+        let [r, g, b] = encoded(dots.ink);
+        style[1] = [r, g, b, dots.strength];
+    }
+    if let Some(hatch) = stylize.hatching.filter(|h| h.strength > 0.0) {
+        flags |= STYLE_HATCH;
+        let [cos, sin] = turn(hatch.angle_deg);
+        style[2] = [pixels(hatch.spacing), hatch.width, cos, sin];
+        let [r, g, b] = encoded(hatch.ink);
+        style[3] = [r, g, b, hatch.strength];
+        style[4][0] = hatch.threshold;
+        style[4][1] = hatch.cross_threshold;
+    }
+    if let Some(paper) = stylize.paper.filter(|p| p.strength > 0.0 || p.tint != Colour::WHITE) {
+        flags |= STYLE_PAPER;
+        style[4][2] = paper.strength;
+        style[4][3] = pixels(paper.scale);
+        let [r, g, b] = encoded(paper.tint);
+        style[5] = [r, g, b, 0.0];
+    }
+    if let Some(vignette) = stylize.vignette.filter(|v| v.strength > 0.0) {
+        flags |= STYLE_VIGNETTE;
+        style[5][3] = vignette.strength;
+        style[6][0] = vignette.radius;
+        style[6][1] = vignette.softness;
+    }
+    style[9] = [target.x, target.y, 0.0, 0.0];
+    #[allow(clippy::cast_precision_loss)] // at most MAX_POSTERIZE
+    let levels = stylize.posterize as f32;
+    (flags, levels, style)
+}
+
 /// What the shader needs to know about the frame: the output's encoding, the tap grid, which post images there are to fold
 /// in and which display-space effects to apply to the average.
 fn params_for(cx: &PassCx<'_>, glow: bool, depth_of_field: bool, backdrop: BackdropParams) -> Params {
@@ -335,6 +410,8 @@ fn params_for(cx: &PassCx<'_>, glow: bool, depth_of_field: bool, backdrop: Backd
     let grade_flag = flag(grade.is_some(), FLAG_GRADE);
     let neutral = ColourGrade { saturation: 1.0, contrast: 1.0 };
     let grade = grade.unwrap_or(neutral);
+    // The drawn look is the author's picture, not an optional effect: it runs at every quality.
+    let (style_flags, posterize, style) = style_params(&post.stylize, target_f);
     Params {
         exposure: post.exposure,
         tonemap: match post.tonemap {
@@ -364,7 +441,9 @@ fn params_for(cx: &PassCx<'_>, glow: bool, depth_of_field: bool, backdrop: Backd
         top: backdrop.top,
         bottom: backdrop.bottom,
         uv_offset: backdrop.uv_offset,
-        _pad: [0.0; 2],
+        style_flags,
+        posterize,
+        style,
     }
 }
 
@@ -424,8 +503,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn params_are_a_hundred_and_twenty_eight_bytes() {
-        assert_eq!(size_of::<Params>(), 128);
+    fn params_are_two_hundred_and_eighty_eight_bytes() {
+        assert_eq!(size_of::<Params>(), 288);
+    }
+
+    #[test]
+    fn the_empty_look_turns_every_part_off_and_sizes_follow_the_height() {
+        let (flags, _, style) = style_params(&Stylize::default(), Vec2::new(1920.0, 1080.0));
+        assert_eq!(flags, 0);
+        assert_eq!(style[9], [1920.0, 1080.0, 0.0, 0.0]);
+        let look = Stylize {
+            halftone: Some(omuzaki_render_api::Halftone { cell: 0.01, ..Default::default() }),
+            hatching: Some(omuzaki_render_api::Hatching { strength: 0.0, ..Default::default() }),
+            posterize: 4,
+            ..Stylize::default()
+        };
+        let (flags, levels, style) = style_params(&look, Vec2::new(1920.0, 1080.0));
+        assert_eq!(flags, STYLE_HALFTONE | STYLE_POSTERIZE, "a part with no strength is off");
+        assert_eq!(levels, 4.0);
+        assert!((style[0][0] - 10.8).abs() < 1e-4, "1% of 1080 rows");
+        let (_, _, small) = style_params(&look, Vec2::new(64.0, 36.0));
+        assert_eq!(small[0][0], 1.0, "never finer than a pixel");
     }
 
     #[test]

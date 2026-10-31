@@ -1,7 +1,7 @@
 //! Scene settings (design D2): `scene.toml`: the subject, the opening camera, the backdrop, the ground, the post look.
 
 pub use omuzaki_render_api::BackdropFit;
-use omuzaki_render_api::{ColourGrade, Tonemap};
+use omuzaki_render_api::{ColourGrade, Stylize, Tonemap};
 use omuzaki_store_api::ContentHash;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -210,6 +210,10 @@ pub struct PostDef {
     /// Ambient occlusion and contact shadows, if wanted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occlusion: Option<OcclusionDef>,
+    /// The drawn look laid over the frame (halftone, hatching, posterize, paper, vignette, fringe, split toning), if
+    /// wanted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stylize: Option<Stylize>,
 }
 
 fn yes() -> bool {
@@ -218,7 +222,101 @@ fn yes() -> bool {
 
 impl Default for PostDef {
     fn default() -> Self {
-        Self { bloom: true, tonemap: Tonemap::Aces, depth_of_field: None, grain: None, grade: None, occlusion: None }
+        Self {
+            bloom: true,
+            tonemap: Tonemap::Aces,
+            depth_of_field: None,
+            grain: None,
+            grade: None,
+            occlusion: None,
+            stylize: None,
+        }
+    }
+}
+
+/// How the cast moves in time (#animated timing): every frame, the default, or held as drawn animation is, on twos or
+/// threes. Only the poses are held: the camera, the lights, the effects and the render run at the frame rate, so a
+/// held pose under a moving camera reads as drawn, not as a dropped frame.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Timing {
+    /// Body poses per second: `0` moves every frame; `12` is "on twos" and `8` "on threes" at 24 fps.
+    /// `0..=60`.
+    #[schemars(range(min = 0.0, max = 60.0))]
+    pub body_hz: f32,
+    /// Face updates (expressions, eyes, mouth) per second, held the same way: `0` every frame. Speech reads best at 12
+    /// or more. `0..=60`.
+    #[schemars(range(min = 0.0, max = 60.0))]
+    pub face_hz: f32,
+    /// Whether hair, cloth and other secondary motion hold with the body (the drawn look; they catch up in one step
+    /// at each new pose) or keep moving between the held poses.
+    pub hold_secondary: bool,
+}
+
+impl Timing {
+    /// Every frame: no holds.
+    pub const SMOOTH: Self = Self { body_hz: 0.0, face_hz: 0.0, hold_secondary: true };
+
+    /// True when nothing is held.
+    pub fn is_smooth(&self) -> bool {
+        self.body_hz <= 0.0 && self.face_hz <= 0.0
+    }
+
+    /// Which held pose a frame at `time` seconds shows, for a rate of `hz` (`None` when the rate is 0: every frame).
+    /// Frames in the same slot show the same pose.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // floored and clamped to >= 0
+    pub fn slot(time: f64, hz: f32) -> Option<u64> {
+        // A hair over the boundary, so a frame exactly on it (time 0.5 at 12 Hz) starts the new pose.
+        (hz > 0.0).then(|| (time.max(0.0) * f64::from(hz) + 1e-6).floor() as u64)
+    }
+}
+
+impl Default for Timing {
+    fn default() -> Self {
+        Self::SMOOTH
+    }
+}
+
+/// Squash and stretch (#animated motion): the cast's bodies stretch along the up axis as they move up or down and
+/// squash when that motion stops or turns (a landing, the push of a hop), keeping their volume, as a cartoon body
+/// does. The weight is a damped spring on the hips: it lags behind a sudden move and bounces after it, so an impact
+/// squashes and then settles. Drawn only: the rig, the physics and the face see the body as posed. Off (both gains 0)
+/// by default.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Squash {
+    /// How much the body stretches for each metre per second it moves up or down: `0.1` stretches it 10% at 1 m/s.
+    /// `0..=1`.
+    #[schemars(range(min = 0.0, max = 1.0))]
+    pub stretch: f32,
+    /// How much it squashes for each metre per second of the weight's lag behind the hips (a sudden stop): the
+    /// landing and the push-off. `0..=1`.
+    #[schemars(range(min = 0.0, max = 1.0))]
+    pub squash: f32,
+    /// How fast the weight bounces back after an impact, hertz. `0.5..=12`.
+    #[schemars(range(min = 0.5, max = 12.0))]
+    pub bounce_hz: f32,
+    /// How quickly the bounce dies: `1` settles with no wobble, `0.1` jiggles. `0.05..=1`.
+    #[schemars(range(min = 0.05, max = 1.0))]
+    pub damping: f32,
+    /// The most the height changes either way, as a share of it. `0..=0.6`.
+    #[schemars(range(min = 0.0, max = 0.6))]
+    pub limit: f32,
+}
+
+impl Squash {
+    /// No squash and stretch.
+    pub const OFF: Self = Self { stretch: 0.0, squash: 0.0, bounce_hz: 3.0, damping: 0.35, limit: 0.25 };
+
+    /// True when nothing deforms.
+    pub fn is_off(&self) -> bool {
+        (self.stretch <= 0.0 && self.squash <= 0.0) || self.limit <= 0.0
+    }
+}
+
+impl Default for Squash {
+    fn default() -> Self {
+        Self::OFF
     }
 }
 
@@ -243,6 +341,12 @@ pub struct SceneSettings {
     /// The post look.
     #[serde(default)]
     pub post: PostDef,
+    /// How the cast moves in time: every frame, or held on twos or threes.
+    #[serde(default, skip_serializing_if = "Timing::is_smooth")]
+    pub timing: Timing,
+    /// Squash and stretch of the cast's bodies.
+    #[serde(default, skip_serializing_if = "Squash::is_off")]
+    pub squash: Squash,
 }
 
 impl SceneSettings {
@@ -255,6 +359,8 @@ impl SceneSettings {
             backdrop: Backdrop::default(),
             ground: Ground::default(),
             post: PostDef::default(),
+            timing: Timing::SMOOTH,
+            squash: Squash::OFF,
         }
     }
 }
@@ -291,6 +397,16 @@ mod tests {
             Backdrop::Environment {}
         );
         assert!(serde_json::from_value::<Backdrop>(json!({"kind": "lighting", "colour": "#fff"})).is_err());
+    }
+
+    #[test]
+    fn squash_is_left_out_while_off_and_reads_with_defaults() {
+        let s = SceneSettings::named("Main");
+        assert!(serde_json::to_value(&s).unwrap().get("squash").is_none());
+        let on: SceneSettings = serde_json::from_value(json!({"name": "Main", "squash": {"stretch": 0.1}})).unwrap();
+        assert_eq!(on.squash, Squash { stretch: 0.1, ..Squash::OFF });
+        assert!(!on.squash.is_off());
+        assert!(serde_json::from_value::<Squash>(json!({"wobble": 1})).is_err());
     }
 
     #[test]

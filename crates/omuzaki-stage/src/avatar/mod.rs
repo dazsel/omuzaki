@@ -34,6 +34,8 @@ use self::upload::AvatarUpload;
 use crate::error::StageError;
 use crate::frame::face::SETTLE_DT;
 use crate::frame::rig::RigFrame;
+use crate::frame::squash::Jelly;
+use crate::frame::timing::Holds;
 use crate::frame::{FrameInput, FrameOutput, Prepared, StageClock};
 use crate::scene::apply::{Owed, SceneLink, reserve};
 use crate::scene::backdrop::StageBackdrop;
@@ -70,6 +72,10 @@ pub struct AvatarStage {
     target: TargetId,
     quality: Quality,
     clock: StageClock,
+    /// The scene's animated timing (`scene.timing`): which frames move the body, the springs and the expressions.
+    holds: Holds,
+    /// The scene's squash and stretch of the drawn body (`scene.squash`).
+    squash: Jelly,
 }
 
 impl AvatarStage {
@@ -133,6 +139,8 @@ impl AvatarStage {
             target,
             quality,
             clock,
+            holds: Holds::default(),
+            squash: Jelly::default(),
         })
     }
 
@@ -176,16 +184,28 @@ impl AvatarStage {
     ) -> Result<Prepared, StageError> {
         let tick = self.clock.next(input.dt, input.time);
         self.tick = tick;
-        self.input_root = input.root;
-        self.root = self.subject_root * input.root;
-        self.pose = input.pose;
-        if let Some(gaze) = &self.gaze {
-            gaze.apply(&input.channels, &mut self.pose);
+        let hold = self.holds.frame(tick);
+        if hold.body {
+            // A held pose holds where it stands too: the avatar's root moves with its pose.
+            self.input_root = input.root;
+            self.pose = input.pose;
+            if let Some(gaze) = &self.gaze {
+                gaze.apply(&input.channels, &mut self.pose);
+            }
+            self.goals = input.goals;
+            self.rig.set_reaches(&input.reach);
         }
-        self.goals = input.goals;
-        self.rig.set_reaches(&input.reach);
-        self.rig.solve(tick, &self.pose, &self.goals);
-        self.prepare_draw(renderer, input, tick)
+        self.root = self.subject_root * self.input_root;
+        // The spring bones solve with the pose: held with it (catching up in one step at each new pose), or, when the
+        // secondary motion flows, every frame under the held pose.
+        if let Some(dt) = hold.secondary_dt {
+            self.rig.solve(Tick { dt, ..tick }, &self.pose, &self.goals);
+        }
+        if hold.body {
+            let hips = avatar_bone_world(&self.avatar, &self.rig, self.root, HumanoidBone::Hips);
+            self.squash.step(tick.time.0, hips.map_or(f32::NAN, |m| m.w_axis.y));
+        }
+        self.prepare_draw(renderer, input, tick, hold.face)
     }
 
     /// Everything [`redraw`](Self::redraw) does before the render.
@@ -194,7 +214,7 @@ impl AvatarStage {
         renderer: &mut dyn Renderer,
         input: &FrameInput,
     ) -> Result<Prepared, StageError> {
-        self.prepare_draw(renderer, input, self.tick)
+        self.prepare_draw(renderer, input, self.tick, true)
     }
 
     /// Renders the pose the last [`tick`](Self::tick) left with `input`'s channels, for a still that differs from the
@@ -203,7 +223,7 @@ impl AvatarStage {
     /// # Errors
     /// As [`tick`](Self::tick).
     pub fn redraw(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
-        let prepared = self.prepare_draw(renderer, input, self.tick)?;
+        let prepared = self.prepare_draw(renderer, input, self.tick, true)?;
         self.submit(renderer, prepared, "the still")
     }
 
@@ -224,18 +244,25 @@ impl AvatarStage {
         self.settle(steps);
     }
 
-    /// Step 4: expressions and the scene, ready to render.
+    /// Step 4: expressions (when `face` moves this frame; a held face keeps the last weights) and the scene, ready to
+    /// render.
     fn prepare_draw(
         &mut self,
         renderer: &mut dyn Renderer,
         input: &FrameInput,
         tick: Tick,
+        face: bool,
     ) -> Result<Prepared, StageError> {
-        self.evaluator.evaluate(&input.channels, &mut self.weights, &mut self.binds);
-        let uploads = self.upload.send_binds(renderer, &self.binds)?;
-        self.plan.fill(&mut self.scene, self.rig.world(), &self.weights, self.root);
+        let uploads = if face {
+            self.evaluator.evaluate(&input.channels, &mut self.weights, &mut self.binds);
+            self.upload.send_binds(renderer, &self.binds)?
+        } else {
+            0
+        };
+        let root = self.squash.matrix(self.root.w_axis.truncate()) * self.root;
+        self.plan.fill(&mut self.scene, self.rig.world(), &self.weights, root);
         self.ground.push(&mut self.scene);
-        let (avatar, rig, root) = (&self.avatar, &self.rig, self.root);
+        let (avatar, rig) = (&self.avatar, &self.rig);
         self.props.push(&mut self.scene, &|bone| avatar_bone_world(avatar, rig, root, bone));
         self.submissions += 1;
         let index = if self.clock.is_live() { self.submissions } else { tick.index };
@@ -276,8 +303,20 @@ impl AvatarStage {
             self.scene.background = picture;
         }
         self.props.take(&resolved.props);
+        self.holds.set(resolved.timing);
+        self.squash.set(resolved.squash);
         self.set_subject_root(subject_root);
         owed
+    }
+
+    /// The animated timing in force (`scene.timing`, from the last [`set_scene`](Self::set_scene)).
+    pub fn timing(&self) -> omuzaki_stage_api::Timing {
+        self.holds.timing()
+    }
+
+    /// The squash and stretch drawn now (`scene.squash`): the body's height scale, `1` as posed.
+    pub fn squash_scale(&self) -> f32 {
+        self.squash.scale()
     }
 
     /// Moves the subject member alone, from the next frame.
