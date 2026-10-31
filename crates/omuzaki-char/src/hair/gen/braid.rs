@@ -28,11 +28,16 @@
 //! **Tucked ends.** With [`BraidGen::tuck`] (default none on the crown, [`PATH_TUCK`] on a path), the path sinks by up
 //! to `tuck` toward the head over its first and last [`TUCK_REACH`] of length, so the braid goes into the hair round it.
 //!
+//! **Seated** ([`BraidGen::seat`], [`seat`]): once the rest of the hair lies where it finally does, each point of the
+//! path (the mean of its strands) is carried along the head's normal to `seat` above the outer face of the other hair
+//! within [`SEAT_CONE`] of its direction, less the tuck, the moves smoothed along the braid; where no hair lies under
+//! a point it stays. The braid then lies on the cap and the fringe's roots whatever the head and the fullness.
+//!
 //! **Shade** falls by 0.02 per strand from 0.98. The generator draws no random numbers.
 
 use std::f64::consts::{PI, TAU};
 
-use omuzaki_char_api::{BraidGen, Bulge, HeadSurface, Taper, TaperShape};
+use omuzaki_char_api::{BraidGen, Bulge, HairClump, HeadSurface, Taper, TaperShape};
 use omuzaki_core::glam::{DVec3, Vec3};
 
 use super::cap::smoothstep;
@@ -123,6 +128,7 @@ fn sanitised(g: &BraidGen) -> BraidGen {
         path: if g.path.iter().flatten().all(|v| v.is_finite()) { g.path.clone() } else { Vec::new() },
         lift: g.lift.filter(|v| v.is_finite()),
         tuck: g.tuck.filter(|v| v.is_finite()),
+        seat: g.seat.filter(|v| v.is_finite()),
     }
 }
 
@@ -213,4 +219,61 @@ fn strand(g: &BraidGen, centre: DVec3, path: &[DVec3], k: u8) -> Vec<Vec3> {
             point.as_vec3()
         })
         .collect()
+}
+
+/// The cone round a point of the path in which [`seat`] looks for the hair under it: its cosine (about 7 degrees).
+pub const SEAT_CONE: f32 = 0.9925;
+/// Points on each side of a point of the path that [`seat`]'s moves are averaged over.
+const SEAT_SMOOTH: usize = 4;
+
+/// Seats a compiled braid on the hair under it ([`BraidGen::seat`]; nothing when it is unset): `clumps` are the braid's
+/// strands, [`BraidGen::strands`] to a side, and `hair` the outer face of the rest of the hair as points.
+#[allow(clippy::cast_precision_loss)] // a braid's few strands and points
+pub fn seat(g: &BraidGen, head: &dyn HeadSurface, hair: &[Vec3], clumps: &mut [HairClump]) {
+    let g = &sanitised(g);
+    let Some(seat) = g.seat else { return };
+    let centre = head.centre();
+    let tuck = g.tuck.unwrap_or(if own_path(g) { PATH_TUCK } else { 0.0 });
+    let around: Vec<(Vec3, f32)> = hair
+        .iter()
+        .filter_map(|p| {
+            let offset = *p - centre;
+            let r = offset.length();
+            (r.is_finite() && r > 1e-6).then(|| (offset / r, r))
+        })
+        .collect();
+    for side in clumps.chunks_mut(usize::from(g.strands.max(1))) {
+        let n = side.iter().map(|c| c.rest.len()).min().unwrap_or(0);
+        if n < 2 {
+            continue;
+        }
+        let path: Vec<Vec3> =
+            (0..n).map(|i| side.iter().map(|c| c.rest[i]).sum::<Vec3>() / side.len() as f32).collect();
+        let wanted: Vec<Option<(Vec3, f32)>> = path
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let offset = *p - centre;
+                let dir = offset.try_normalize()?;
+                let outer = around
+                    .iter()
+                    .filter(|(d, _)| d.dot(dir) > SEAT_CONE)
+                    .map(|&(_, r)| r)
+                    .fold(f32::NEG_INFINITY, f32::max);
+                let t = i as f64 / (n - 1) as f64;
+                #[allow(clippy::cast_possible_truncation)] // centimetres
+                let above = (seat - sink(t, tuck)) as f32;
+                outer.is_finite().then(|| (dir, outer + above - offset.length()))
+            })
+            .collect();
+        for i in 0..n {
+            let Some((dir, _)) = wanted[i] else { continue };
+            let near = &wanted[i.saturating_sub(SEAT_SMOOTH)..(i + SEAT_SMOOTH + 1).min(n)];
+            let moves: Vec<f32> = near.iter().flatten().map(|&(_, m)| m).collect();
+            let shift = moves.iter().sum::<f32>() / moves.len().max(1) as f32;
+            for clump in side.iter_mut() {
+                clump.rest[i] += dir * shift;
+            }
+        }
+    }
 }

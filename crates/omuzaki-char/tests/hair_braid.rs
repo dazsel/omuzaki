@@ -237,6 +237,7 @@ fn each_out_of_range_braid_value_fails_naming_its_field() {
         ("strand_width", BraidGen { strand_width: 0.001, ..d() }),
         ("strand_thickness", BraidGen { strand_thickness: 0.0, ..d() }),
         ("height_radius", BraidGen { height_radius: Some(0.0), ..d() }),
+        ("seat", BraidGen { seat: Some(0.2), ..d() }),
     ] {
         let text = bad(g);
         assert!(text.contains(&format!("generator/{field}:")), "{field}: {text}");
@@ -313,4 +314,33 @@ fn the_crown_is_unchanged_without_a_path_and_a_one_point_path_is_refused() {
     assert!(text(BraidGen { path: vec![[30.0, 0.0]], ..BraidGen::default() }).contains("generator/path:"));
     assert!(text(BraidGen { path: vec![[30.0, 0.0], [200.0, 0.0]], ..BraidGen::default() }).contains("path/1/0"));
     assert!(text(BraidGen { tuck: Some(0.2), ..BraidGen::default() }).contains("generator/tuck:"));
+}
+
+#[test]
+fn a_seated_braid_lies_on_the_hair_under_it_whatever_its_lift() {
+    let g = BraidGen { seat: Some(0.004), tuck: Some(0.0), ..over_the_top() };
+    let (high, _) = compile_with(&BraidGen { lift: Some(0.08), ..g.clone() });
+    let (low, _) = compile_with(&BraidGen { lift: Some(0.01), ..g.clone() });
+    // Hair under it: a shell 3 cm off the ball, as points.
+    let shell: Vec<Vec3> = (0..=40)
+        .flat_map(|i| (0..80).map(move |j| (i as f32 * 0.04, j as f32 * std::f32::consts::TAU / 80.0)))
+        .map(|(theta, phi)| {
+            CENTRE + Vec3::new(theta.sin() * phi.sin(), theta.cos(), theta.sin() * phi.cos()) * (R + 0.03)
+        })
+        .collect();
+    let off = |clumps: &[omuzaki_char_api::HairClump], i: usize| {
+        clumps.iter().map(|c| (c.rest[i] - CENTRE).length() - R).sum::<f32>() / clumps.len() as f32
+    };
+    for mut clumps in [high, low] {
+        braid::seat(&g, &Ball, &shell, &mut clumps);
+        for i in [10, braid::REST_POINTS / 2, braid::REST_POINTS - 11] {
+            let o = off(&clumps, i);
+            assert!((o - 0.034).abs() < 0.003, "point {i} lies on the hair, 4 mm over its 3 cm: {o}");
+        }
+    }
+    // Unset, it stays where its lift put it.
+    let (lifted, _) = compile_with(&BraidGen { seat: None, lift: Some(0.08), ..g.clone() });
+    let mut kept = lifted.clone();
+    braid::seat(&BraidGen { seat: None, ..g }, &Ball, &shell, &mut kept);
+    assert_eq!(kept, lifted);
 }

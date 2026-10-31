@@ -76,3 +76,5 @@ strand_width = 0.04
 strand_thickness = 0.022
 # Over the fringe's roots (which stand 4.6 cm off the head), not under them.
 lift = 0.052
+# Then seated on the hair under it, half sunk into it, so it lies over the crown on any head instead of arching off it.
+seat = 0.006

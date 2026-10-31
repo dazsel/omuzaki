@@ -290,3 +290,23 @@ fn a_drape_lays_each_guide_over_the_head_from_above_its_root() {
         assert!(pe.distance(de) < 0.03, "the tips land {} m apart", pe.distance(de));
     }
 }
+
+#[test]
+fn a_hem_cuts_every_guide_level_at_its_height() {
+    let centre = Egg.centre().y;
+    for (hem, tilt) in [([-0.12, -0.12], "level"), ([-0.16, -0.10], "an A-line"), ([-0.30, -0.36], "long")] {
+        let g = CurtainGen { hem: Some(hem), drape_deg: 50.0, ..params(16) };
+        let group = compile_forked(&g, 7);
+        assert_eq!(group.clumps.len(), 16);
+        for clump in &group.clumps {
+            assert_eq!(clump.rest.len(), GUIDE_POINTS);
+            let lowest = clump.rest.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+            let (lo, hi) = (hem[0].min(hem[1]), hem[0].max(hem[1]));
+            #[allow(clippy::cast_possible_truncation)]
+            let (lo, hi) = (centre + lo as f32 - 0.001, centre + hi as f32 + 0.001);
+            assert!((lo..=hi).contains(&lowest), "{tilt}: the lowest point {lowest} is off the hem {lo}..{hi}");
+        }
+    }
+    // Unset, the guides keep their own lengths: the same as a curtain that never had the field.
+    assert_eq!(compile_forked(&CurtainGen { hem: None, ..params(8) }, 3), compile_forked(&params(8), 3));
+}
