@@ -350,8 +350,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     scene.fog = args.fog.then_some(Fog { colour: Colour::hex(0x0018_1220), near: 1.5, far: 4.0 });
     let wants = |effect: &str| args.post.iter().any(|e| e == effect);
     scene.post.bloom = wants("bloom").then_some(Bloom { strength: 0.35, radius: 0.5, threshold: 0.9 });
-    scene.post.depth_of_field =
-        wants("dof").then_some(DepthOfField { focus_distance: 2.2, focus_range: 0.4, max_blur: 0.03 });
+    scene.post.depth_of_field = wants("dof").then_some(DepthOfField::new(2.2, 0.4, 0.03));
     scene.post.grain = wants("grain").then_some(FilmGrain { strength: 0.04 });
     scene.post.grade = wants("grade").then_some(ColourGrade { saturation: 1.1, contrast: 1.1 });
     let quality = Quality {

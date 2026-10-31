@@ -248,6 +248,7 @@ register_op!(SetGround);
         {"bloom": false},
         {"grain": 0.15, "grade": {"saturation": 1.1, "contrast": 1.05}},
         {"depth_of_field": {"focus": "subject", "range": 0.3, "max_blur": 0.01}},
+        {"depth_of_field": {"focus": "subject", "range": 0.2, "max_blur": 0.03, "bokeh": 3}},
         {"scene": "night_stream", "tonemap": "none", "grain": "off"},
         {"occlusion": {"radius": 0.005, "strength": 0.6, "contact": 0.015}},
         {"occlusion": "off"},
@@ -266,7 +267,8 @@ pub struct SetPost {
     /// How light maps to the display.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tonemap: Option<Tonemap>,
-    /// Depth of field (focus `subject` or metres, range, max blur), or `off`.
+    /// Depth of field (focus `subject` or metres, range, max blur, and `bokeh`: out-of-focus lights drawn as discs,
+    /// 0 to 8), or `off`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depth_of_field: Option<OrOff<DepthOfFieldDef>>,
     /// Film grain, 0 to 1, or `off`.

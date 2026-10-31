@@ -109,7 +109,7 @@ fn the_look_turns_the_scenes_post_effects_off_and_sets_grain_and_grade() {
     use omuzaki_stage::scene::alone::post_in_look;
     let scene = Post {
         bloom: Some(Bloom { strength: 0.35, radius: 0.5, threshold: 0.9 }),
-        depth_of_field: Some(DepthOfField { focus_distance: 1.0, focus_range: 0.3, max_blur: 0.01 }),
+        depth_of_field: Some(DepthOfField::new(1.0, 0.3, 0.01)),
         grain: Some(FilmGrain { strength: 0.2 }),
         ..Post::default()
     };

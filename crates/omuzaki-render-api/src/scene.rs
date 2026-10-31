@@ -720,6 +720,37 @@ pub struct DepthOfField {
     /// The strongest blur, as a fraction of the image height, `0..=1`. A renderer may cap it lower for cost.
     #[schemars(range(min = 0.0, max = 1.0))]
     pub max_blur: f32,
+    /// Bokeh: how much of an out-of-focus highlight's light is drawn as a disc of its blur, the way a film lens shows a
+    /// light behind the subject, `0..=8`. `0` blurs highlights like everything else; `1` keeps the light's energy in its
+    /// disc; more makes the discs glow as a film's overexposed lights do.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    #[schemars(range(min = 0.0, max = 8.0))]
+    pub bokeh: f32,
+    /// The linear luminance above which a pixel counts as a highlight for `bokeh`, `>= 0`.
+    #[serde(default = "DepthOfField::default_bokeh_threshold")]
+    #[schemars(range(min = 0.0))]
+    pub bokeh_threshold: f32,
+}
+
+impl DepthOfField {
+    /// The most `bokeh` asks for.
+    pub const MAX_BOKEH: f32 = 8.0;
+    /// What counts as a highlight unless the look says otherwise: just under white.
+    pub const BOKEH_THRESHOLD: f32 = 0.8;
+
+    /// A blur around `focus_distance` with a sharp zone `focus_range` deep, reaching `max_blur`, and no bokeh.
+    pub fn new(focus_distance: f32, focus_range: f32, max_blur: f32) -> Self {
+        Self { focus_distance, focus_range, max_blur, bokeh: 0.0, bokeh_threshold: Self::BOKEH_THRESHOLD }
+    }
+
+    fn default_bokeh_threshold() -> f32 {
+        Self::BOKEH_THRESHOLD
+    }
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if takes a reference
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
 }
 
 /// Film grain, seeded from the frame index so a re-render is identical.
@@ -796,6 +827,12 @@ impl Post {
             check(d.focus_distance.is_finite() && d.focus_distance > 0.0, "depth_of_field.focus_distance", "> 0")?;
             check(at_least_zero(d.focus_range), "depth_of_field.focus_range", ">= 0")?;
             check(unit(d.max_blur), "depth_of_field.max_blur", "in 0..=1")?;
+            check(
+                d.bokeh.is_finite() && (0.0..=DepthOfField::MAX_BOKEH).contains(&d.bokeh),
+                "depth_of_field.bokeh",
+                "in 0..=8",
+            )?;
+            check(at_least_zero(d.bokeh_threshold), "depth_of_field.bokeh_threshold", ">= 0")?;
         }
         if let Some(g) = self.grain {
             check(unit(g.strength), "grain.strength", "in 0..=1")?;
@@ -1236,7 +1273,7 @@ mod tests {
             exposure: 0.9,
             tonemap: Tonemap::Aces,
             bloom: Some(Bloom { strength: 0.3, radius: 0.5, threshold: 0.9 }),
-            depth_of_field: Some(DepthOfField { focus_distance: 2.0, focus_range: 0.3, max_blur: 0.01 }),
+            depth_of_field: Some(DepthOfField { bokeh: 2.0, ..DepthOfField::new(2.0, 0.3, 0.01) }),
             grain: Some(FilmGrain { strength: 0.05 }),
             grade: Some(ColourGrade { saturation: 1.1, contrast: 1.0 }),
             stylize: Stylize::default(),
@@ -1247,7 +1284,7 @@ mod tests {
         let mut scene = Scene::new(Camera::default());
         scene.post = good;
         scene.validate().unwrap();
-        let cases: [Case; 14] = [
+        let cases: [Case; 16] = [
             ("exposure", |p| p.exposure = -0.1),
             ("exposure", |p| p.exposure = f32::NAN),
             ("bloom.strength", |p| p.bloom.as_mut().unwrap().strength = f32::INFINITY),
@@ -1257,6 +1294,8 @@ mod tests {
             ("depth_of_field.focus_distance", |p| p.depth_of_field.as_mut().unwrap().focus_distance = f32::NAN),
             ("depth_of_field.focus_range", |p| p.depth_of_field.as_mut().unwrap().focus_range = -0.1),
             ("depth_of_field.max_blur", |p| p.depth_of_field.as_mut().unwrap().max_blur = 2.0),
+            ("depth_of_field.bokeh", |p| p.depth_of_field.as_mut().unwrap().bokeh = 9.0),
+            ("depth_of_field.bokeh_threshold", |p| p.depth_of_field.as_mut().unwrap().bokeh_threshold = -0.5),
             ("grain.strength", |p| p.grain.as_mut().unwrap().strength = 1.5),
             ("grade.saturation", |p| p.grade.as_mut().unwrap().saturation = f32::NEG_INFINITY),
             ("grade.contrast", |p| p.grade.as_mut().unwrap().contrast = -1.0),

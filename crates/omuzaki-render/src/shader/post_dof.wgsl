@@ -3,8 +3,12 @@
 //
 //   fs_prepass  the scene colour reduced to half size, with each pixel's signed circle of confusion (CoC) from the depth
 //   fs_tiles    the widest blur of anything in front of the focal plane in each block of those pixels
+//   vs_bokeh    with `bokeh` on, the highlights the gather leaves out: one quad per 2x2 block of the prepass image, as wide
+//   fs_bokeh    as the block's blur, drawn as a disc into an image of its own (scatter, for what a gather cannot do: a
+//               small light spreading into a crisp disc rather than a few lucky taps of haze). Each disc adds its block's
+//               mean highlight and a coverage of 1, so where discs overlap their light averages instead of piling up
 //   fs_gather   each pixel averages a disc of its neighbours, a spiral of `taps` samples, as wide as its own CoC or as the
-//               widest blurred foreground near it, and writes that width ("reach") for Resolve
+//               widest blurred foreground near it, adds the bokeh over it, and writes that width ("reach") for Resolve
 //
 // `Resolve` then blends the sharp scene with the gathered image by reach (`post_resolve.wgsl`), so pixels in focus and away
 // from any blurred foreground never pass through the half-size images at all. CoC and reach are in pixels of the half-size
@@ -30,9 +34,9 @@ struct Params {
     depth_samples: u32,     // depth samples compared per pixel (1 when the depth is not multisampled)
     colour_taps: u32,       // bilinear taps per axis that reduce the scene colour
     tile: i32,              // the side of the blocks of fs_tiles, in half-size pixels: at least the widest blur
+    bokeh: f32,             // the gain of the highlight discs; 0 off
+    bokeh_threshold: f32,   // the linear luminance above which a pixel is a highlight
     padding0: u32,          // pads the struct to the 80 bytes the Rust side has (a vec3 would align to 16)
-    padding1: u32,
-    padding2: u32,
 }
 
 // The scene colour in the prepass; the prepass's colour in the tiles and the gather.
@@ -46,6 +50,7 @@ struct Params {
 override packed: bool = false;
 @group(2) @binding(0) var depth: DEPTH_TYPE;     // prepass
 @group(2) @binding(1) var tiles: texture_2d<f32>; // gather: see fs_tiles
+@group(2) @binding(2) var bokeh_image: texture_2d<f32>; // gather, with bokeh on: see fs_bokeh
 
 @vertex
 fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -155,6 +160,25 @@ struct Sample {
     coc: f32,
 }
 
+// Under this blur radius (half-size pixels) a highlight stays in the gather: the disc would be a dot.
+const BOKEH_MIN_COC: f32 = 1.5;
+// The coverage, in blocks, a disc's light is shared over at least: a light of this many blocks (12 half-size pixels) or
+// more fills its disc at its own brightness (times `bokeh`); a smaller one is dimmer in proportion, so a speck does not
+// open into a bright disc.
+const BOKEH_FLOOR: f32 = 3.0;
+
+// The part of a premultiplied colour that is drawn as a bokeh disc rather than gathered: what is above the threshold, once
+// the pixel is blurred enough for a disc to read. Zero with bokeh off, so the gather is exactly as without it.
+fn highlight(c: vec4<f32>, coc: f32) -> vec3<f32> {
+    if (params.bokeh <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let luma = dot(c.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let over = max(luma - params.bokeh_threshold * c.a, 0.0);
+    let blurred = smoothstep(BOKEH_MIN_COC, 2.0 * BOKEH_MIN_COC, abs(coc));
+    return c.rgb * (over / max(luma, 1e-6) * blurred);
+}
+
 fn sample_at(uv: vec2<f32>) -> Sample {
     var out: Sample;
     out.colour = textureSampleLevel(colour, linear_sampler, uv, 0.0);
@@ -164,6 +188,8 @@ fn sample_at(uv: vec2<f32>) -> Sample {
     } else {
         out.coc = textureSampleLevel(coc_image, linear_sampler, uv, 0.0).r;
     }
+    // The highlight leaves the gather; fs_bokeh draws it as a disc.
+    out.colour = vec4<f32>(out.colour.rgb - highlight(out.colour, out.coc), out.colour.a);
     return out;
 }
 
@@ -209,5 +235,72 @@ fn fs_gather(@builtin(position) position: vec4<f32>) -> Gathered {
         }
     }
     out.colour = sum / weights;
+    if (params.bokeh > 0.0) {
+        // The discs over this pixel: their mean light, dimmed for small lights, added in front of the blur. Over a
+        // transparent background the disc brings its own coverage, as bloom's glow does.
+        let b = textureLoad(bokeh_image, vec2<i32>(position.xy), 0);
+        let disc = b.rgb / max(b.a, BOKEH_FLOOR) * params.bokeh;
+        let coverage = min(max(disc.r, max(disc.g, disc.b)), 1.0);
+        out.colour = vec4<f32>(out.colour.rgb + disc, out.colour.a + (1.0 - out.colour.a) * coverage);
+    }
     return out;
+}
+
+struct BokehVertex {
+    @builtin(position) position: vec4<f32>,
+    @location(0) offset: vec2<f32>,  // from the disc's centre, half-size pixels
+    @location(1) colour: vec3<f32>,  // the block's mean highlight
+    @location(2) radius: f32,        // half-size pixels
+}
+
+// One quad per 2x2 block of the prepass image: the block's highlights summed, at the blur radius they average (weighted
+// by their brightness). A block with no highlight is a quad of no area, which rasterises nothing.
+@vertex
+fn vs_bokeh(@builtin(vertex_index) index: u32, @builtin(instance_index) block: u32) -> BokehVertex {
+    var out: BokehVertex;
+    out.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    let blocks_x = (u32(params.size.x) + 1u) / 2u;
+    let origin = vec2<i32>(i32(block % blocks_x), i32(block / blocks_x)) * 2;
+    let last = vec2<i32>(params.size) - vec2<i32>(1, 1);
+    var light = vec3<f32>(0.0);
+    var radius = 0.0;
+    var weight = 0.0;
+    for (var i = 0; i < 4; i++) {
+        let at = min(origin + vec2<i32>(i & 1, i >> 1u), last);
+        var c = textureLoad(colour, at, 0);
+        var coc = 0.0;
+        if (packed) {
+            coc = c.a;
+            c.a = 1.0;
+        } else {
+            coc = textureLoad(coc_image, at, 0).r;
+        }
+        let h = highlight(c, coc);
+        let w = dot(h, vec3<f32>(0.2126, 0.7152, 0.0722));
+        light += h;
+        radius += abs(coc) * w;
+        weight += w;
+    }
+    if (weight < 1e-5) {
+        return out;
+    }
+    radius = radius / weight;
+    out.radius = radius;
+    out.colour = light * 0.25;
+    // Two triangles: corners 0 1 2 and 2 1 3 of the unit square, as vertex indices 0..6.
+    let corners = array<u32, 6>(0u, 1u, 2u, 2u, 1u, 3u);
+    let k = corners[index % 6u];
+    let unit = vec2<f32>(f32(k & 1u), f32(k >> 1u)) * 2.0 - 1.0;
+    out.offset = unit * (radius + 1.0);
+    let centre = vec2<f32>(origin) + 1.0;
+    let pixel = centre + out.offset;
+    out.position = vec4<f32>(pixel.x / params.size.x * 2.0 - 1.0, 1.0 - pixel.y / params.size.y * 2.0, 0.0, 1.0);
+    return out;
+}
+
+// A disc with an edge one pixel soft: the block's light and a coverage of one, summed where discs overlap.
+@fragment
+fn fs_bokeh(in: BokehVertex) -> @location(0) vec4<f32> {
+    let inside = clamp(in.radius - length(in.offset) + 0.5, 0.0, 1.0);
+    return vec4<f32>(in.colour * inside, inside);
 }

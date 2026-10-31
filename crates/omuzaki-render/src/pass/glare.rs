@@ -189,7 +189,8 @@ impl Chain {
                 ],
             })
         };
-        let (bright, first, second, own) = (image("glare bright"), image("glare step 1"), image("glare step 2"), image("glare"));
+        let (bright, first, second, own) =
+            (image("glare bright"), image("glare step 1"), image("glare step 2"), image("glare"));
         let axis_images: Vec<wgpu::TextureView> = (0..AXES).map(|_| image("glare axis")).collect();
         let (from_bright, from_first, from_second) = (read(&bright), read(&first), read(&second));
         let mut streaks = Vec::with_capacity(STEPS * AXES);
@@ -202,12 +203,10 @@ impl Chain {
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
             wgpu::BindGroupEntry { binding: BRIGHT_BINDING, resource: wgpu::BindingResource::TextureView(&bright) },
         ];
-        entries.extend(
-            AXIS_BINDINGS
-                .into_iter()
-                .zip(&axis_images)
-                .map(|(binding, view)| wgpu::BindGroupEntry { binding, resource: wgpu::BindingResource::TextureView(view) }),
-        );
+        entries.extend(AXIS_BINDINGS.into_iter().zip(&axis_images).map(|(binding, view)| wgpu::BindGroupEntry {
+            binding,
+            resource: wgpu::BindingResource::TextureView(view),
+        }));
         let composite_input = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("glare composite input"),
             layout: &glare.composite_layout,

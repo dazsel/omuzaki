@@ -478,7 +478,7 @@ fn nothing_the_caller_sets_on_the_scene_reaches_the_sheet() {
             exposure: 2.5,
             tonemap: Tonemap::None,
             bloom: Some(Bloom { strength: 2.0, radius: 0.5, threshold: 0.1 }),
-            depth_of_field: Some(DepthOfField { focus_distance: 1.0, focus_range: 0.1, max_blur: 4.0 }),
+            depth_of_field: Some(DepthOfField::new(1.0, 0.1, 4.0)),
             grain: Some(FilmGrain { strength: 0.5 }),
             grade: Some(ColourGrade { saturation: 0.0, contrast: 2.0 }),
             ..Post::default()

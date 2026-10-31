@@ -674,7 +674,11 @@ fn resolve_post(
                     -camera.view().transform_point3(figure.root.transform_point3(aim)).z
                 }
             };
-            Ok(DepthOfField { focus_distance, focus_range: dof.range * unit, max_blur: dof.max_blur })
+            Ok(DepthOfField {
+                bokeh: dof.bokeh,
+                bokeh_threshold: dof.bokeh_threshold.unwrap_or(DepthOfField::BOKEH_THRESHOLD),
+                ..DepthOfField::new(focus_distance, dof.range * unit, dof.max_blur)
+            })
         })
         .transpose()?;
     Ok(Post {

@@ -141,6 +141,18 @@ pub struct DepthOfFieldDef {
     pub range: f32,
     /// The strongest blur, as a fraction of the image height, `>= 0`.
     pub max_blur: f32,
+    /// Bokeh: out-of-focus highlights drawn as discs of their blur, `0..=8` (0 off, 1 keeps a light's energy, more makes
+    /// them glow).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub bokeh: f32,
+    /// The linear luminance above which a pixel is a highlight for `bokeh`, `>= 0`; just under white when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bokeh_threshold: Option<f32>,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if takes a reference
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
 }
 
 /// A colour grade as authored: the render-api [`ColourGrade`] with a strict reader (a misspelt key is refused).

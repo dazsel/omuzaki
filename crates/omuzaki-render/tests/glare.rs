@@ -101,7 +101,9 @@ fn the_streaks_follow_the_count_and_the_angle() {
     let mut r = support::renderer();
     let mut scene = light_scene(&mut r, LIGHT);
     let off = render(&mut r, &scene, AlphaEncoding::Straight);
-    for (streaks, rotation, name) in [(2, 0.0, "2_at_0"), (2, 90.0, "2_at_90"), (4, 0.0, "4_at_0"), (6, 15.0, "6_at_15")] {
+    for (streaks, rotation, name) in
+        [(2, 0.0, "2_at_0"), (2, 90.0, "2_at_90"), (4, 0.0, "4_at_0"), (6, 15.0, "6_at_15")]
+    {
         scene.post.glare = Some(glare(streaks, rotation));
         let on = render(&mut r, &scene, AlphaEncoding::Straight);
         save(&format!("glare_{name}.png"), &on);
@@ -131,10 +133,9 @@ fn glare_off_or_under_the_threshold_changes_no_byte() {
     let mut r = support::renderer();
     let mut scene = light_scene(&mut r, LIGHT);
     let off = render(&mut r, &scene, AlphaEncoding::Straight);
-    for (case, look) in [
-        ("zero strength", Glare { strength: 0.0, ..glare(4, 0.0) }),
-        ("no streaks, halo or ghosts", glare(0, 0.0)),
-    ] {
+    for (case, look) in
+        [("zero strength", Glare { strength: 0.0, ..glare(4, 0.0) }), ("no streaks, halo or ghosts", glare(0, 0.0))]
+    {
         scene.post.glare = Some(look);
         let image = render(&mut r, &scene, AlphaEncoding::Straight);
         assert_eq!(image.rgba8, off.rgba8, "{case}: the frame is byte-identical to no glare");

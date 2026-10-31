@@ -45,7 +45,7 @@ fn fixture(size: UVec2) -> Fixture {
     scene.instances.push(Instance::new(mesh, material, Mat4::from_translation(Vec3::new(0.0, 0.0, 1.0))));
     scene.instances.push(Instance::new(mesh, material, Mat4::from_translation(Vec3::new(0.5, 0.2, -2.0))));
     scene.post.bloom = Some(Bloom { strength: 0.35, radius: 0.5, threshold: 0.5 });
-    scene.post.depth_of_field = Some(DepthOfField { focus_distance: 2.0, focus_range: 0.3, max_blur: 0.03 });
+    scene.post.depth_of_field = Some(DepthOfField::new(2.0, 0.3, 0.03));
     scene.post.grain = Some(FilmGrain { strength: 0.04 });
     scene.post.grade = Some(ColourGrade { saturation: 1.1, contrast: 1.1 });
     let target = renderer.create_target(&TargetDesc { size, alpha: AlphaEncoding::Premultiplied }).unwrap();

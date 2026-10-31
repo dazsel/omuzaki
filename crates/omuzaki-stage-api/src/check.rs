@@ -99,6 +99,10 @@ impl SceneDef {
             }
             non_negative("scene.post.depth_of_field.range", dof.range)?;
             non_negative("scene.post.depth_of_field.max_blur", dof.max_blur)?;
+            within("scene.post.depth_of_field.bokeh", dof.bokeh, 0.0, 8.0)?;
+            if let Some(t) = dof.bokeh_threshold {
+                non_negative("scene.post.depth_of_field.bokeh_threshold", t)?;
+            }
         }
         if let Some(g) = s.post.grain {
             within("scene.post.grain", g, 0.0, 1.0)?;
