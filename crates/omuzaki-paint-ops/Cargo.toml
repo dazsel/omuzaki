@@ -1,0 +1,36 @@
+[package]
+name = "omuzaki-paint-ops"
+description = "The illustrator's ops (`paint.*`): paintings kept in the document as layers of marks, drawn and edited mark by mark by a person or an agent, rendered, sampled and exported as layered art for the 2D puppet."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-paint = { path = "../omuzaki-paint" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+[dev-dependencies]
+image.workspace = true
+tempfile.workspace = true
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
+omuzaki-store-mock = { path = "../omuzaki-store-mock" }
+
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the illustrator's ops: `paint.new`, `paint.delete`, `paint.list`, `paint.get`, `paint.add_layer`, `paint.set_layer`, `paint.remove_layer`, `paint.move_layer`, `paint.draw` (marks, appended, each undoable), `paint.remove_marks`, `paint.replace_mark`, `paint.set_mask`, `paint.brushes`, `paint.render` (a PNG in the asset store and optionally a project file), `paint.sample` and `paint.export_layers` (layered art for the puppet's auto-rig); paintings live under `paintings/<id>` in the document as `omuzaki-paint` data"
+# The paint.* ops register themselves (ADR 0015, `cargo xtask lint-registers`).
+registers = true
+
+[lints]
+workspace = true

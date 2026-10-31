@@ -465,6 +465,9 @@ pub struct SetLighting {
     /// lights with the toon ramp alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub back_light_rim: Option<f32>,
+    /// How soft shadows are, 0 to 1: 0 is a tight edge, 1 a window-light or overcast penumbra of about 8 cm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow_softness: Option<f32>,
     /// The darkest the skin's shadow gets, 0 or more, or `off` for each material's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skin_floor: Option<OrOff<f32>>,
@@ -514,6 +517,9 @@ impl Op for SetLighting {
         }
         if let Some(back_light_rim) = self.back_light_rim {
             l.back_light_rim = back_light_rim;
+        }
+        if let Some(shadow_softness) = self.shadow_softness {
+            l.shadow_softness = shadow_softness;
         }
         if let Some(floor) = &self.skin_floor {
             l.skin_floor = floor.clone().into_option();

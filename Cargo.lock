@@ -4834,6 +4834,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-brief"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-char",
+ "omuzaki-char-api",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-face",
+ "omuzaki-link-build",
+ "omuzaki-ops-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "omuzaki-budget"
 version = "0.0.0"
 dependencies = [
@@ -4933,6 +4951,7 @@ dependencies = [
  "omuzaki-audio-engine",
  "omuzaki-audio-fx",
  "omuzaki-audio-mock",
+ "omuzaki-brief",
  "omuzaki-char",
  "omuzaki-char-api",
  "omuzaki-core",
@@ -4962,6 +4981,7 @@ dependencies = [
  "omuzaki-obs",
  "omuzaki-ops",
  "omuzaki-ops-api",
+ "omuzaki-paint-ops",
  "omuzaki-parity",
  "omuzaki-performer-api",
  "omuzaki-render",
@@ -5945,6 +5965,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-paint"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "image",
+ "kurbo",
+ "libm",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-paint-ops"
+version = "0.0.0"
+dependencies = [
+ "image",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-ops-api",
+ "omuzaki-ops-mock",
+ "omuzaki-paint",
+ "omuzaki-store-api",
+ "omuzaki-store-mock",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "omuzaki-parity"
 version = "0.0.0"
 dependencies = [
@@ -6704,6 +6759,7 @@ dependencies = [
  "omuzaki-speech",
  "omuzaki-track",
  "omuzaki-track-api",
+ "omuzaki-track-video",
  "omuzaki-track-voice",
  "serde_json",
  "sha2 0.10.9",
@@ -6788,6 +6844,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-track-video"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-track-api",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "omuzaki-track-voice"
 version = "0.0.0"
 dependencies = [
@@ -6848,6 +6913,7 @@ dependencies = [
  "omuzaki-audio-api",
  "omuzaki-audio-engine",
  "omuzaki-audio-fx",
+ "omuzaki-brief",
  "omuzaki-camera-mf",
  "omuzaki-char",
  "omuzaki-char-api",
@@ -6878,6 +6944,7 @@ dependencies = [
  "omuzaki-ops-api",
  "omuzaki-ops-mock",
  "omuzaki-osc",
+ "omuzaki-paint-ops",
  "omuzaki-parity",
  "omuzaki-render",
  "omuzaki-render-api",
@@ -6905,6 +6972,7 @@ dependencies = [
  "omuzaki-track-api",
  "omuzaki-track-mock",
  "omuzaki-track-net",
+ "omuzaki-track-video",
  "omuzaki-twitch",
  "omuzaki-ui-api",
  "omuzaki-ui-mock",

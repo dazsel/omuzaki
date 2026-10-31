@@ -233,6 +233,7 @@ impl FramePass for Shadows {
             self.draw_map(cx, index);
             ran = true;
         }
+        cx.attachments.shadow.set_softness(&cx.shared.gpu.queue, cx.frame.scene.shadow_softness);
         ran |= self.draw_hair(cx);
         Ok(if ran { Outcome::Ran } else { Outcome::Skipped })
     }

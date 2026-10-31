@@ -310,3 +310,38 @@ fn the_ops_run_last_come_first_and_are_kept_for_the_next_start() {
     again.run_steps(2);
     assert_eq!(results(&again).first().map(String::as_str), Some("gen.toggle_34"));
 }
+
+/// A query that reads like a description offers to make a character from it, first; Enter makes it through
+/// `character.create_from_description` on the studio's own core, as one op. Short queries don't offer it.
+#[test]
+fn a_description_typed_into_the_palette_makes_a_character() {
+    omuzaki_ui::link();
+    let core = omuzaki_ui::wiring::core_on(
+        omuzaki_ui::wiring::Document::empty(),
+        omuzaki_ops_api::ServicesBuilder::new().build(),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let runner = Arc::clone(&core.runner);
+    let mut h = Harness::builder()
+        .with_size(vec2(1366.0, 768.0))
+        .build_ui_state(|ui: &mut Ui, shell: &mut Shell| shell.ui(ui), Shell::new(Arc::clone(&core.runner), None));
+    h.run_steps(4);
+    press(&mut h, Modifiers::COMMAND, Key::K);
+    h.event(Event::Text("part add".to_owned()));
+    h.run_steps(2);
+    let first: Vec<String> =
+        h.query_all_by_role(Role::ListBoxOption).filter_map(|node| node.accesskit_node().label()).collect();
+    assert!(!first.iter().any(|l| l.contains("Make a character")), "two words are a search: {first:?}");
+    h.event(Event::Text(" knight with a red cape".to_owned()));
+    h.run_steps(2);
+    let shown: Vec<String> =
+        h.query_all_by_role(Role::ListBoxOption).filter_map(|node| node.accesskit_node().label()).collect();
+    assert!(shown.first().is_some_and(|l| l.contains("Make a character from these words")), "{shown:?}");
+    press(&mut h, Modifiers::NONE, Key::Enter);
+    h.run_steps(3);
+    let stored = runner
+        .get(&omuzaki_doc_api::DocPath::parse("characters").unwrap_or_else(|e| panic!("{e}")), &Grants::person())
+        .unwrap_or_else(|e| panic!("{e}"));
+    let made: Vec<String> = stored.and_then(|c| c.as_object().map(|m| m.keys().cloned().collect())).unwrap_or_default();
+    assert!(made.iter().any(|id| id.contains("knight")), "{made:?}");
+}

@@ -248,6 +248,24 @@ fn add_puts_a_normalised_part_in_at_the_kinds_usual_layer_and_the_character_stil
 }
 
 #[test]
+fn add_fixes_the_part_where_attach_says_and_refuses_an_anchor_on_a_missing_part() {
+    let mut doc = project();
+    let attach = json!({"to": "anchor", "part": "shirt", "anchor": "collar_ring"});
+    round_trip(
+        &mut doc,
+        "part.add",
+        json!({"character": "mock", "kind": "mock-garment", "id": "pin", "attach": attach}),
+    );
+    let stored = at(&doc, "characters/mock/parts/pin/attach").unwrap();
+    assert_eq!((stored["to"].as_str(), stored["part"].as_str()), (Some("anchor"), Some("shirt")), "{stored}");
+
+    let attach = json!({"to": "anchor", "part": "nope", "anchor": "collar_ring"});
+    let missing =
+        refused(&doc, "part.add", json!({"character": "mock", "kind": "mock-garment", "id": "pin2", "attach": attach}));
+    assert_error(&missing, ErrorCode::NotFound, "attach/part", &["no part `nope`"], &["`shirt`"]);
+}
+
+#[test]
 fn add_without_a_parameters_object_uses_the_kinds_defaults() {
     let mut doc = project();
     round_trip(&mut doc, "part.add", json!({"character": "mock", "kind": "mock-garment", "id": "plain"}));
