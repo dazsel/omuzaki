@@ -92,13 +92,34 @@ fn the_weights_hand_over_from_the_hips_to_the_thigh_to_the_shin() {
         JointRef::Humanoid(omuzaki_anim_api::HumanoidBone::LeftUpperLeg),
         JointRef::Humanoid(omuzaki_anim_api::HumanoidBone::LeftLowerLeg),
     );
+    // The left leg's skin: each vertex and what its thigh carries.
+    let leg =
+        stack.output(conformance::BODY).meshes.iter().find(|m| m.name == "leg.L").expect("the body has a left leg");
+    let legs: Vec<_> = (0..leg.geometry.positions.len())
+        .map(|v| {
+            let lg = &leg.geometry;
+            let thigh = (0..4)
+                .filter(|&k| leg.joint_bones[usize::from(lg.joints[v][k])] == upper)
+                .map(|k| lg.weights[v][k])
+                .sum::<f32>();
+            (lg.positions[v], thigh)
+        })
+        .collect();
     for v in 0..g.positions.len() {
         let total: f32 = g.weights[v].iter().sum();
         assert!((total - 1.0).abs() < 1e-5, "vertex {v}: weights sum to {total}");
         let y = g.positions[v].y;
         let left = v < g.positions.len() / 2;
+        // Tights move with the skin under them (#2604): down the shin they carry what the leg's skin there does (the
+        // shin, handing over to the foot and the toes, and whatever the capsule skin leaves on the thigh).
         if left && y < 0.15 {
-            assert!(share(v, &lower) > 0.99, "vertex {v} at y = {y} is on the shin");
+            let p = g.positions[v];
+            let skin = legs.iter().min_by(|a, b| a.0.distance(p).total_cmp(&b.0.distance(p))).map(|s| s.1).unwrap();
+            assert!(
+                (share(v, &upper) - skin).abs() < 0.05,
+                "vertex {v} at y = {y}: thigh {} under skin {skin}",
+                share(v, &upper)
+            );
         }
         if left && (0.22..0.30).contains(&y) {
             assert!(

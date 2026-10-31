@@ -124,6 +124,7 @@ fn registered_facts_are_listed_with_their_types_with_the_built_ins() {
             "fit",
             "head",
             "head-frame",
+            "skin",
             "stature",
             "test-agree",
             "test-append",

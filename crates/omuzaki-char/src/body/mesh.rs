@@ -380,7 +380,7 @@ fn skin_along_spine(segments: &SegmentSet, mesh: &mut PartMesh) {
     }
     let last = chain.len() - 1;
     let peaks: Vec<f64> =
-        (0..chain.len()).map(|k| if k == 0 || k == last { at[k] } else { (at[k] + at[k + 1]) * 0.5 }).collect();
+        (0..chain.len()).map(|k| if k == 0 || k == last { at[k] } else { f64::midpoint(at[k], at[k + 1]) }).collect();
     // Where `p` falls along the chain: the arc length of its nearest point.
     let along = |p: DVec3| {
         let mut best = (f64::MAX, 0.0);

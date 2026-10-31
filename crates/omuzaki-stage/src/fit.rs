@@ -156,7 +156,7 @@ fn bone_index(skeleton: &Skeleton, joint: &JointRef) -> usize {
         JointRef::Humanoid(h) => skeleton.humanoid_bone(*h),
         JointRef::Named(name) => skeleton.find(name.as_str()),
     };
-    bone.map_or(usize::MAX, |b| b.index())
+    bone.map_or(usize::MAX, omuzaki_anim_api::BoneId::index)
 }
 
 /// Triangles in a uniform grid, each with the layer it belongs to, for rays a few centimetres long.
@@ -229,6 +229,7 @@ impl Grid {
 }
 
 /// Where the line `from + dir * t` crosses triangle `tri`, from either side (Möller and Trumbore).
+#[allow(clippy::many_single_char_names)] // Möller and Trumbore's names: p, q, s, t, u, v
 fn ray_triangle(from: Vec3, dir: Vec3, tri: &[Vec3; 3]) -> Option<f32> {
     let (e1, e2) = (tri[1] - tri[0], tri[2] - tri[0]);
     let p = dir.cross(e2);
@@ -348,7 +349,7 @@ fn posed_all(meshes: &[Layered<'_>], skin: Option<&[Mat4]>) -> Vec<(Vec<Vec3>, V
 fn placed(meshes: &[Layered<'_>], posed: &[(Vec<Vec3>, Vec<Vec3>)]) -> Grid {
     let mut out = Vec::new();
     for (m, (points, _)) in meshes.iter().zip(posed) {
-        for t in m.skinned.mesh.geometry.indices.chunks_exact(3) {
+        for t in m.skinned.mesh.geometry.indices.as_chunks::<3>().0 {
             let at = |i: u32| points.get(i as usize).copied();
             if let (Some(a), Some(b), Some(c)) = (at(t[0]), at(t[1]), at(t[2])) {
                 out.push(([a, b, c], m.layer));
@@ -363,7 +364,7 @@ impl<'a> FitCheck<'a> {
     /// what the outfit covers in the bind pose: each sample of a layer whose outward ray meets a layer over it within
     /// [`COVER`] before it meets its own layer or one under it (a leg's top inside the hips is hidden by the hips, not
     /// by the cloth). Cold.
-    #[allow(clippy::cast_precision_loss)] // the sample count
+    #[allow(clippy::cast_precision_loss, clippy::many_single_char_names)] // the sample count; k, m, t and a, b, c
     pub fn new(built: &'a BuiltCharacter) -> Self {
         let skeleton = &built.rig.skeleton;
         let category = |part| {
@@ -379,13 +380,14 @@ impl<'a> FitCheck<'a> {
             }
             let layer = match category(&m.part) {
                 Some(PartCategory::Body) => 0,
-                Some(PartCategory::Garment) => match layers.iter().position(|l| l == m.part.as_str()) {
-                    Some(k) => k,
-                    None => {
+                Some(PartCategory::Garment) => {
+                    if let Some(k) = layers.iter().position(|l| l == m.part.as_str()) {
+                        k
+                    } else {
                         layers.push(m.part.as_str().to_owned());
                         layers.len() - 1
                     }
-                },
+                }
                 _ => continue,
             };
             let bones = m.mesh.joint_bones.iter().map(|j| bone_index(skeleton, j)).collect();
@@ -397,7 +399,7 @@ impl<'a> FitCheck<'a> {
         for (k, m) in meshes.iter().enumerate() {
             let (points, normals) = &bind[k];
             let samples: &[[f32; 3]] = if m.layer == 0 { &BODY_SAMPLES } else { &BODY_SAMPLES[..1] };
-            for t in m.skinned.mesh.geometry.indices.chunks_exact(3) {
+            for t in m.skinned.mesh.geometry.indices.as_chunks::<3>().0 {
                 let corners = [t[0] as usize, t[1] as usize, t[2] as usize];
                 if corners.iter().any(|c| *c >= points.len()) {
                     continue;

@@ -518,7 +518,7 @@ pub fn build_part(
     match category {
         PartCategory::Body => crate::skin_transfer::publish(&mut output),
         PartCategory::Garment => {
-            crate::skin_transfer::transfer(&mut output, published.get::<crate::skin_transfer::SkinFact>())
+            crate::skin_transfer::transfer(&mut output, published.get::<crate::skin_transfer::SkinFact>());
         }
         _ => {}
     }

@@ -1,4 +1,4 @@
-//! The built-in facts (the six the parts publish and the design layer's two frames) are listed once `link()` is called (ADR 0054 section 5), and nothing that builds or validates
+//! The built-in facts (the six the parts publish, the skin the body and garments publish (#2604) and the design layer's two frames) are listed once `link()` is called (ADR 0054 section 5), and nothing that builds or validates
 //! depends on that (`no_link.rs` tests that in a binary that never calls it).
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
@@ -6,10 +6,11 @@
 
 use omuzaki_char_api::facts;
 
-const BUILT_IN: [&str; 8] = ["anchors", "body-frame", "colliders", "face", "fit", "head", "head-frame", "stature"];
+const BUILT_IN: [&str; 9] =
+    ["anchors", "body-frame", "colliders", "face", "fit", "head", "head-frame", "skin", "stature"];
 
 #[test]
-fn link_lists_the_eight_built_in_facts_once_each() {
+fn link_lists_the_nine_built_in_facts_once_each() {
     omuzaki_char_api::link();
     let listed = facts().expect("no two facts share a name");
     for name in BUILT_IN {

@@ -60,6 +60,7 @@ fn cell(p: Vec3) -> (i32, i32, i32) {
 
 /// The point of triangle `abc` nearest `p`, as barycentric weights of `a`, `b` and `c` (Ericson, Real-Time Collision
 /// Detection, 5.1.5).
+#[allow(clippy::many_single_char_names)] // p, a, b, c and the barycentric v, w: Ericson's names
 fn nearest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> [f32; 3] {
     let (ab, ac, ap) = (b - a, c - a, p - a);
     let (d1, d2) = (ab.dot(ap), ac.dot(ap));
@@ -101,6 +102,16 @@ impl SkinSurface {
     /// another of them: a body is several closed meshes that overlap where they join (the top of a leg inside the
     /// hips), and a garment over the join must take the weights of the skin you see, not of the leg's hidden end.
     pub fn of<'a>(meshes: impl IntoIterator<Item = &'a PartMesh>) -> Self {
+        Self::gather(meshes, true)
+    }
+
+    /// The skin of a garment's `meshes`, all of it: cloth is open sheets, one over another, with no inside to hide.
+    pub fn sheets<'a>(meshes: impl IntoIterator<Item = &'a PartMesh>) -> Self {
+        Self::gather(meshes, false)
+    }
+
+    #[allow(clippy::many_single_char_names)] // p, v, k, q and the triangle's a, b, c
+    fn gather<'a>(meshes: impl IntoIterator<Item = &'a PartMesh>, closed: bool) -> Self {
         let mut out = Self::default();
         let mut slot: HashMap<JointRef, u16> = HashMap::new();
         let mut first = Vec::new();
@@ -130,12 +141,15 @@ impl SkinSurface {
             }
             let owner = u32::try_from(owner).unwrap_or(u32::MAX);
             first.push((base, owner));
-            for t in g.indices.chunks_exact(3) {
+            for t in g.indices.as_chunks::<3>().0 {
                 out.triangles.push([base + t[0], base + t[1], base + t[2]]);
                 out.owners.push(owner);
             }
         }
         out.index();
+        if !closed {
+            return out;
+        }
         // A vertex is inside another mesh when the nearest point of that mesh faces away from it.
         let owner_of =
             |v: usize| first.iter().rev().find(|(base, _)| *base as usize <= v).map_or(u32::MAX, |(_, o)| *o);
@@ -188,25 +202,31 @@ impl SkinSurface {
     }
 
     /// [`nearest`](Self::nearest) among the triangles `keep` takes.
+    #[allow(clippy::many_single_char_names)] // p, k and the triangle's a, b, c
     fn nearest_where(&self, p: Vec3, keep: impl Fn(usize) -> bool) -> Option<(f32, usize, [f32; 3])> {
         let (cx, cy, cz) = cell(p);
         let mut best: Option<(f32, usize, [f32; 3])> = None;
-        for x in cx - 1..=cx + 1 {
-            for y in cy - 1..=cy + 1 {
-                for z in cz - 1..=cz + 1 {
-                    let Some(list) = self.cells.get(&(x, y, z)) else { continue };
-                    for &k in list {
-                        let k = k as usize;
-                        if !keep(k) {
-                            continue;
-                        }
-                        let [a, b, c] = self.triangles[k].map(|i| self.positions[i as usize]);
-                        let bary = nearest_on_triangle(p, a, b, c);
-                        let d = p.distance(a * bary[0] + b * bary[1] + c * bary[2]);
-                        if d <= FAR && best.is_none_or(|(e, _, _)| d < e) {
-                            best = Some((d, k, bary));
-                        }
-                    }
+        // The query's own cell first, so the best so far is near and prunes the rest.
+        let cells = std::iter::once((0, 0, 0)).chain(
+            (-1..=1)
+                .flat_map(|x| (-1..=1).flat_map(move |y| (-1..=1).map(move |z| (x, y, z))))
+                .filter(|o| *o != (0, 0, 0)),
+        );
+        for (x, y, z) in cells {
+            let Some(list) = self.cells.get(&(cx + x, cy + y, cz + z)) else { continue };
+            for &k in list {
+                let k = k as usize;
+                let [a, b, c] = self.triangles[k].map(|i| self.positions[i as usize]);
+                // The triangle's bounds are no nearer than the best so far: it can't be nearer either.
+                let reach = best.map_or(FAR, |(e, _, _)| e);
+                let outside = (a.min(b).min(c) - p).max(p - a.max(b).max(c)).max(Vec3::ZERO);
+                if outside.length_squared() > reach * reach || !keep(k) {
+                    continue;
+                }
+                let bary = nearest_on_triangle(p, a, b, c);
+                let d = p.distance(a * bary[0] + b * bary[1] + c * bary[2]);
+                if d <= FAR && best.is_none_or(|(e, _, _)| d < e) {
+                    best = Some((d, k, bary));
                 }
             }
         }
@@ -337,12 +357,11 @@ pub fn transfer_mesh(mesh: &mut PartMesh, skins: &[Arc<SkinSurface>]) -> usize {
         }
         let (mut new_joints, mut new_weights) = ([0_u16; INFLUENCES], [0.0_f32; INFLUENCES]);
         for (k, (joint, w)) in blend.into_iter().enumerate() {
-            let slot = match mesh.joint_bones.iter().position(|j| *j == joint) {
-                Some(slot) => slot,
-                None => {
-                    mesh.joint_bones.push(joint);
-                    mesh.joint_bones.len() - 1
-                }
+            let slot = if let Some(slot) = mesh.joint_bones.iter().position(|j| *j == joint) {
+                slot
+            } else {
+                mesh.joint_bones.push(joint);
+                mesh.joint_bones.len() - 1
             };
             new_joints[k] = u16::try_from(slot).unwrap_or(0);
             new_weights[k] = w / total;
@@ -362,12 +381,15 @@ pub fn transfer(output: &mut PartOutput, skins: &[Arc<SkinSurface>]) {
             transfer_mesh(mesh, skins);
         }
     }
-    publish(output);
+    put(output, SkinSurface::sheets(&output.meshes));
 }
 
-/// Publishes the skin of `output`'s meshes ([`SkinFact`]), if it has any.
+/// Publishes the skin of a body part's `output` ([`SkinFact`]), if it has any.
 pub fn publish(output: &mut PartOutput) {
-    let skin = SkinSurface::of(&output.meshes);
+    put(output, SkinSurface::of(&output.meshes));
+}
+
+fn put(output: &mut PartOutput, skin: SkinSurface) {
     if !skin.is_empty() {
         output.publishes.put::<SkinFact>(Arc::new(skin));
     }
