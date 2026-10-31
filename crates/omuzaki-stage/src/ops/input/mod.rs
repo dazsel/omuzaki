@@ -19,6 +19,7 @@
 //! | `input.vmc_out {to}` | `perform` | Confirm to start (it sends the performance out); anyone may stop | the inverse `input.vmc_out` |
 //! | `input.track_body {arms, hands, precise}` | `perform` | Confirm to start (it reads more of the person); anyone may stop | the inverse `input.track_body` |
 //! | `input.body` | `read` | free | none (a query) |
+//! | `input.open_video {path}` | `edit:settings` | Confirm (it reads a recording of the person) | the inverse `input.open_video` |
 //!
 //! The choices are Machine settings (`input.source`, `input.camera`, `input.body`): when the App registers a
 //! [`Settings`](omuzaki_settings_api::service::Settings) service, the ops write them there too, and their answer says
@@ -43,6 +44,7 @@ pub mod doctor;
 pub mod body;
 pub mod gestures;
 pub mod health;
+pub mod open_video;
 pub mod preview;
 pub mod recheck;
 pub mod request_camera;
@@ -191,6 +193,9 @@ fn op_error(error: InputError) -> OpError {
         InputError::NoBodyTracking => {
             OpError::unsupported(message).hint("the body models are not installed in this build")
         }
+        InputError::NoVideo => OpError::unsupported(message).hint("this build's tracker has no video reader"),
+        InputError::Video(_) => OpError::invalid("path", message)
+            .hint("give the absolute path of a video file on this machine (MP4, MKV, MOV, WebM or Y4M)"),
         InputError::PoseOutput(_) => {
             OpError::internal(message).hint("check the address, or pick another port if this one is taken")
         }

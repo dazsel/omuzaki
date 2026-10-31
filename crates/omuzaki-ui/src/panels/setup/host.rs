@@ -1,7 +1,8 @@
 //! What the Setup panel asks of the studio: what the machine can do ([`Probes`]), and the [`Effect`]s the flow asks
 //! for, carried out through the same ops the Live panel calls. [`LiveHost`] is the studio's; tests pass their own.
 
-use omuzaki_ops_api::{Actor, Runner};
+use omuzaki_char_api::CharId;
+use omuzaki_ops_api::{Actor, Grants, Mode, Request, Runner};
 use omuzaki_setup::{
     CharacterChoice, Current, Effect, Event, IPhone, InputChoice, LanguageOffer, OutputKind, Permission, Probes,
     TrackerModel,
@@ -29,6 +30,41 @@ pub struct HostStatus {
     pub imported: Option<String>,
     /// The last op that failed, and why.
     pub failure: Option<(String, String)>,
+    /// The character the Describe card made, when it made one.
+    pub described: Option<Described>,
+}
+
+/// The op the Describe card runs.
+pub const DESCRIBE_OP: &str = "character.create_from_description";
+
+/// What the Describe card made: the character, and what the op said of the words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Described {
+    /// The new character.
+    pub character: CharId,
+    /// Its name.
+    pub name: String,
+    /// How many choices the words made (the rest came from the kit's priors).
+    pub from_words: usize,
+    /// Words it did not understand.
+    pub not_understood: Vec<String>,
+}
+
+impl Described {
+    /// What `character.create_from_description` answered, read.
+    pub fn from_answer(answer: &serde_json::Value) -> Option<Self> {
+        let character = CharId::new(answer.get("character")?.as_str()?).ok()?;
+        let name = answer.get("name")?.as_str()?.to_owned();
+        let choices = answer.get("choices")?.as_array()?;
+        let from_words =
+            choices.iter().filter(|c| c.get("from").and_then(|f| f.as_str()) == Some("description")).count();
+        let not_understood = answer
+            .get("not_understood")
+            .and_then(|w| w.as_array())
+            .map(|w| w.iter().filter_map(|w| w.as_str().map(str::to_owned)).collect())
+            .unwrap_or_default();
+        Some(Self { character, name, from_words, not_understood })
+    }
 }
 
 /// The studio's side of the first-run flow.
@@ -57,6 +93,14 @@ pub trait SetupHost {
     /// The file to import when the Import card's effect comes.
     fn stage_import(&mut self, path: String);
 
+    /// The words the Describe card makes a character from when its effect comes.
+    fn stage_description(&mut self, _description: String) {}
+
+    /// The character an effect made that the studio should open now, once.
+    fn take_opened(&mut self) -> Option<CharId> {
+        None
+    }
+
     /// Carries out `effect`. Answers known at once come back now; the rest come from [`poll`](Self::poll).
     fn run_effect(&mut self, runner: &dyn Runner, actor: &Actor, effect: &Effect) -> Vec<Event>;
 
@@ -83,17 +127,63 @@ pub struct LiveHost {
     calibrating: Option<(u32, bool)>,
     /// The last op an effect ran that failed, and why: reads the model makes on its own are the Live panel's to show.
     failure: Option<(String, String)>,
+    /// Whether this build has the Describe card's op.
+    can_describe: bool,
+    /// The words the Describe card makes a character from.
+    describe: Option<String>,
+    /// What it made last.
+    described: Option<Described>,
+    /// The character to open, once.
+    opened: Option<CharId>,
 }
 
 impl LiveHost {
     /// A host over `runner`'s ops; `rerun` when setup ran here before.
     pub fn new(runner: &dyn Runner, rerun: bool) -> Self {
-        Self::with_model(LiveModel::new(runner), rerun)
+        let can_describe = runner.ops().iter().any(|op| op.name == DESCRIBE_OP);
+        Self { can_describe, ..Self::with_model(LiveModel::new(runner), rerun) }
     }
 
     /// A host over `model` (tests give one with chosen ops).
     pub const fn with_model(model: LiveModel, rerun: bool) -> Self {
-        Self { model, rerun, import: None, calibrating: None, failure: None }
+        Self {
+            model,
+            rerun,
+            import: None,
+            calibrating: None,
+            failure: None,
+            can_describe: false,
+            describe: None,
+            described: None,
+            opened: None,
+        }
+    }
+
+    /// Makes a character from the Describe card's words, as the person: one undo step. Whether it did.
+    fn describe(&mut self, runner: &dyn Runner, actor: &Actor) -> bool {
+        let Some(description) = self.describe.take() else { return false };
+        let request = Request {
+            op: DESCRIBE_OP.into(),
+            args: serde_json::json!({ "description": description }),
+            mode: Mode::Apply,
+            actor: actor.clone(),
+            grants: Grants::person(),
+            cause: None,
+            tx: None,
+            base: None,
+        };
+        match runner.run(request) {
+            Ok(outcome) => {
+                let described = outcome.plan.output.as_ref().and_then(Described::from_answer);
+                self.opened = described.as_ref().map(|d| d.character.clone());
+                self.described = described;
+                self.opened.is_some()
+            }
+            Err(e) => {
+                self.failure = Some((DESCRIBE_OP.to_owned(), e.message));
+                false
+            }
+        }
     }
 
     /// The answer to `request`. A model call clears the model's failure when it succeeds and sets it when it fails, so
@@ -169,7 +259,7 @@ impl LiveHost {
                         }
                         None => false,
                     },
-                    CharacterChoice::FromSheetOrIdea => false,
+                    CharacterChoice::FromSheetOrIdea => self.describe(runner, actor),
                 };
                 vec![self.answer(request, done, ran)]
             }
@@ -239,6 +329,7 @@ impl SetupHost for LiveHost {
             output_on: self.model.window_open(),
             imported: self.model.imported().map(str::to_owned),
             failure: self.failure.clone(),
+            described: self.described.clone(),
         }
     }
 
@@ -246,7 +337,7 @@ impl SetupHost for LiveHost {
         match choice {
             CharacterChoice::Sample | CharacterChoice::Keep => Ok(()),
             CharacterChoice::ImportVrm if self.model.ops().import() == Control::Ready => Ok(()),
-            // The sheet flow (CB-90) is not in the studio yet.
+            CharacterChoice::FromSheetOrIdea if self.can_describe => Ok(()),
             CharacterChoice::ImportVrm | CharacterChoice::FromSheetOrIdea => Err(Unavailable::NotInBuild),
         }
     }
@@ -261,6 +352,14 @@ impl SetupHost for LiveHost {
 
     fn stage_import(&mut self, path: String) {
         self.import = Some(path);
+    }
+
+    fn stage_description(&mut self, description: String) {
+        self.describe = Some(description);
+    }
+
+    fn take_opened(&mut self) -> Option<CharId> {
+        self.opened.take()
     }
 
     fn run_effect(&mut self, runner: &dyn Runner, actor: &Actor, effect: &Effect) -> Vec<Event> {

@@ -209,6 +209,18 @@ pub trait Camera: Send {
     /// [`TrackError::NoDevice`], [`TrackError::Busy`], [`TrackError::FormatUnsupported`],
     /// [`TrackError::PermissionDenied`] or [`TrackError::Backend`].
     fn open(&mut self, id: &CameraId, request: &CameraFormatRequest) -> Result<Box<dyn CameraStream>, TrackError>;
+
+    /// Adds the video file at `path` as a camera that plays it at the file's own rate (#2585), listed by
+    /// [`enumerate`](Self::enumerate) from then on, and returns it. Adding a file again returns the same camera. Cold:
+    /// it reads the file's header.
+    ///
+    /// # Errors
+    /// [`TrackError::Unsupported`] for a backend that reads no files (the default); [`TrackError::NoDevice`] when no
+    /// file is there; [`TrackError::Backend`] with the reason when the file cannot be read as a video.
+    fn add_file(&mut self, path: &std::path::Path) -> Result<CameraInfo, TrackError> {
+        let _ = path;
+        Err(TrackError::Unsupported("this camera backend reads no video files".into()))
+    }
 }
 
 /// A running camera. Dropping it releases the device.

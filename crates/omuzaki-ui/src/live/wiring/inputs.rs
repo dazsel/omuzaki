@@ -5,7 +5,7 @@
 //!  <install>/models/mediapipe-face  ─▶ face_models ─▶ face_tracker ─┐
 //!  <install>/models/mediapipe-body  ─▶ BodyModelDir (on demand) ────┤
 //!  <install>/natives (the runtime's pinned archive)  ───────────────┤
-//!  the platform's camera (Media Foundation on Windows) ─────────────┴▶ WebcamTracker
+//!  the platform's camera (Media Foundation on Windows) + video files ┴▶ WebcamTracker
 //!  the `input.phone` setting ─▶ NetTracker          (VMC out) ─▶ VmcOut
 //! ```
 //!
@@ -13,7 +13,8 @@
 //! when the release is built, never by the app (their licence record, `docs/licensing/deps/`), and the runtime's
 //! native archive is read from the install's `natives` folder, never downloaded. When the models or the camera
 //! backend are missing, the webcam still lists its cameras and starting it says what is missing, so the setup flow can
-//! bind a camera and the person learns why the face doesn't move.
+//! bind a camera and the person learns why the face doesn't move. Video files (`input.open_video`, #2585) are cameras
+//! on every platform, so a recorded clip tracks even where the platform has no camera backend yet.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -36,6 +37,8 @@ use omuzaki_track::body::BodyTrackerConfig;
 use omuzaki_track::body::models::BodyModelDir;
 use omuzaki_track::provision::{face_models, face_tracker};
 use omuzaki_track::webcam::{BodyLoader, WebcamConfig, WebcamTracker};
+use omuzaki_track_video::camera::VideoCamera;
+use omuzaki_track_video::ffmpeg::Ffmpeg;
 
 /// The model registry over `data_dir` (the app's data folder): the shipped models' slots and the person's own models,
 /// with the `model.*` ops over it. Files a model needs are downloaded through a verified cache in `<data_dir>/cache`,
@@ -82,14 +85,17 @@ impl std::fmt::Debug for StudioInputs {
 /// steps share one time line), with the phone link on `phone`. Cold: it loads the face models (about a second);
 /// call it off the UI thread if that matters.
 pub fn studio_inputs(install: &Path, clock: Arc<dyn Clock>, phone: PhoneSettings) -> StudioInputs {
-    let (webcam, webcam_problem) = match platform_camera() {
-        Ok(camera) => match webcam_tracker(camera, install, Arc::clone(&clock)) {
-            Ok(tracker) => (Box::new(tracker) as Box<dyn Tracker>, None),
-            Err((camera, problem)) => {
-                (Box::new(Untracked { camera: Some(camera), problem: problem.clone() }) as _, Some(problem))
-            }
-        },
-        Err(problem) => (Box::new(Untracked { camera: None, problem: problem.clone() }) as _, Some(problem)),
+    // The platform's cameras, when it has a backend, plus any video file the person opens.
+    let (platform, camera_problem) = match platform_camera() {
+        Ok(camera) => (Some(camera), None),
+        Err(problem) => (None, Some(problem)),
+    };
+    let camera: Box<dyn Camera> = Box::new(VideoCamera::new(platform, Ffmpeg::default()));
+    let (webcam, webcam_problem) = match webcam_tracker(camera, install, Arc::clone(&clock)) {
+        Ok(tracker) => (Box::new(tracker) as Box<dyn Tracker>, camera_problem),
+        Err((camera, problem)) => {
+            (Box::new(Untracked { camera: Some(camera), problem: problem.clone() }) as _, Some(problem))
+        }
     };
     StudioInputs {
         webcam,
@@ -157,6 +163,13 @@ impl Tracker for Untracked {
 
     fn latency(&self) -> LatencyStats {
         LatencyStats::default()
+    }
+
+    fn add_video(&mut self, path: &Path) -> Result<CameraInfo, TrackError> {
+        match self.camera.as_mut() {
+            Some(camera) => camera.add_file(path),
+            None => Err(TrackError::Unsupported(self.problem.clone())),
+        }
     }
 }
 
