@@ -10,9 +10,11 @@
 //! - **dutch roll** about the lens axis;
 //! - **handheld** drift, always a little ([`DRIFT_DEG`]), and `shake` on top: a stronger drift plus a jolt at the cut
 //!   that dies away in [`JOLT_S`]. The drift is a sum of slow sines with phases from the short's seed, so it is the
-//!   same on every render.
+//!   same on every render;
+//! - **placing the face**: a shot's `eyes` (or `mouth`) say where on the frame the face lands, and the zoom, roll and
+//!   shift are solved so it lands there ([`CameraRig::face`]), as a camera operator frames to a mark.
 
-use omuzaki_core::glam::Mat4;
+use omuzaki_core::glam::{Mat4, Vec2, Vec3, Vec4};
 use omuzaki_render_api::Camera;
 use omuzaki_stage::scene::frame::frame;
 use omuzaki_stage::scene::landmarks::Landmarks;
@@ -44,6 +46,9 @@ pub struct CameraRig {
     pub aspect: f32,
     /// The short's seed, for the handheld drift.
     pub seed: u64,
+    /// Where the painted face's right eye, left eye and mouth are in the world with the character at rest, for shots
+    /// that place the face (`eyes`, `mouth`); `None` for a character without one, whose shots keep their framing.
+    pub face: Option<[Vec3; 3]>,
 }
 
 fn smoothstep(x: f32) -> f32 {
@@ -94,6 +99,13 @@ impl CameraRig {
                 if let (Some(a), Some(b)) = (before.head_width, n.head_width) {
                     n.head_width = Some(lerp(a, b, k));
                 }
+                let mix = |a: [f32; 2], b: [f32; 2]| [lerp(a[0], b[0], k), lerp(a[1], b[1], k)];
+                if let (Some(a), Some(b)) = (before.eyes, n.eyes) {
+                    n.eyes = Some([mix(a[0], b[0]), mix(a[1], b[1])]);
+                }
+                if let (Some(a), Some(b)) = (before.mouth, n.mouth) {
+                    n.mouth = Some(mix(a, b));
+                }
             }
         }
         if n.punch > 1.0 {
@@ -128,26 +140,215 @@ impl CameraRig {
     /// [`ShortError::Render`] when the framing can't frame the character (no head for a face shot).
     pub fn camera_at(&self, timeline: &Timeline, t: f32) -> Result<Camera, ShortError> {
         let n = Self::shot_at(timeline, self.seed, t);
-        let roll = n.roll;
+        // The shot without the handheld drift: what a face is placed against, so the drift still moves it after.
+        let still = Self::numbers_at(timeline, timeline.shot_index_at(t), t);
         let framing = match n.framing {
             ShotFraming::Face => Framing::Face,
             ShotFraming::Bust => Framing::Bust,
         };
+        let base = match (still.head_width, self.landmarks.head) {
+            (Some(width), Some(head)) => {
+                let def = Self::def(framing, &still, 1.0, still.shift);
+                self.zoom_for_head_width(framing, &def, head, width)?
+            }
+            _ => 1.0,
+        };
+        match (still.eyes, still.mouth, self.face) {
+            (Some(marks), _, Some([right, left, _])) => {
+                let placed = self.place_eyes(framing, &still, marks, [right, left])?;
+                // The drift turns the placed camera where it stands, as a hand would.
+                let turn = Mat4::from_rotation_y((n.yaw - still.yaw).to_radians())
+                    * Mat4::from_rotation_x(-(n.pitch - still.pitch).to_radians())
+                    * Mat4::from_rotation_z(-(n.roll - still.roll).to_radians());
+                Ok(Camera { transform: placed.transform * turn, ..placed })
+            }
+            (None, Some(mark), Some([.., mouth])) => {
+                let held = self.lens(framing, &still, base * still.zoom, still.shift, still.roll)?;
+                let slide = self.slide_to(&held, mouth, mark);
+                let mut camera = self.lens(framing, &n, base * n.zoom, n.shift, n.roll)?;
+                camera.transform.w_axis += slide.extend(0.0);
+                Ok(camera)
+            }
+            _ => self.lens(framing, &n, base * n.zoom, n.shift, n.roll),
+        }
+    }
+
+    /// The stage's camera definition for `n` at `zoom` and `shift`.
+    fn def(framing: Framing, n: &ShotNumbers, zoom: f32, shift: [f32; 2]) -> CameraDef {
         let mut def = CameraDef::preset(framing);
         def.yaw = n.yaw.clamp(-180.0, 180.0);
         def.pitch = n.pitch;
         def.fov = FOV_DEG;
-        def.shift = n.shift;
-        let base = match (n.head_width, self.landmarks.head) {
-            (Some(width), Some(head)) => self.zoom_for_head_width(framing, &def, head, width)?,
-            _ => 1.0,
-        };
-        def.zoom = (base * n.zoom).max(0.05);
+        def.shift = shift;
+        def.zoom = zoom.max(0.05);
+        def
+    }
+
+    /// The camera for `n` at `zoom`, `shift` and `roll`, placed by the character's root.
+    fn lens(
+        &self,
+        framing: Framing,
+        n: &ShotNumbers,
+        zoom: f32,
+        shift: [f32; 2],
+        roll: f32,
+    ) -> Result<Camera, ShortError> {
+        let def = Self::def(framing, n, zoom, shift);
         let mut camera =
             frame(framing, &self.landmarks, &def, self.aspect).map_err(|e| ShortError::Render(e.to_string()))?;
         camera.transform = self.root * camera.transform * Mat4::from_rotation_z(-roll.to_radians());
         Ok(camera)
     }
+
+    /// Where `world` lands through `camera`, in frame heights from the frame's centre (x right, y down); `None`
+    /// behind the lens.
+    fn land(&self, camera: &Camera, world: Vec3) -> Option<Vec2> {
+        let clip = camera.projection_matrix(self.aspect) * camera.transform.inverse() * world.extend(1.0);
+        (clip.w > 1e-5).then(|| Vec2::new(clip.x / clip.w * 0.5 * self.aspect, -clip.y / clip.w * 0.5))
+    }
+
+    /// A share of the frame from its top left in the units [`Self::land`] gives.
+    fn mark(&self, share: [f32; 2]) -> Vec2 {
+        Vec2::new((share[0] - 0.5) * self.aspect, share[1] - 0.5)
+    }
+
+    /// The half height of the lens's view at a distance of one: `tan(fov / 2)`.
+    fn spread() -> f32 {
+        (FOV_DEG.to_radians() * 0.5).tan()
+    }
+
+    /// Where a point `depth` in front of the lens lands on `mark`, in the camera's own axes.
+    fn seen_at(&self, mark: [f32; 2], depth: f32) -> Vec3 {
+        let at = self.mark(mark);
+        Vec3::new(2.0 * at.x * depth * Self::spread(), -2.0 * at.y * depth * Self::spread(), -depth)
+    }
+
+    /// The camera, looking as `n` looks, that lands `eyes` (world, right then left) on `marks`. The camera is placed,
+    /// not framed: its position follows from the eye spacing and their midpoint in closed form, and its roll and
+    /// position are then refined by Gauss-Newton on the miss through the lens (smooth in these numbers, so it lands in
+    /// two or three rounds). `zoom`, `punch` and `push` then dolly it toward the eyes, which keeps them on their marks'
+    /// line of sight.
+    fn place_eyes(
+        &self,
+        framing: Framing,
+        n: &ShotNumbers,
+        marks: [[f32; 2]; 2],
+        eyes: [Vec3; 2],
+    ) -> Result<Camera, ShortError> {
+        let looking = self.lens(framing, n, 1.0, [0.0, 0.0], 0.0)?;
+        let turned = |roll: f32| {
+            let mut camera = looking;
+            camera.transform = looking.transform * Mat4::from_rotation_z(-roll.to_radians());
+            camera
+        };
+        let want = marks.map(|m| self.mark(m));
+        // The eye line's roll on the frame, and the eyes' own seen from the unrolled camera.
+        let eye_line = |a: Vec2, b: Vec2| (b.y - a.y).atan2(b.x - a.x).to_degrees();
+        let seen = eyes.map(|e| looking.transform.inverse().transform_point3(e));
+        let roll0 =
+            eye_line(want[0], want[1]) - eye_line(Vec2::new(seen[0].x, -seen[0].y), Vec2::new(seen[1].x, -seen[1].y));
+        let spacing = want[0].distance(want[1]).max(1e-4);
+        let depth = 0.5 * eyes[0].distance(eyes[1]) / (Self::spread() * spacing);
+        let middle = eyes[0].midpoint(eyes[1]);
+        let mid_mark = [marks[0][0].midpoint(marks[1][0]), marks[0][1].midpoint(marks[1][1])];
+        let place = |v: [f32; 4]| {
+            let mut camera = turned(roll0 + v[3]);
+            let offset = camera.transform.transform_vector3(self.seen_at(mid_mark, depth));
+            camera.transform.w_axis = (middle - offset + Vec3::new(v[0], v[1], v[2])).extend(1.0);
+            camera
+        };
+        let miss = |v: [f32; 4]| -> Result<Option<[f32; 4]>, ShortError> {
+            let camera = place(v);
+            Ok(match (self.land(&camera, eyes[0]), self.land(&camera, eyes[1])) {
+                (Some(a), Some(b)) => Some([a.x - want[0].x, a.y - want[0].y, b.x - want[1].x, b.y - want[1].y]),
+                _ => None,
+            })
+        };
+        let reach = 0.25 * depth.max(0.01);
+        let v = solve([0.0; 4], [1e-4, 1e-4, 1e-4, 0.01], [reach, reach, reach, 10.0], miss)?;
+        let mut camera = place(v);
+        let position = camera.transform.w_axis.truncate();
+        let zoom = n.zoom.max(0.05);
+        camera.transform.w_axis = (middle + (position - middle) / zoom).extend(1.0);
+        let distance = position.distance(middle) / zoom;
+        if let omuzaki_render_api::Projection::Perspective { near, far, .. } = &mut camera.projection {
+            *near = near.min(0.1 * distance).max(1e-3);
+            *far = far.max(distance + 2.0 * self.landmarks.height_m);
+        }
+        Ok(camera)
+    }
+
+    /// How far to move `camera` across its own picture plane so `mouth` (world) lands on `mark`: exact, since a move
+    /// in that plane keeps every depth.
+    fn slide_to(&self, camera: &Camera, mouth: Vec3, mark: [f32; 2]) -> Vec3 {
+        let seen = camera.transform.inverse().transform_point3(mouth);
+        let want = self.seen_at(mark, -seen.z);
+        camera.transform.transform_vector3(Vec3::new(seen.x - want.x, seen.y - want.y, 0.0))
+    }
+}
+
+/// The four numbers from `start` at which `miss` is zero: Gauss-Newton with a finite-difference Jacobian (`step` per
+/// number, taken backward where forward leaves the lens's front), each step capped by `reach` per number and halved
+/// until the miss shrinks. Stops where the miss is under a ten-millionth of the frame or no step shrinks it.
+fn solve(
+    start: [f32; 4],
+    step: [f32; 4],
+    reach: [f32; 4],
+    mut miss: impl FnMut([f32; 4]) -> Result<Option<[f32; 4]>, ShortError>,
+) -> Result<[f32; 4], ShortError> {
+    let mut v = start;
+    let Some(first) = miss(v)? else { return Ok(v) };
+    let mut r = Vec4::from_array(first);
+    for _ in 0..40 {
+        if r.length() < 1e-7 {
+            break;
+        }
+        let mut cols = [Vec4::ZERO; 4];
+        for (k, col) in cols.iter_mut().enumerate() {
+            let mut probe = |h: f32| {
+                let mut moved = v;
+                moved[k] += h;
+                miss(moved)
+            };
+            *col = match probe(step[k])? {
+                Some(m) => (Vec4::from_array(m) - r) / step[k],
+                None => match probe(-step[k])? {
+                    Some(m) => (r - Vec4::from_array(m)) / step[k],
+                    None => return Ok(v),
+                },
+            };
+        }
+        let jacobian = Mat4::from_cols(cols[0], cols[1], cols[2], cols[3]);
+        if jacobian.determinant().abs() < 1e-14 {
+            break;
+        }
+        let mut d = jacobian.inverse() * -r;
+        if !d.is_finite() {
+            break;
+        }
+        d /= (0..4).map(|k| d[k].abs() / reach[k]).fold(1.0_f32, f32::max);
+        let mut taken = false;
+        let mut length = 1.0;
+        while length > 1.0 / 256.0 {
+            let mut next = v;
+            for (k, value) in next.iter_mut().enumerate() {
+                *value += d[k] * length;
+            }
+            if let Some(m) = miss(next)?
+                && Vec4::from_array(m).length() < r.length()
+            {
+                v = next;
+                r = Vec4::from_array(m);
+                taken = true;
+                break;
+            }
+            length *= 0.5;
+        }
+        if !taken {
+            break;
+        }
+    }
+    Ok(v)
 }
 
 impl CameraRig {
@@ -240,5 +441,70 @@ mod tests {
             let got = share(z).unwrap();
             assert!((got - want).abs() < 0.01 * want, "asked {want}, got {got} at zoom {z}");
         }
+    }
+
+    fn rig(face: [Vec3; 3]) -> CameraRig {
+        use omuzaki_char_api::{BuildOptions, BuildServices, CharId, CharacterBuilder, RegistryBuilder};
+        omuzaki_stage::link();
+        let def = omuzaki_char_mock::mock_character().expect("the fixture parses");
+        let built = RegistryBuilder
+            .build(&CharId::new("mock").unwrap(), &def, &BuildOptions::default(), &BuildServices::default())
+            .expect("the mock character builds");
+        let landmarks = Landmarks::measure(&built).unwrap();
+        CameraRig { landmarks, root: Mat4::IDENTITY, aspect: 9.0 / 16.0, seed: 3, face: Some(face) }
+    }
+
+    #[test]
+    fn a_shot_lands_the_eyes_and_the_mouth_on_their_marks() {
+        let probe = rig([Vec3::ZERO; 3]);
+        let centre = probe.landmarks.head.expect("the mock has a head").centre();
+        let face = [
+            centre + Vec3::new(-0.03, 0.01, 0.08),
+            centre + Vec3::new(0.03, 0.01, 0.08),
+            centre + Vec3::new(0.0, -0.05, 0.09),
+        ];
+        let rig = rig(face);
+        let short = r#"
+character = "mock"
+handheld = 0.0
+[voice]
+kind = "silent"
+[[line]]
+text = "Here I am, tilted."
+camera = { eyes = [[0.3, 0.44], [0.62, 0.4]] }
+[[line]]
+text = "And now only my mouth shows."
+camera = { head_width = 2.4, mouth = [0.45, 0.2] }
+"#;
+        let def = crate::ShortDef::from_toml(short).unwrap();
+        let voice =
+            crate::voice::voice_for(&def, |_| unreachable!("silent"), crate::voice::Synthesis::Estimate).unwrap();
+        let timeline = Timeline::new(&def, &voice).unwrap();
+        let first = timeline.shots.iter().find(|s| s.shot.eyes.is_some()).expect("the eyes shot").start + 0.1;
+        let camera = rig.camera_at(&timeline, first).unwrap();
+        for (eye, mark) in face.iter().zip([[0.3, 0.44], [0.62, 0.4]]) {
+            let landed = rig.land(&camera, *eye).unwrap();
+            // A ten-thousandth of the frame's height: a fifth of a pixel on a 1920-high frame.
+            assert!(landed.distance(rig.mark(mark)) < 1e-4, "{landed} against {}", rig.mark(mark));
+        }
+        let second = timeline.shots.iter().find(|s| s.shot.mouth.is_some()).expect("the mouth shot").start + 0.1;
+        let camera = rig.camera_at(&timeline, second).unwrap();
+        let landed = rig.land(&camera, face[2]).unwrap();
+        assert!(landed.distance(rig.mark([0.45, 0.2])) < 1e-4, "{landed}");
+        let head = rig.landmarks.head.unwrap();
+        let share = head_share(&camera, rig.aspect, head);
+        assert!((share - 2.4).abs() < 0.05 * 2.4, "the head width still sizes a mouth shot: {share}");
+    }
+
+    #[test]
+    fn eyes_on_the_same_mark_or_far_off_the_frame_are_refused() {
+        let read = |camera: &str| {
+            crate::ShortDef::from_toml(&format!(
+                "character = \"mock\"\n[voice]\nkind = \"silent\"\n[[line]]\ntext = \"Hi.\"\ncamera = {camera}\n"
+            ))
+        };
+        assert!(read("{ eyes = [[0.4, 0.4], [0.6, 0.4]] }").is_ok());
+        assert!(read("{ eyes = [[0.4, 0.4], [0.4, 0.4]] }").is_err());
+        assert!(read("{ mouth = [0.5, 2.0] }").is_err());
     }
 }

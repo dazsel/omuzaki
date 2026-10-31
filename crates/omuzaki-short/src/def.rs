@@ -585,6 +585,16 @@ pub struct ShotNumbers {
     /// a punch-in still lands. A 3D character's; a puppet keeps its framing's size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_width: Option<f32>,
+    /// Where the face's eyes land in the frame, as shares of its width and height from the top left, the character's
+    /// right eye (on the picture's left) first. The camera's zoom, roll and shift are solved so the eyes of the
+    /// character at rest land there, in place of `head_width`, `roll` and `shift`; `zoom`, `punch` and `push` scale
+    /// from there. A 3D character with a painted face's; others keep the framing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eyes: Option<[[f32; 2]; 2]>,
+    /// Where the mouth lands, as shares of the frame's width and height from the top left: the shift is solved so it
+    /// lands there, for a close-up that leaves the eyes out. `eyes` win when both are given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mouth: Option<[f32; 2]>,
 }
 
 const fn one() -> f32 {
@@ -616,6 +626,8 @@ impl Default for ShotNumbers {
             shake: 0.0,
             ease: 0.0,
             head_width: None,
+            eyes: None,
+            mouth: None,
         }
     }
 }
@@ -939,6 +951,18 @@ fn check_shot(field: &str, n: &ShotNumbers) -> Result<(), ShortError> {
         && !(0.05..=4.0).contains(&w)
     {
         return Err(ShortError::invalid(format!("{field}.head_width"), format!("{w} is outside 0.05 to 4")));
+    }
+    let points = n.eyes.into_iter().flatten().chain(n.mouth);
+    for (k, [x, y]) in points.enumerate() {
+        if !((-0.5..=1.5).contains(&x) && (-0.5..=1.5).contains(&y)) {
+            let name = if n.eyes.is_some() && k < 2 { format!("eyes[{k}]") } else { "mouth".to_owned() };
+            return Err(ShortError::invalid(format!("{field}.{name}"), format!("[{x}, {y}] is outside -0.5 to 1.5")));
+        }
+    }
+    if let Some([a, b]) = n.eyes
+        && (a[0] - b[0]).hypot(a[1] - b[1]) < 0.01
+    {
+        return Err(ShortError::invalid(format!("{field}.eyes"), "the eyes are less than 0.01 of the frame apart"));
     }
     for (name, value) in [("punch", n.punch), ("push", n.push)] {
         if value != 0.0 && !(1.0..=3.0).contains(&value) {

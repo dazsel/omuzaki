@@ -1103,6 +1103,51 @@ impl Stage {
     /// behind the camera or off the head, a face turned away from the camera, or an eye outside the picture.
     #[must_use]
     pub fn face_points(&self, size: omuzaki_core::glam::UVec2) -> Option<FacePoints> {
+        let world = self.face_world_points()?;
+        let camera = &self.scene.camera;
+        #[allow(clippy::cast_precision_loss, reason = "target sides are far below 2^24")]
+        let (width, height) = (size.x as f32, size.y as f32);
+        let to_clip = camera.projection_matrix(width / height.max(1.0)) * camera.view();
+        let view = camera.view();
+        let mut pixels = [Vec2::ZERO; 4];
+        for (pixel, world) in pixels.iter_mut().zip(world) {
+            if view.transform_point3(world).z >= 0.0 {
+                return None;
+            }
+            let ndc = to_clip.project_point3(world);
+            *pixel = Vec2::new(ndc.x.midpoint(1.0) * width, (1.0 - ndc.y) * 0.5 * height);
+        }
+        // Turned away: the head's forward (+Z in bind space, where the face is projected from) points away from the
+        // camera at the face.
+        let head_bone = self.built.rig.bone(&JointRef::HEAD).map(omuzaki_anim_api::BoneId::index);
+        let head_to_world = self.root * super::scene::joint_matrix(head_bone, self.rig.skin());
+        let forward = head_to_world.transform_vector3(Vec3::Z);
+        let mouth_world = world[2];
+        let toward_camera = match camera.projection {
+            Projection::Perspective { .. } => camera.position() - mouth_world,
+            Projection::Orthographic { .. } => camera.transform.z_axis.truncate(),
+        };
+        if forward.dot(toward_camera) <= 0.0 {
+            return None;
+        }
+        let inside = |p: Vec2| (0.0..=width).contains(&p.x) && (0.0..=height).contains(&p.y);
+        if !(inside(pixels[0]) && inside(pixels[1])) {
+            return None;
+        }
+        let [eye_right, eye_left, mouth, chin] = pixels;
+        Some(FacePoints { eye_right, eye_left, mouth, chin })
+    }
+
+    /// Where the face layout's right eye, left eye, mouth and chin centres are in the world, in that order, as the
+    /// stage last posed the character: each face-plane point found on the head's front surface (the nearest surface
+    /// the base face layer is projected onto, as the renderer paints it), skinned by the current joint palette like
+    /// the triangle under it and placed by the character's root. What a camera that places the face is solved
+    /// against. Cold: walks the head's triangles.
+    ///
+    /// `None` for a character without a painted face (or whose head part's parameters don't read), or a point off
+    /// the head.
+    #[must_use]
+    pub fn face_world_points(&self) -> Option<[Vec3; 4]> {
         let face = self.built.face.as_ref()?;
         let carriers: Vec<FaceCarrier<'_>> = self
             .built
@@ -1124,17 +1169,12 @@ impl Stage {
             Vec2::new(0.0, n(layout.mouth_y)),
             Vec2::new(0.0, n(head.outline.chin_y())),
         ];
-        let camera = &self.scene.camera;
-        #[allow(clippy::cast_precision_loss, reason = "target sides are far below 2^24")]
-        let (width, height) = (size.x as f32, size.y as f32);
-        let to_clip = camera.projection_matrix(width / height.max(1.0)) * camera.view();
-        let view = camera.view();
-        let mut pixels = [Vec2::ZERO; 4];
-        for (k, (pixel, at)) in pixels.iter_mut().zip(plane).enumerate() {
+        let mut world = [Vec3::ZERO; 4];
+        for (k, (point, at)) in world.iter_mut().zip(plane).enumerate() {
             // The chin sits on the outline's lowest point, which a head built at another size (a tall body, a long
             // neck) can leave just off its mesh: it is then taken at the lowest point of the head under it, found by
             // stepping up toward the mouth.
-            let world = if k == 3 {
+            *point = if k == 3 {
                 (0..=CHIN_STEPS).find_map(|step| {
                     #[allow(clippy::cast_precision_loss, reason = "a few steps")]
                     let up = step as f32 / CHIN_STEPS as f32 * CHIN_REACH;
@@ -1143,31 +1183,8 @@ impl Stage {
             } else {
                 self.face_surface(&carriers, &face.projection, at)?
             };
-            if view.transform_point3(world).z >= 0.0 {
-                return None;
-            }
-            let ndc = to_clip.project_point3(world);
-            *pixel = Vec2::new(ndc.x.midpoint(1.0) * width, (1.0 - ndc.y) * 0.5 * height);
         }
-        // Turned away: the head's forward (+Z in bind space, where the face is projected from) points away from the
-        // camera at the face.
-        let head_bone = self.built.rig.bone(&JointRef::HEAD).map(omuzaki_anim_api::BoneId::index);
-        let head_to_world = self.root * super::scene::joint_matrix(head_bone, self.rig.skin());
-        let forward = head_to_world.transform_vector3(Vec3::Z);
-        let mouth_world = self.face_surface(&carriers, &face.projection, plane[2])?;
-        let toward_camera = match camera.projection {
-            Projection::Perspective { .. } => camera.position() - mouth_world,
-            Projection::Orthographic { .. } => camera.transform.z_axis.truncate(),
-        };
-        if forward.dot(toward_camera) <= 0.0 {
-            return None;
-        }
-        let inside = |p: Vec2| (0.0..=width).contains(&p.x) && (0.0..=height).contains(&p.y);
-        if !(inside(pixels[0]) && inside(pixels[1])) {
-            return None;
-        }
-        let [eye_right, eye_left, mouth, chin] = pixels;
-        Some(FacePoints { eye_right, eye_left, mouth, chin })
+        Some(world)
     }
 
     /// The world position of face-plane point `at` (head-local, the painter's units) on the head's front: the surface

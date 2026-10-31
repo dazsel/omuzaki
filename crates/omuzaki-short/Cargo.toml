@@ -50,6 +50,8 @@ omuzaki-link-build = { path = "../omuzaki-link-build" }
 omuzaki-ai = { path = "../omuzaki-ai" }
 omuzaki-ai-ort = { path = "../omuzaki-ai-ort" }
 omuzaki-char = { path = "../omuzaki-char" }
+# The camera tests frame the mock character.
+omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-render = { path = "../omuzaki-render" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
