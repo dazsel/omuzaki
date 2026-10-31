@@ -34,8 +34,9 @@ const SCAR_WIDTH: f32 = 0.08;
 const TICK_WIDTH: f32 = 0.05;
 const TICK_HALF_LENGTH: f32 = 0.16;
 const TICK_STATIONS: [f32; 4] = [-0.3, -0.1, 0.1, 0.3];
-/// A line mark's widest stroke and pad radius, as shares of `size`: 1 + the larger of the two stays within [`REACH`].
-const LINE_WIDTH_MAX: f32 = 0.1;
+/// A line mark's widest stroke and pad radius, as shares of `size`: 1 + the half width or the pad radius stays within
+/// [`REACH`].
+const LINE_WIDTH_MAX: f32 = 0.5;
 const PAD_RADIUS_MAX: f32 = 0.25;
 /// Colour used when a palette slot reached the painter unresolved (it should not: the host resolves them).
 const FALLBACK_COLOUR: Colour = Colour::rgb(0x7a, 0x4a, 0x40);
@@ -161,7 +162,7 @@ fn scar(list: &mut List, ink: &Ink, centre: Vec2, size: f32) {
 }
 
 /// A line through the mark's points with round ends and joins, and a pad at each end when it has them. The line and
-/// its pads are held within [`REACH`]: a point is kept within 1 of the centre, and the width within a tenth of `size`.
+/// its pads are held within [`REACH`]: a point is kept within 1 of the centre, and the width within half of `size`.
 fn line(list: &mut List, ink: &Ink, mark: &FaceMark, centre: Vec2, size: f32) {
     if mark.points.len() < 2 {
         return;
