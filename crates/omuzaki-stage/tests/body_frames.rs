@@ -40,7 +40,7 @@ use omuzaki_stage::ops::render::pose::PoseArg;
 use omuzaki_stage::ops::render::still::{Shot, StillLight, StillSpec, render_stills};
 use omuzaki_stage::perform::body::TrackedBody;
 use omuzaki_stage::recipe::LightRig;
-use omuzaki_track::fit::{FitConfig, Level, Synth, Targets, fit};
+use omuzaki_track::fit::{FitConfig, Level, Stage as FitStage, Synth, Targets, fit};
 use omuzaki_track_api::body::{BodyFrame, BodySource, Fingers};
 use serde_json::{Value, json};
 
@@ -522,8 +522,22 @@ fn shrink(rgb: &[u8], width: u32, height: u32) -> Vec<u8> {
     out
 }
 
+/// Where a fit is, saved after each step size so a later run carries on from it.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FitState {
+    /// The stage and the step size within it to walk next.
+    stage: usize,
+    step: usize,
+    pose: HumanoidPose,
+    renders: u32,
+    /// The chosen start's fine score: the sum, and the pixels that differ.
+    start: [u64; 2],
+    trace: Vec<Value>,
+}
+
 #[test]
 #[allow(clippy::disallowed_methods, reason = "test evidence, read from and written to folders the developer names")]
+#[allow(clippy::too_many_lines, reason = "one fit, from its frame to its evidence, read top to bottom")]
 fn the_body_fits_onto_its_frames_pixel_for_pixel_when_asked() {
     let env = |name: &str| std::env::var_os(name).map(std::path::PathBuf::from);
     let (Some(frames), Some(solved), Some(which)) =
@@ -577,31 +591,88 @@ fn the_body_fits_onto_its_frames_pixel_for_pixel_when_asked() {
             }
         }
         let coarse = shrink(frame, width, height);
-        // From what the tracker solved, or the character's own stance (as sculpted) when that scores better.
-        let tracked = as_the_stage_shows(&read_solved(&serde_json::from_slice(&text).unwrap()));
-        let starts = [tracked, stance];
-        let began = std::time::Instant::now();
         let targets = Targets { coarse: &coarse, coarse_width: width / COARSE, fine: frame };
-        let fitted = fit(&mut synth, targets, &starts, &config).unwrap();
+        // A fit runs one step size at a time, and its place is saved after each, so a run that stops (a time limit, a
+        // lost machine) picks up where it was: a fit takes as many runs as it needs.
+        let state_path = out.as_ref().map(|out| out.join(format!("{name}-fit-state.json")));
+        let saved: Option<FitState> = state_path
+            .as_ref()
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+        let began = std::time::Instant::now();
+        let mut state = if let Some(state) = saved {
+            eprintln!(
+                "{name}: resuming at stage {} step {} ({} renders so far)",
+                state.stage, state.step, state.renders
+            );
+            state
+        } else {
+            // From what the tracker solved, or the character's own stance (as sculpted) when that scores better.
+            let tracked = as_the_stage_shows(&read_solved(&serde_json::from_slice(&text).unwrap()));
+            // A stage that moves nothing: the starts are only scored, on the first step's blurred picture.
+            let first = config.stages.first().and_then(|s| s.steps_deg.first()).copied().unwrap_or(0.0);
+            let none =
+                FitConfig { stages: vec![FitStage { bones: Vec::new(), steps_deg: vec![first] }], ..config.clone() };
+            let chosen = fit(&mut synth, targets, &[tracked, stance], &none).unwrap();
+            let start = chosen.score;
+            FitState {
+                stage: 0,
+                step: 0,
+                pose: chosen.pose,
+                renders: 0,
+                start: [start.sum, start.differ],
+                trace: Vec::new(),
+            }
+        };
+        let mut score = None;
+        while let Some(stage) = config.stages.get(state.stage) {
+            if state.renders >= config.renders {
+                break;
+            }
+            let Some(&step) = stage.steps_deg.get(state.step) else {
+                (state.stage, state.step) = (state.stage + 1, 0);
+                continue;
+            };
+            let one = FitConfig {
+                stages: vec![FitStage { bones: stage.bones.clone(), steps_deg: vec![step] }],
+                renders: config.renders - state.renders,
+                ..config.clone()
+            };
+            let fitted = fit(&mut synth, targets, &[state.pose], &one).unwrap();
+            state.pose = fitted.pose;
+            state.renders += fitted.renders.iter().sum::<u32>();
+            state.trace.extend(fitted.trace.iter().map(|(step, level, score, _)| {
+                json!({ "step": step, "level": format!("{level:?}"), "sum": score.sum, "differ": score.differ })
+            }));
+            state.step += 1;
+            if let Some(path) = &state_path {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+            }
+            score = Some(fitted.score);
+            if fitted.score.differ == 0 {
+                break;
+            }
+        }
+        let score = match score {
+            Some(score) => score,
+            None => omuzaki_track::fit::Score::of(synth.render(&state.pose, Level::Fine).unwrap(), frame),
+        };
         let share = |n: u64| 100.0 * n as f64 / f64::from(width * height);
         println!(
-            "{name}: from {} px ({:.2}%) to {} px ({:.2}%) differing, sum {} to {}; {} coarse and {} fine renders in {:.0} s",
-            fitted.start.differ,
-            share(fitted.start.differ),
-            fitted.score.differ,
-            share(fitted.score.differ),
-            fitted.start.sum,
-            fitted.score.sum,
-            fitted.renders[0],
-            fitted.renders[1],
+            "{name}: from {} px ({:.2}%) to {} px ({:.2}%) differing, sum {} to {}; {} renders, {:.0} s in this run",
+            state.start[1],
+            share(state.start[1]),
+            score.differ,
+            share(score.differ),
+            state.start[0],
+            score.sum,
+            state.renders,
             began.elapsed().as_secs_f64(),
         );
-        for (step, level, score, renders) in &fitted.trace {
-            println!("  {step} deg {level:?}: sum {} differ {} after {renders} renders", score.sum, score.differ);
-        }
         if let Some(out) = &out {
             std::fs::create_dir_all(out).unwrap();
-            let ours = synth.render(&fitted.pose, Level::Fine).unwrap().to_vec();
+            let ours = synth.render(&state.pose, Level::Fine).unwrap().to_vec();
             let image = omuzaki_render_api::Image {
                 size: UVec2::new(width, height),
                 alpha: AlphaEncoding::Straight,
