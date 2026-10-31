@@ -14,11 +14,18 @@
 //! 5. `paint.export_layers` writes the layers as layered art (PNGs and a `*.layers.toml`) that the 2D puppet's auto-rig
 //!    turns into a puppet.
 //!
+//! A character's parts are painted the same way (`part.paint.*`, #2575): a part's texture layer holds a painting in
+//! the part's UV space, and this crate registers the texture painter the character build turns it into pixels with.
+//!
 //! No op takes pixels in: every mark is drawn by the caller, so what a painting holds is the caller's own work.
 
 mod doc;
 mod ops;
+mod texture;
 
 pub use doc::{PAINTINGS, painting_path};
+pub use texture::paint_texture;
 
-omuzaki_core::define_link!();
+omuzaki_core::define_link! {
+    omuzaki_char_api::link();
+}

@@ -9,7 +9,9 @@
 //! - for **hair**, whose colours are the hair program's parameters (`root`, `mid`, `tip`, `line`), those parameters,
 //!   by the mean of the layer's masks over the material;
 //! - for **skin**, the skin program's `skin-info` attribute: wetness, the cavity term and flush, and the surface's
-//!   curvature for the scattering, so a photoreal look has what it needs.
+//!   curvature for the scattering, so a photoreal look has what it needs;
+//! - for a **texture** layer, a texture over the part's materials (`MaterialSpec::painted`), drawn above every vertex
+//!   layer whatever its place in the stack.
 //!
 //! | Kind | What it does |
 //! |---|---|
@@ -18,12 +20,13 @@
 //! | `wear` | a lighter, worn colour on the edges that stand out, broken up by noise |
 //! | `wet` | darker, wet-looking surface; on skin, the wet term the skin program reads |
 //! | `makeup` | blush, eyeshadow, lips, contour or highlight, placed by the face's landmarks on the head |
-//! | `paint` | dabs of colour at points on the part (the base the painting tool, #2575, writes to) |
+//! | `paint` | dabs of colour at points on the part |
 //! | `polish` | nail polish on the fingertips' backs |
 //! | `decal` | a shape projected onto the surface (a tattoo, a scar, a birthmark), optionally across every skin part |
 //! | `grey` | greying, toward silver at the same lightness |
 //! | `cavity` | darkens the folds (and writes the cavity and curvature terms) |
 //! | `spots` | scattered spots (freckles, age spots) |
+//! | `texture` | a painting in the part's UV space (#2575): the `part.paint.*` ops' strokes, fills and erasing |
 //!
 //! Points (a dab, a decal) are [`PartPoint`]s, so they stay where they were put after any shape change. Exports that
 //! carry no vertex colours bake the stack into a texture (#2575).
@@ -37,7 +40,7 @@ use omuzaki_core::glam::Vec3;
 use omuzaki_core::id::Slug;
 use omuzaki_core::mesh::ExtraAttribute;
 use omuzaki_face_api::{ColourRef, Palette};
-use omuzaki_render_api::{ParamValue, Shading};
+use omuzaki_render_api::{AlphaEncoding, ColourSpace, ParamValue, Sampler, Shading, TextureDesc, TextureUsage};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -47,9 +50,9 @@ use super::frame::{BodyFrame, HeadFrame, Landmark, Membership, PartFrame, Region
 use super::sculpt::PartPoint;
 use super::{bump, smoothstep};
 use crate::error::BuildError;
-use crate::geometry::PartMesh;
+use crate::geometry::{PartMesh, TextureData};
 use crate::hair::HAIR_PROGRAM;
-use crate::ids::{JointRef, LayerId, PartId};
+use crate::ids::{JointRef, LayerId, PartId, TextureName};
 use crate::kind::{FitFact, HeadFact, PartCategory, PartOutput, Published};
 
 /// The skin program's attribute (`omuzaki-render`'s `skin` program): wet, cavity, flush, curvature in 1/m.
@@ -287,6 +290,14 @@ pub enum LayerKind {
         #[serde(default)]
         seed: u32,
     },
+    /// A painting in the part's UV space (#2575): an `omuzaki-paint` painting (what `paint.get` returns) whose canvas
+    /// covers the UV square, pixel `(x, y)` at UV `(x / width, y / height)`. It is drawn over the surface colour as a
+    /// texture, so a recolour still recolours what is under it and the paint survives any rebuild of the part. Masks
+    /// don't apply (erase what shouldn't show). The `part.paint.*` ops write it.
+    Texture {
+        /// The painting.
+        painting: serde_json::Value,
+    },
 }
 
 /// Where a layer shows.
@@ -415,6 +426,14 @@ impl MaterialLayer {
         unit("opacity", self.opacity)?;
         match &self.kind {
             LayerKind::Tint { .. } | LayerKind::Polish { .. } => {}
+            LayerKind::Texture { painting } => {
+                if !painting.is_object() {
+                    return Err("kind/painting: not a painting (an object, as paint.get returns one)".to_owned());
+                }
+                if !self.masks.is_empty() {
+                    return Err("masks: a texture layer takes no masks; erase what shouldn't show".to_owned());
+                }
+            }
             LayerKind::Detail { scale, contrast, .. } => {
                 unit("kind/contrast", *contrast)?;
                 positive("kind/scale", *scale)?;
@@ -692,6 +711,7 @@ fn apply_layer(r: &Resolved<'_>, v: &Vertex, frames: &Frames, colour: &mut Vec3,
             *colour *= 1.0 - 0.55 * w * amount * fold;
             skin[1] = skin[1].min(1.0 - w * amount * fold);
         }
+        LayerKind::Texture { .. } => {}
         LayerKind::Spots { density, amount, seed, .. } => {
             let c = cells(v.p * *density, *seed);
             let spot = 1.0 - smoothstep(0.10, 0.22, c);
@@ -812,8 +832,7 @@ pub fn apply(
     let skin_part = matches!(category, PartCategory::Body | PartCategory::Head);
     let implicit = age.map(|a| age_layers(&a, category)).unwrap_or_default();
     let shared = if skin_part { shared_decals(design, part) } else { Vec::new() };
-    let layers: Vec<&MaterialLayer> =
-        implicit.iter().chain(design.layers_of(part)).chain(shared).filter(|l| l.enabled && l.opacity > 0.0).collect();
+    let layers = paint_shown(&implicit, design.layers_of(part), shared, part, output)?;
     if layers.is_empty() {
         return Ok(());
     }
@@ -831,9 +850,11 @@ pub fn apply(
                 | LayerKind::Polish { colour: c }
                 | LayerKind::Decal { colour: c, .. }
                 | LayerKind::Spots { colour: c, .. } => colour(c)?,
-                LayerKind::Paint { .. } | LayerKind::Wet { .. } | LayerKind::Grey { .. } | LayerKind::Cavity { .. } => {
-                    Vec3::ONE
-                }
+                LayerKind::Paint { .. }
+                | LayerKind::Wet { .. }
+                | LayerKind::Grey { .. }
+                | LayerKind::Cavity { .. }
+                | LayerKind::Texture { .. } => Vec3::ONE,
             };
             let dabs = match &layer.kind {
                 LayerKind::Paint { dabs } => dabs.iter().map(|d| colour(&d.colour)).collect::<Result<_, _>>()?,
@@ -908,6 +929,94 @@ pub fn apply(
         recolour_program(&mut output.materials[*mi].1.shading, &resolved, &frames);
     }
     Ok(())
+}
+
+/// Paints the texture layers among the layers that show and returns the others, bottom first.
+fn paint_shown<'a>(
+    implicit: &'a [MaterialLayer],
+    own: &'a [MaterialLayer],
+    shared: Vec<&'a MaterialLayer>,
+    part: &PartId,
+    output: &mut PartOutput,
+) -> Result<Vec<&'a MaterialLayer>, BuildError> {
+    let (textures, others): (Vec<_>, Vec<_>) = implicit
+        .iter()
+        .chain(own)
+        .chain(shared)
+        .filter(|l| l.enabled && l.opacity > 0.0)
+        .partition(|l| matches!(l.kind, LayerKind::Texture { .. }));
+    paint_textures(&textures, part, output)?;
+    Ok(others)
+}
+
+/// Paints a part's texture layers (#2575), bottom first and each at its opacity, into one texture, `paint-<part>`, and
+/// draws it over every material of the part ([`MaterialSpec::painted`](crate::MaterialSpec::painted)).
+fn paint_textures(layers: &[&MaterialLayer], part: &PartId, output: &mut PartOutput) -> Result<(), BuildError> {
+    if layers.is_empty() {
+        return Ok(());
+    }
+    let fail = |message: String| BuildError::Part { part: part.clone(), message };
+    let paint = crate::services::linked_texture_painter().ok_or_else(|| {
+        fail(
+            "it has a texture layer, and this binary links no texture painter (`omuzaki-paint-ops` registers one)"
+                .into(),
+        )
+    })?;
+    let mut out: Option<(u32, u32, Vec<f32>)> = None;
+    for layer in layers {
+        let LayerKind::Texture { painting } = &layer.kind else { continue };
+        let painted = paint(painting).map_err(|e| fail(format!("texture layer '{}': {e}", layer.id)))?;
+        let (w, h) = (painted.width, painted.height);
+        if painted.rgba8.len() != w as usize * h as usize * 4 {
+            return Err(fail(format!("texture layer '{}': the painter returned the wrong number of bytes", layer.id)));
+        }
+        let (_, _, acc) = out.get_or_insert_with(|| (w, h, vec![0.0; painted.rgba8.len()]));
+        if acc.len() != painted.rgba8.len() {
+            return Err(fail(format!(
+                "texture layer '{}' is {w}x{h}, and the part's first texture layer is another size: paint every \
+                 texture layer of a part at one size",
+                layer.id
+            )));
+        }
+        // Premultiplied source-over, the layer's opacity scaling the source.
+        let k = layer.opacity.clamp(0.0, 1.0) / 255.0;
+        for (px, src) in acc.as_chunks_mut::<4>().0.iter_mut().zip(painted.rgba8.as_chunks::<4>().0) {
+            let a = f32::from(src[3]) * k;
+            for c in 0..4 {
+                px[c] = f32::from(src[c]) * k + px[c] * (1.0 - a);
+            }
+        }
+    }
+    let Some((width, height, acc)) = out else { return Ok(()) };
+    let name = painted_texture_name(part)?;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 0..=255 first
+    let rgba8 = acc.iter().map(|v| (v * 255.0).round().clamp(0.0, 255.0) as u8).collect();
+    let desc = TextureDesc {
+        size: omuzaki_core::glam::UVec2::new(width, height),
+        colour_space: ColourSpace::Srgb,
+        alpha: AlphaEncoding::Premultiplied,
+        mips: true,
+        usage: TextureUsage::Static,
+        sampler: Sampler { anisotropy: 8, ..Sampler::default() },
+    };
+    for (_, spec) in &mut output.materials {
+        spec.painted = Some(name.clone());
+    }
+    output.textures.push((name, TextureData { desc, rgba8 }));
+    Ok(())
+}
+
+/// The name of a part's painted texture: `paint-<part>`, or for an id too long for that, its start and a hash.
+fn painted_texture_name(part: &PartId) -> Result<TextureName, BuildError> {
+    let id = part.as_str();
+    let name = if id.len() <= 58 {
+        format!("paint-{id}")
+    } else {
+        let hash = id.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+        format!("paint-{}-{:08x}", &id[..40], hash & 0xffff_ffff)
+    };
+    TextureName::new(name)
+        .map_err(|e| BuildError::Part { part: part.clone(), message: format!("painted texture: {e}") })
 }
 
 /// The vertex colour that makes `base × colour` equal `target`, or the old colour where the base is black.
@@ -1135,5 +1244,30 @@ mod tests {
         let id = LayerId::new("wet").unwrap();
         assert!(MaterialLayer::new(id.clone(), LayerKind::Wet { amount: 0.5 }).check().is_ok());
         assert!(MaterialLayer::new(id, LayerKind::Wet { amount: 1.5 }).check().unwrap_err().starts_with("kind/amount"));
+    }
+
+    #[test]
+    fn a_texture_layer_holds_a_painting_and_takes_no_masks() {
+        let id = LayerId::new("paint").unwrap();
+        let painting = serde_json::json!({ "name": "p", "width": 4, "height": 4 });
+        let layer = MaterialLayer::new(id.clone(), LayerKind::Texture { painting });
+        assert!(layer.check().is_ok());
+        let masked = MaterialLayer {
+            masks: vec![Mask { mask: MaskKind::Height { from: 0.0, to: 0.5 }, invert: false }],
+            ..layer
+        };
+        assert!(masked.check().unwrap_err().starts_with("masks"));
+        let not = MaterialLayer::new(id, LayerKind::Texture { painting: serde_json::json!([1, 2]) });
+        assert!(not.check().unwrap_err().starts_with("kind/painting"));
+    }
+
+    #[test]
+    fn a_long_part_id_still_names_its_painted_texture() {
+        let short = PartId::new("shirt").unwrap();
+        assert_eq!(painted_texture_name(&short).unwrap().as_str(), "paint-shirt");
+        let long = PartId::new("a".repeat(64)).unwrap();
+        let other = PartId::new(format!("{}b", "a".repeat(63))).unwrap();
+        let (a, b) = (painted_texture_name(&long).unwrap(), painted_texture_name(&other).unwrap());
+        assert!(a.as_str().len() <= 64 && a != b, "{a} and {b}");
     }
 }

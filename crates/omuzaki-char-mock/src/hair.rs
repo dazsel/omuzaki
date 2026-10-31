@@ -151,6 +151,7 @@ fn hair_material(
         base_texture: None,
         shading,
         overlays,
+        painted: None,
         alpha: AlphaMode::Opaque,
         order_independent: false,
         double_sided: true,

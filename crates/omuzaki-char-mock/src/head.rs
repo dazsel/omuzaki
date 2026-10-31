@@ -81,6 +81,7 @@ fn skin_material(
             skin: Some(Skin { floor: 0.66, hue_keep: 0.55 }),
         }),
         overlays,
+        painted: None,
         alpha: AlphaMode::Opaque,
         order_independent: false,
         double_sided: false,

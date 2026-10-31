@@ -129,6 +129,49 @@ pub fn linked_rasterizer() -> Option<fn() -> Box<dyn FaceRasterizer>> {
     inventory::iter::<RasterizerRegistration>.into_iter().next().map(|r| r.make)
 }
 
+/// A part's texture layer (#2575) as pixels: premultiplied sRGB RGBA8, rows top to bottom, covering the UV square.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaintedTexture {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// `width × height × 4` bytes.
+    pub rgba8: Vec<u8>,
+}
+
+/// The texture painter a crate links into every binary that links it
+/// ([`register_texture_painter!`](crate::register_texture_painter)): what turns the painting a texture layer holds
+/// (`omuzaki-paint` data, which this crate keeps as JSON because an API crate can't name a library) into pixels.
+pub struct TexturePainterRegistration {
+    /// Paints one painting, or says why it can't.
+    pub paint: PaintTextureFn,
+}
+
+/// What a texture painter is: a painting (as JSON) in, its pixels or why it can't paint them out.
+pub type PaintTextureFn = fn(&serde_json::Value) -> Result<PaintedTexture, String>;
+
+inventory::collect!(TexturePainterRegistration);
+
+/// Registers `$paint` (a `fn(&serde_json::Value) -> Result<PaintedTexture, String>`) as the linked texture painter,
+/// next to the painter itself. A binary that links several paints with the first the linker lists.
+///
+/// ```ignore
+/// omuzaki_char_api::register_texture_painter!(paint_texture);
+/// ```
+#[macro_export]
+macro_rules! register_texture_painter {
+    ($paint:path) => {
+        $crate::__inventory::submit! { $crate::TexturePainterRegistration { paint: $paint } }
+        $crate::__record_registration!("texture painter", $paint);
+    };
+}
+
+/// The texture painter the binary links, if any.
+pub fn linked_texture_painter() -> Option<PaintTextureFn> {
+    inventory::iter::<TexturePainterRegistration>.into_iter().next().map(|r| r.paint)
+}
+
 /// The services as one part reaches them. [`BuildCtx`] and [`RecolourCtx`] both delegate here, so a part's texture is
 /// painted by the same code, with the same checks and errors, whether it is being built or recoloured.
 struct PartServices<'a> {

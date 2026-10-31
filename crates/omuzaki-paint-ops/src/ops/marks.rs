@@ -15,7 +15,7 @@ use crate::doc::{from_paint, json, load, path_in};
 pub const MAX_BATCH: usize = 4096;
 
 /// Checks `marks` can go on `layer` of `p` as they are (each mark, the layers they sample, and the totals).
-fn check_marks(p: &Painting, layer: &str, marks: &[Mark], field: &str) -> Result<(), OpError> {
+pub(crate) fn check_marks(p: &Painting, layer: &str, marks: &[Mark], field: &str) -> Result<(), OpError> {
     let l = p.layer(layer).map_err(from_paint)?;
     if l.kind == LayerKind::Group {
         return Err(OpError::invalid("layer", format!("{layer:?} is a group")).hint("draw on a paint layer inside it"));
@@ -38,7 +38,7 @@ fn check_marks(p: &Painting, layer: &str, marks: &[Mark], field: &str) -> Result
 }
 
 /// Checks the painting after a change: the total mark count and that no bucket fills sample each other in a loop.
-fn check_after(p: &Painting) -> Result<(), OpError> {
+pub(crate) fn check_after(p: &Painting) -> Result<(), OpError> {
     if p.mark_count() > MAX_MARKS {
         return Err(OpError::invalid("marks", format!("a painting holds at most {MAX_MARKS} marks")));
     }
