@@ -22,7 +22,7 @@ use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_rig::constraint::VrmConstraintSolver;
 use omuzaki_rig::full::FullRig;
 use omuzaki_rig::ik::guard::{
-    ArmGuard, BodyPart, BodyProxy, GuardConfig, MAX_OBSTACLES, Obstacle, SkinnedMesh,
+    ArmGuard, BodyPart, BodyProxy, GuardConfig, MAX_OBSTACLES, Obstacle, Proxy, SkinnedMesh,
 };
 use omuzaki_rig::ik::TwoBoneIk;
 use omuzaki_rig::ik::look_at::LookAtIk;
@@ -152,6 +152,23 @@ impl RigFrame {
         let bind = self.bind_pose(&avatar.bind);
         self.rig.set_guard(arm_guard(&avatar.skeleton, &bind, meshes, |_, _| None));
         self
+    }
+
+    /// Takes the arm guard off: the arms then go wherever the pose puts them (what a clip asks, for
+    /// `measure.arm_room`). Cold.
+    pub(crate) fn without_guard(&mut self) {
+        self.rig.set_guard(None);
+    }
+
+    /// The parts of the body the arm guard keeps the arms out of, as measured; none without a guard.
+    pub(crate) fn guard_parts(&self) -> impl Iterator<Item = &Proxy> {
+        self.rig.guard().into_iter().flat_map(|g| g.proxy().body.iter())
+    }
+
+    /// Where humanoid `bone` is in the last solve, the character's root space; `None` for a bone it lacks.
+    pub(crate) fn joint(&self, bone: omuzaki_anim_api::HumanoidBone) -> Option<Vec3> {
+        let id = self.rig.skeleton().humanoid_map()?.get(bone)?;
+        self.rig.world().local.get(id.index()).map(|t| t.translation)
     }
 
     /// `bind` as local transforms on this rig's skeleton.
@@ -389,7 +406,7 @@ mod tests {
         bare.parts.retain(|id, _| id.as_str() != "skirt");
 
         let mut angles = Vec::new();
-        for def in [&dressed, &bare] {
+        for (skirted, def) in [(true, &dressed), (false, &bare)] {
             let built = RegistryBuilder
                 .build(&CharId::new("kit").unwrap(), def, &BuildOptions::default(), &BuildServices::default())
                 .unwrap();
@@ -405,7 +422,7 @@ mod tests {
                 widest(BodyPart::LeftThigh) * 1e3,
                 widest(BodyPart::Skirt) * 1e3
             );
-            assert_eq!(skirt, if std::ptr::eq(def, &dressed) { 2 } else { 0 });
+            assert_eq!(skirt, if skirted { 2 } else { 0 });
             // The thighs are the legs' own: the skirt's hem stands well outside them.
             assert!(widest(BodyPart::LeftThigh) < 0.11, "{proxy:?}");
             // The arm as built (45 degrees out, the bind) is untouched; asked to hang, it comes down to the body.

@@ -247,6 +247,7 @@ impl BodyProxy {
     /// (the pose the mesh was built in: the rest pose, or a character's bind pose), each with the bone that carries most
     /// of its weight. `None` if the skeleton is not a humanoid with arms, hips and a spine, or the mesh has no vertices
     /// on the torso or the forearms. Cold: allocates.
+    #[allow(clippy::too_many_lines)] // one measurement per part, in the body's order
     pub fn fit(skeleton: &Skeleton, pose: &Pose, vertices: &[(Vec3, BoneId)]) -> Option<Self> {
         use HumanoidBone as B;
         let map = skeleton.humanoid_map()?;
@@ -272,7 +273,7 @@ impl BodyProxy {
             .chain([B::Spine, B::Chest, B::UpperChest].into_iter().filter_map(joint))
             .chain(std::iter::once(top))
             .collect();
-        let carrier = |at: Vec3| {
+        let riding_on = |at: Vec3| {
             let up = top.1.translation - hips.1.translation;
             let height = |p: Vec3| (p - hips.1.translation).dot(up);
             chain.iter().rev().find(|(_, w)| height(w.translation) <= height(at) + 1e-5).copied().unwrap_or(hips)
@@ -280,7 +281,7 @@ impl BodyProxy {
         let mut body = hull(
             &carried(&spine),
             (hips.1.translation, top.1.translation),
-            carrier,
+            riding_on,
             [BodyPart::Waist, BodyPart::Torso],
         );
         if body.is_empty() {
@@ -484,11 +485,12 @@ fn elliptic(points: &[Vec3], (from, to): (Vec3, Vec3), a_rotation: Quat) -> Opti
 }
 
 /// Two frustums about the axis `from`-`to` (root space) that hold [`BODY_QUANTILE`] of `points`, each end anchored on
-/// `carrier` (the bone a point on the axis rides on, and its transform) and labelled `parts`: from `from` to the bend and from the bend to `to`. The bend is the ring that
-/// stands farthest in or out of the straight line from one end's ring to the other's (a waist between hips and
-/// chest, the hips where an A-line skirt stops flaring fast); each ring is the quantile of the points in a band about
-/// it, on an ellipse whose depth-to-width ratio is the points' own, and each frustum is raised until the quantile of
-/// its points is inside. The hull spans only the stretch of the axis the points cover. Empty without points.
+/// `carrier` (the bone a point on the axis rides on, and its transform) and labelled `parts`: from `from` to the bend
+/// and from the bend to `to`. The bend is the ring that stands farthest in or out of the straight line from one end's
+/// ring to the other's (a waist between hips and chest, the hips where an A-line skirt stops flaring fast); each ring
+/// is the quantile of the points in a band about it, on an ellipse whose depth-to-width ratio is the points' own, and
+/// each frustum is raised until the quantile of its points is inside. The hull spans only the stretch of the axis the
+/// points cover. Empty without points.
 fn hull(
     points: &[Vec3],
     (from, to): (Vec3, Vec3),
@@ -535,7 +537,7 @@ fn hull(
         .map(|k| k as f32 / HULL_RINGS as f32)
         .filter_map(|t| ring(t).map(|r| (t, r)))
         .max_by(|a, b| off_line(*a).total_cmp(&off_line(*b)))
-        .unwrap_or((0.5, (r_from + r_to) * 0.5));
+        .unwrap_or((0.5, f32::midpoint(r_from, r_to)));
     let anchor = |t: f32| {
         let at = from + along * (lo + (hi - lo) * t);
         let (bone, world) = carrier(at);
@@ -865,12 +867,12 @@ impl ArmGuard {
             if need != Vec3::ZERO && contact.gap > 2.0 * self.config.margin {
                 let (mut lo, mut hi) = (0.0_f32, 1.0_f32);
                 for _ in 0..SETTLE_STEPS {
-                    let mid = (lo + hi) * 0.5;
+                    let mid = f32::midpoint(lo, hi);
                     solve_to(pose, need * mid, bend_now);
                     if self.contact(skeleton, pose, hand, ids).gap >= self.config.margin * 0.5 {
-                        hi = mid
+                        hi = mid;
                     } else {
-                        lo = mid
+                        lo = mid;
                     }
                 }
                 need *= hi;
