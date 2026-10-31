@@ -9,7 +9,7 @@ use omuzaki_core::glam::UVec2;
 use omuzaki_render_api::{AlphaEncoding, Camera, Quality, Renderer, Scene, TargetDesc, TargetId};
 use omuzaki_stage::UploadOptions;
 use omuzaki_stage::body::Body;
-use omuzaki_stage::frame::face::{FaceRig, SETTLE_STEPS};
+use omuzaki_stage::frame::face::{FacePoints, FaceRig, SETTLE_STEPS};
 use omuzaki_stage::frame::{FrameInput, StageClock};
 use omuzaki_stage::ops::render::still::straight_rgba;
 use omuzaki_stage::scene::alone::StagedScene;
@@ -43,6 +43,21 @@ pub trait FrameSink {
     /// # Errors
     /// Whatever the sink reports.
     fn frame(&mut self, index: u64, rgba: &[u8]) -> Result<(), ShortError>;
+
+    /// Whether the sink takes where the face landed in each frame ([`FrameSink::face`]); finding it walks the head's
+    /// triangles, so it is measured only for a sink that asks.
+    fn wants_faces(&self) -> bool {
+        false
+    }
+
+    /// Takes where the painted face's eyes, mouth and chin landed in frame `index`, before the frame itself; `None`
+    /// when no painted face is in the picture.
+    ///
+    /// # Errors
+    /// Whatever the sink reports.
+    fn face(&mut self, _index: u64, _face: Option<&FacePoints>) -> Result<(), ShortError> {
+        Ok(())
+    }
 }
 
 impl FrameSink for crate::encode::ShortWriter {
@@ -208,6 +223,13 @@ fn run(
         stage.tick(renderer, &input).map_err(|e| render_error(&format!("frame {index}"), e))?;
         let image =
             renderer.read_target(stage.target()).map_err(|e| render_error(&format!("reading frame {index}"), e))?;
+        if sink.wants_faces() {
+            let face = match stage {
+                AnyStage::Kit(kit) => kit.face_points(UVec2::new(w, h)),
+                AnyStage::Avatar(_) => None,
+            };
+            sink.face(index, face.as_ref())?;
+        }
         let mut rgba = straight_rgba(&image);
         inserts.draw(&def.inserts, t, &mut rgba, [w, h])?;
         let drawn = std::time::Instant::now();

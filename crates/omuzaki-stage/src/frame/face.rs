@@ -1067,6 +1067,12 @@ pub struct FacePoints {
 }
 
 impl FacePoints {
+    /// Points given by hand, as a test or a caller that measured them elsewhere does.
+    #[must_use]
+    pub fn new(eye_right: Vec2, eye_left: Vec2, mouth: Vec2, chin: Vec2) -> Self {
+        Self { eye_right, eye_left, mouth, chin }
+    }
+
     /// The distance between the eye centres, pixels.
     #[must_use]
     pub fn iod(&self) -> f32 {

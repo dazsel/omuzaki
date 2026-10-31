@@ -69,7 +69,9 @@ To land on a reference's frames rather than near them:
   edge, a faint shadow, steady; `outline`: semibold, an outline, no shadow) and changes one thing about it with
   `weight`, `outline`, `shadow`, `pop`, `fill` and `line`.
 - `short.render` with `lossless: true` writes a lossless video, so a frame-by-frame score measures the render and not
-  our codec; score parity renders this way.
+  our codec; score parity renders this way. `face_points: true` also writes `<video>.points.json`: where the face's
+  eyes, mouth and chin landed in each frame, ready for `parity.loop`'s `ours_points` and for fitting each shot's camera
+  to the reference's (the eye spacing gives `head_width`, the eyes' midpoint gives `shift`).
 - A garment's `common.sheer` (0 to 0.9) lets what it covers show through, for chiffon, tulle or a sheer bodysuit.
 - `[[insert]]` cuts away to a drawn card for `duration` seconds from `at`: a flat `backdrop`, a preset `card`
   (`scream`, `googly`) and `[[insert.shape]]`s (`ellipse`, `blob`, `polygon`, `curve`, each with a `fill`, a `line` or
