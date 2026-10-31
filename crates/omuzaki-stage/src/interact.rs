@@ -100,11 +100,43 @@ impl MemberBody {
         self.root.w_axis.truncate()
     }
 
-    /// The torso's half width and half depth and how far its axis stands ahead of the root, metres: the guard's
-    /// measure, else a nominal body.
+    /// The torso as one piece from the waist to the neck: the guard measures it as the waist and the upper torso that
+    /// flares from it to the shoulders (#2688), and a touch meets the whole of it. Its flare reaches the upper torso's
+    /// width at the top.
+    fn upper(&self) -> Option<Obstacle> {
+        let torso = self.part(BodyPart::Torso)?;
+        let Some(waist) = self.part(BodyPart::Waist) else { return Some(torso) };
+        let flare = torso.radius * torso.flare / waist.radius.max(1e-4);
+        Some(Obstacle { part: BodyPart::Torso, b: torso.b, flare, ..waist })
+    }
+
+    /// The torso as the other member meets it: [`upper`](Self::upper) with its top end lowered by [`TORSO_TOP`] of its
+    /// width there, so its cap stands no higher than the neck.
+    fn trunk(&self) -> Option<Obstacle> {
+        let whole = self.upper()?;
+        let mut out = whole;
+        let axis = (whole.b - whole.a).normalize_or_zero();
+        let top = whole.b - axis * (whole.radius * whole.flare * TORSO_TOP);
+        let (kept, length) = ((top - whole.a).dot(axis), whole.a.distance(whole.b));
+        if kept > 0.0 {
+            out.b = top;
+            // The new top end has the width the torso had there.
+            out.flare = 1.0 + (whole.flare - 1.0) * kept / length.max(1e-6);
+        }
+        Some(out)
+    }
+
+    /// The torso's half width and half depth at the chest (the upper chest's height) and how far its axis stands ahead
+    /// of the root, metres: the guard's measure, else a nominal body.
     fn torso(&self) -> (f32, f32, f32) {
-        match self.part(BodyPart::Torso) {
-            Some(t) => (t.radius, t.depth, ((t.a + t.b) * 0.5 - self.at()).dot(self.facing())),
+        match self.upper() {
+            Some(t) => {
+                let axis = t.b - t.a;
+                let chest = self.joint(HumanoidBone::UpperChest).or_else(|| self.joint(HumanoidBone::Chest));
+                let along = chest.map_or(0.5, |c| (c - t.a).dot(axis) / axis.length_squared().max(1e-8));
+                let widen = 1.0 + (t.flare - 1.0) * along.clamp(0.0, 1.0);
+                (t.radius * widen, t.depth * widen, ((t.a + t.b) * 0.5 - self.at()).dot(self.facing()))
+            }
             None => (0.14, 0.09, 0.0),
         }
     }
@@ -140,13 +172,9 @@ impl MemberBody {
                     out[n].radius *= SKULL;
                     out[n].depth *= SKULL;
                 }
-                BodyPart::Torso => {
-                    let axis = (part.b - part.a).normalize_or_zero();
-                    let top = part.b - axis * (part.radius * TORSO_TOP);
-                    if (top - part.a).dot(axis) > 0.0 {
-                        out[n].b = top;
-                    }
-                }
+                // Part of the torso, as one piece below.
+                BodyPart::Waist => continue,
+                BodyPart::Torso => out[n] = self.trunk().unwrap_or(*part),
                 _ => {}
             }
             n += 1;
@@ -189,6 +217,8 @@ const LEAN: [(HumanoidBone, f32); 4] = [
 /// off above the neck by its whole half width, a cap that would stand round the shoulders and neck, where an arm over
 /// the shoulders lies.
 const TORSO_TOP: f32 = 1.0;
+/// How many steps along a torso's axis a report looks for where it comes closest to the other.
+const TORSO_SAMPLES: u16 = 8;
 
 /// The share of the head's measured sphere another body meets: the guard measures the head with its hair cap, and hair
 /// gives under a cheek or an arm where the skull doesn't.
@@ -483,13 +513,16 @@ pub fn report(a: &MemberBody, b: &MemberBody, overlays: &[Overlay; 2]) -> TouchR
             }
         }
     }
-    out.torsos = match (a.part(BodyPart::Torso), b.part(BodyPart::Torso)) {
-        (Some(ta), Some(tb)) => {
-            let centre = (tb.a + tb.b) * 0.5;
-            let (gap, normal) = ta.gap_to(centre, 0.0);
-            // From b's axis back out to its surface toward a.
-            gap - tb_toward(&tb, -normal)
-        }
+    out.torsos = match (a.trunk(), b.trunk()) {
+        // Where they come closest along b's axis: the torsos flare, so the chests can meet above the middle.
+        (Some(ta), Some(tb)) => (0..=TORSO_SAMPLES)
+            .map(|k| {
+                let on = tb.a.lerp(tb.b, f32::from(k) / f32::from(TORSO_SAMPLES));
+                let (gap, normal) = ta.gap_to(on, 0.0);
+                // From b's axis back out to its surface toward a.
+                gap - tb_toward(&tb, on, -normal)
+            })
+            .fold(f32::INFINITY, f32::min),
         _ => f32::INFINITY,
     };
     out.heads = match (a.head(), b.head()) {
@@ -499,9 +532,9 @@ pub fn report(a: &MemberBody, b: &MemberBody, overlays: &[Overlay; 2]) -> TouchR
     out
 }
 
-/// How far `part`'s surface stands from its axis toward `out`.
-fn tb_toward(part: &Obstacle, out: Vec3) -> f32 {
-    let probe = (part.a + part.b) * 0.5 + out * 10.0;
+/// How far `part`'s surface stands from its axis toward `out` (square to the axis) at `on`, a point on the axis.
+fn tb_toward(part: &Obstacle, on: Vec3, out: Vec3) -> f32 {
+    let probe = on + out * 10.0;
     10.0 - part.gap_to(probe, 0.0).0
 }
 
