@@ -22,7 +22,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{Check, Measures, Parity, analyse, compare, overlay};
+use super::{Check, Measures, Parity, Segment, analyse, compare, overlay, range_factor};
 use crate::slots::clips::decode_file_16k;
 
 /// Measure our audio against a reference recording of the same words.
@@ -61,6 +61,7 @@ const DEFAULTS: Targets = Targets {
     level_db: 1.0,
     f0_bias_cents: 50.0,
     f0_shape_cents: 120.0,
+    range_factor: 1.25,
     voicing_error: 0.1,
     duration_pct: 5.0,
     timing_rms_ms: 40.0,
@@ -85,6 +86,7 @@ struct Targets {
     level_db: f64,
     f0_bias_cents: f64,
     f0_shape_cents: f64,
+    range_factor: f64,
     voicing_error: f64,
     duration_pct: f64,
     timing_rms_ms: f64,
@@ -99,6 +101,7 @@ impl Targets {
             level_db: floor.level_db.abs(),
             f0_bias_cents: floor.f0_bias_cents.abs(),
             f0_shape_cents: floor.f0_shape_cents,
+            range_factor: range_factor(floor.f0_range_ratio),
             voicing_error: floor.voicing_error,
             duration_pct: (floor.duration_ratio - 1.0).abs() * 100.0,
             timing_rms_ms: floor.timing_rms_ms,
@@ -241,6 +244,11 @@ fn widest(floors: &[Parity]) -> Option<(Measures, f64)> {
         f0_bias_cents: wider(w.f0_bias_cents, m.f0_bias_cents),
         f0_rmse_cents: w.f0_rmse_cents.max(m.f0_rmse_cents),
         f0_shape_cents: w.f0_shape_cents.max(m.f0_shape_cents),
+        f0_range_ratio: if m.f0_range_ratio.ln().abs() > w.f0_range_ratio.ln().abs() {
+            m.f0_range_ratio
+        } else {
+            w.f0_range_ratio
+        },
         voicing_error: w.voicing_error.max(m.voicing_error),
         duration_ratio: if m.duration_ratio.ln().abs() > w.duration_ratio.ln().abs() {
             m.duration_ratio
@@ -318,6 +326,7 @@ fn answer(
         metric("level_error_db", m.level_db.abs(), "dB", t.level_db),
         metric("f0_bias_cents", m.f0_bias_cents.abs(), "cents", t.f0_bias_cents),
         metric("f0_shape_cents", m.f0_shape_cents, "cents", t.f0_shape_cents),
+        metric("f0_range_factor", range_factor(m.f0_range_ratio), "times", t.range_factor),
         metric("voicing_error", m.voicing_error, "share", t.voicing_error),
         metric("duration_error_pct", (m.duration_ratio - 1.0).abs() * 100.0, "%", t.duration_pct),
         metric("timing_rms_ms", m.timing_rms_ms, "ms", t.timing_rms_ms),
@@ -344,6 +353,36 @@ fn answer(
 }
 
 /// The worst phrases and measures, worst first, each with what to change.
+/// What to change for a phrase whose pitch is off: the whole line's offset first, then this phrase's own.
+fn pitch_hint(line_bias: f64, s: &Segment, t: &Targets) -> String {
+    if line_bias.abs() > t.f0_bias_cents {
+        return format!(
+            "the pitch sits {line_bias:+.0} cents off overall: shift it by {:+.1} semitones",
+            -line_bias / 100.0
+        );
+    }
+    let own = s.f0_bias_cents - line_bias;
+    if own.abs() > t.f0_bias_cents {
+        format!(
+            "this phrase sits {own:+.0} cents {} the rest: shift it by {:+.1} semitones",
+            if own > 0.0 { "above" } else { "below" },
+            -own / 100.0
+        )
+    } else {
+        "the intonation differs here: the emphasis or the punctuation of the line".to_owned()
+    }
+}
+
+/// What to change when the intonation swings `ratio` times as wide as the reference's: the expressiveness that
+/// scales it back (`2^(2e − 1)` from 0.5, so `e = 0.5 − log2(ratio) / 2`), relative to where it is now.
+fn range_hint(ratio: f64) -> String {
+    format!(
+        "its intonation swings {ratio:.2} times as wide as the reference's: {} it (expressiveness {:.2} from 0.5)",
+        if ratio < 1.0 { "widen" } else { "narrow" },
+        (0.5 - ratio.log2() / 2.0).clamp(0.0, 1.0)
+    )
+}
+
 fn worst(parity: &Parity, t: &Targets) -> Vec<Value> {
     let bias = parity.measures.f0_bias_cents;
     let mut items: Vec<(f64, Value)> = Vec::new();
@@ -358,16 +397,7 @@ fn worst(parity: &Parity, t: &Targets) -> Vec<Value> {
                 t.mcd_db,
                 "the timbre or the vowels differ here: another voice, or its pitch".to_owned(),
             ),
-            (
-                "f0_rmse_cents",
-                s.f0_rmse_cents,
-                t.f0_shape_cents.max(t.f0_bias_cents),
-                if bias.abs() > t.f0_bias_cents {
-                    format!("the pitch sits {bias:+.0} cents off overall: shift it by {:+.1} semitones", -bias / 100.0)
-                } else {
-                    "the intonation differs here: the emphasis or the punctuation of the line".to_owned()
-                },
-            ),
+            ("f0_rmse_cents", s.f0_rmse_cents, t.f0_shape_cents.max(t.f0_bias_cents), pitch_hint(bias, s, t)),
             (
                 "voicing_error",
                 s.voicing_error,
@@ -385,7 +415,8 @@ fn worst(parity: &Parity, t: &Targets) -> Vec<Value> {
                 ),
             ),
         ];
-        for (metric, value, target, hint) in candidates {
+        let range = s.f0_range_ratio.map(|r| ("f0_range_factor", range_factor(r), t.range_factor, range_hint(r)));
+        for (metric, value, target, hint) in candidates.into_iter().chain(range) {
             if value > target + 1e-9 {
                 let excess = (value - target) / target.max(1e-6) * weight;
                 items.push((
@@ -434,6 +465,7 @@ fn whole_line(parity: &Parity, t: &Targets) -> Vec<(f64, Value)> {
             "the rhythm inside the phrases differs: the length of single words and syllables, not the overall speed"
                 .to_owned(),
         ),
+        ("f0_range_factor", range_factor(m.f0_range_ratio), t.range_factor, range_hint(m.f0_range_ratio)),
         (
             "level_error_db",
             m.level_db.abs(),

@@ -128,3 +128,31 @@ fn ours_is_fixed_step_by_step_toward_the_floor() {
         assert!(last["worst"].as_array().unwrap().iter().any(|w| w["metric"] == name), "{}", last["worst"]);
     }
 }
+
+/// A reading with half the intonation range: every phrase measures about half as wide, and the worst list says to
+/// widen it, naming the expressiveness that would (1.0 for twice the range). Following it brings the range back.
+#[test]
+fn a_flat_reading_is_told_how_much_wider_to_swing() {
+    use omuzaki_speech::prosody::{Shape, reshape};
+    let reference = read(SPEAKER);
+    let take = read(Voice { seed: 2, ..SPEAKER });
+    let flat = reshape(&take, omuzaki_speech::parity::RATE, &Shape { range: 0.5, ..Shape::IDENTITY });
+    let scored = score(&flat, &reference, &[]).unwrap();
+    let ratios: Vec<f64> = scored.parity.segments.iter().filter_map(|s| s.f0_range_ratio).collect();
+    println!("range ratios {ratios:?}, line {:.2}", scored.parity.measures.f0_range_ratio);
+    assert!(!ratios.is_empty() && ratios.iter().all(|r| (0.35..0.7).contains(r)), "{ratios:?}");
+    let answer = scored.answer("a take at half the range", &[]);
+    let hints: Vec<&str> = answer["worst"].as_array().unwrap().iter().filter_map(|w| w["hint"].as_str()).collect();
+    println!("{hints:#?}");
+    assert!(
+        hints.iter().any(|h| h.contains("widen it (expressiveness 0.9") || h.contains("widen it (expressiveness 1.0")),
+        "{hints:?}"
+    );
+    // Following the hint: expressiveness 1.0 is twice the range.
+    let range = Shape::range_for_expressiveness(1.0);
+    let fixed = reshape(&flat, omuzaki_speech::parity::RATE, &Shape { range, ..Shape::IDENTITY });
+    let after = score(&fixed, &reference, &[]).unwrap().parity.measures;
+    println!("after: range {:.2}, shape {:.0} cents", after.f0_range_ratio, after.f0_shape_cents);
+    assert!((after.f0_range_ratio - 1.0).abs() < 0.15, "{after:?}");
+    assert!(after.f0_shape_cents < scored.parity.measures.f0_shape_cents, "{after:?}");
+}

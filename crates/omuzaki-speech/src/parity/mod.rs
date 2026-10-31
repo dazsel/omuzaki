@@ -173,6 +173,12 @@ pub struct Segment {
     pub mcd_db: f64,
     /// Pitch error inside the phrase, cents.
     pub f0_rmse_cents: f64,
+    /// Ours minus the reference's pitch inside the phrase, on average, cents.
+    pub f0_bias_cents: f64,
+    /// How wide our intonation swings inside the phrase against the reference's: the spread of our pitch over the
+    /// spread of theirs, on the frames both voice. `None` with fewer than [`RANGE_MIN_FRAMES`] such frames or a
+    /// reference flatter than [`RANGE_MIN_CENTS`].
+    pub f0_range_ratio: Option<f64>,
     /// Voicing mismatches inside the phrase, as a share.
     pub voicing_error: f64,
     /// Frames on the path inside the phrase that both call speech.
@@ -194,6 +200,8 @@ pub struct Measures {
     pub f0_rmse_cents: f64,
     /// Pitch error with the offset taken out, cents.
     pub f0_shape_cents: f64,
+    /// Our intonation's spread over the reference's (see [`Segment::f0_range_ratio`]); 1 when it can't be told.
+    pub f0_range_ratio: f64,
     /// Share of speech frames with a voicing mismatch.
     pub voicing_error: f64,
     /// Our speech span over the reference's.
@@ -236,12 +244,13 @@ impl Parity {
     #[must_use]
     pub fn within(&self, floor: &Measures) -> Vec<Check> {
         let ours = &self.measures;
-        let pairs: [(&'static str, f64, f64); 8] = [
+        let pairs: [(&'static str, f64, f64); 9] = [
             ("mcd_db", ours.mcd_db, floor.mcd_db),
             ("spectral_db", ours.spectral_db, floor.spectral_db),
             ("level_db", ours.level_db.abs(), floor.level_db.abs()),
             ("f0_bias_cents", ours.f0_bias_cents.abs(), floor.f0_bias_cents.abs()),
             ("f0_shape_cents", ours.f0_shape_cents, floor.f0_shape_cents),
+            ("f0_range_factor", range_factor(ours.f0_range_ratio), range_factor(floor.f0_range_ratio)),
             ("voicing_error", ours.voicing_error, floor.voicing_error),
             ("duration_ratio", (ours.duration_ratio.ln()).abs(), (floor.duration_ratio.ln()).abs()),
             ("timing_rms_ms", ours.timing_rms_ms, floor.timing_rms_ms),
@@ -292,6 +301,9 @@ pub fn compare(ours: &Features, reference: &Features) -> Result<Parity, ParityEr
     }
     // Per phrase: MCD sum, squared cents, pitched frames, mismatches, frames.
     let mut per = vec![(0.0, 0.0, 0usize, 0usize, 0usize); spans.len()];
+    // Per phrase, and over the line: both pitches in cents, on the frames both voice.
+    let mut pitch_pairs: Vec<Vec<(f64, f64)>> = vec![Vec::new(); spans.len()];
+    let mut all_pairs = Vec::new();
     let (mut mcd, mut spectral, mut both) = (0.0, 0.0, 0usize);
     let mut cents = Vec::new();
     let mut mismatched = 0usize;
@@ -309,7 +321,14 @@ pub fn compare(ours: &Features, reference: &Features) -> Result<Parity, ParityEr
         let phrase = phrase_of[j].map(|k| &mut per[k]);
         let (mut cent, mut mismatch) = (None, false);
         match (x.f0, y.f0) {
-            (Some(p), Some(q)) => cent = Some(1200.0 * (p / q).log2()),
+            (Some(p), Some(q)) => {
+                cent = Some(1200.0 * (p / q).log2());
+                let pair = (1200.0 * p.log2(), 1200.0 * q.log2());
+                all_pairs.push(pair);
+                if let Some(k) = phrase_of[j] {
+                    pitch_pairs[k].push(pair);
+                }
+            }
             (None, None) => {}
             _ => mismatch = true,
         }
@@ -345,7 +364,8 @@ pub fn compare(ours: &Features, reference: &Features) -> Result<Parity, ParityEr
     let segments = spans
         .iter()
         .zip(&per)
-        .map(|(&(s, e), &(seg_mcd, sq, pitched, miss, frames))| {
+        .zip(&pitch_pairs)
+        .map(|((&(s, e), &(seg_mcd, sq, pitched, miss, frames)), pairs)| {
             let start = mapped[s].first().copied().unwrap_or(0) as f64 * 10.0;
             let end = (mapped[e - 1].last().copied().unwrap_or(0) + 1) as f64 * 10.0;
             let (rs, re) = (s as f64 * 10.0, e as f64 * 10.0);
@@ -355,6 +375,8 @@ pub fn compare(ours: &Features, reference: &Features) -> Result<Parity, ParityEr
                 offset_ms: [start - rs, end - re],
                 mcd_db: seg_mcd / frames.max(1) as f64,
                 f0_rmse_cents: (sq / pitched.max(1) as f64).sqrt(),
+                f0_bias_cents: pairs.iter().map(|(o, r)| o - r).sum::<f64>() / pairs.len().max(1) as f64,
+                f0_range_ratio: range_ratio(pairs),
                 voicing_error: miss as f64 / frames.max(1) as f64,
                 frames,
             }
@@ -385,6 +407,7 @@ pub fn compare(ours: &Features, reference: &Features) -> Result<Parity, ParityEr
             f0_bias_cents: bias,
             f0_rmse_cents: rmse,
             f0_shape_cents: shape,
+            f0_range_ratio: range_ratio(&all_pairs).unwrap_or(1.0),
             voicing_error: mismatched as f64 / speech_frames.max(1) as f64,
             duration_ratio: a.len() as f64 / b.len() as f64,
             timing_rms_ms,
@@ -394,6 +417,31 @@ pub fn compare(ours: &Features, reference: &Features) -> Result<Parity, ParityEr
         warped,
         reference: b.to_vec(),
     })
+}
+
+/// Frames a phrase needs, both voiced, before its range ratio is told.
+pub const RANGE_MIN_FRAMES: usize = 10;
+/// A reference flatter than this (the spread of its pitch, cents) has no range to compare against.
+pub const RANGE_MIN_CENTS: f64 = 10.0;
+
+/// How far a range ratio is from 1, either way: 2 for twice as wide and for half as wide.
+#[must_use]
+pub fn range_factor(ratio: f64) -> f64 {
+    if ratio.is_finite() && ratio > 0.0 { ratio.max(1.0 / ratio) } else { 1.0 }
+}
+
+/// The spread of our pitch over the reference's, from `(ours, reference)` pairs in cents.
+fn range_ratio(pairs: &[(f64, f64)]) -> Option<f64> {
+    if pairs.len() < RANGE_MIN_FRAMES {
+        return None;
+    }
+    let n = pairs.len() as f64;
+    let spread = |pick: fn(&(f64, f64)) -> f64| {
+        let mean = pairs.iter().map(pick).sum::<f64>() / n;
+        (pairs.iter().map(|p| (pick(p) - mean).powi(2)).sum::<f64>() / n).sqrt()
+    };
+    let (ours, theirs) = (spread(|p| p.0), spread(|p| p.1));
+    (theirs >= RANGE_MIN_CENTS).then(|| ours / theirs)
 }
 
 /// An RGB image, row by row.
