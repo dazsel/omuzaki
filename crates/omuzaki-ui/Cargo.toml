@@ -84,6 +84,8 @@ omuzaki-paint-ops = { path = "../omuzaki-paint-ops" }
 omuzaki-short = { path = "../omuzaki-short" }
 omuzaki-stage = { path = "../omuzaki-stage" }
 omuzaki-theatre = { path = "../omuzaki-theatre" }
+# The branch menu, compare and merge views read branches and points (`shell::branches`).
+omuzaki-history-api = { path = "../omuzaki-history-api" }
 omuzaki-store = { path = "../omuzaki-store" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }

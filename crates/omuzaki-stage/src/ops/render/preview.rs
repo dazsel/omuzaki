@@ -15,6 +15,7 @@ use omuzaki_core::glam::Vec3;
 use omuzaki_core::time::SystemClock;
 use omuzaki_doc_api::DocRead;
 use omuzaki_face_api::ExpressionId;
+use omuzaki_history_api::state::StateRef;
 use omuzaki_ops_api::{JobCtx, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use omuzaki_render_api::{Camera, Capabilities, EdgeLines, MtoonSupport, Outline, Post, Projection};
 use omuzaki_stage_api::{CameraId, Framing, Lighting, MemberId, SceneDef, SceneError, SceneId};
@@ -23,7 +24,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::job::{RenderQuality, character_bytes, check_expression, check_size, cost, store_png, with_renderer};
+use super::history::{read, state_doc};
+use super::job::{RenderQuality, character_bytes_in, check_expression, check_size, cost, store_png, with_renderer};
 use super::pose::PoseArg;
 use super::still::{Shot, StillSpec, encode_png, render_body_stills};
 use crate::body::{Body, BodyServices, load_body};
@@ -54,13 +56,18 @@ fn one() -> f32 {
         {"character": "kit", "framing": "bust", "yaw": 30.0, "size": [512, 512], "quality": "live"},
         {"character": "kit", "light_rig": "viewer-candle", "framing": "face"},
         {"character": "kit", "preset": "measure", "size": [1024, 1024]},
-        {"character": "kit", "pose": {"id": "wave-right", "mirror": true}}
+        {"character": "kit", "pose": {"id": "wave-right", "mirror": true}},
+        {"character": "kit", "state": "now", "yaw": 20.0}
     ],
     "x-omuzaki-fixture" = "character"
 ))]
 pub struct Preview {
     /// The character, built from the kit or imported.
     pub character: CharId,
+    /// The state of the project to render: `"now"` (the default), a transaction `{"tx": 7}`, a snapshot, a point or
+    /// another branch `{"branch": "aria/oval-face"}`. Rendered from a copy of that state; the document never changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<StateRef>,
     /// A variant of a kit character to render instead of its base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant: Option<VariantId>,
@@ -294,13 +301,16 @@ impl Op for Preview {
 
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
         let preset = self.check()?;
-        if ctx.doc.get(&omuzaki_char_api::paths::character(&self.character)).is_none() {
-            return Err(OpError::not_found(format!("there is no character '{}'", self.character))
+        let state = state_doc(ctx.services(), self.state.as_ref())?;
+        let doc: &dyn DocRead = state.as_ref().map_or(ctx.doc, |s| s);
+        if doc.get(&omuzaki_char_api::paths::character(&self.character)).is_none() {
+            let when = if state.is_some() { " in that state" } else { "" };
+            return Err(OpError::not_found(format!("there is no character '{}'{when}", self.character))
                 .hint("check the id; characters live under characters/<id>"));
         }
-        self.staged(ctx.doc, preset.as_ref())?;
+        self.staged(doc, preset.as_ref())?;
         let size = check_size(self.size, self.quality)?;
-        let character = character_bytes(ctx, &self.character, self.variant.as_ref(), self.quality)?;
+        let character = character_bytes_in(ctx, doc, &self.character, self.variant.as_ref(), self.quality)?;
         Ok(Plan { cost: Some(cost(size, 1, self.quality, character)), ..Plan::default() })
     }
 
@@ -318,9 +328,11 @@ impl Op for Preview {
             &clock,
         );
         job.checkpoint("loading", 0.0)?;
-        let (scene, def, member, camera_id) = job.read(|doc| self.staged(doc, preset))?;
-        let mut body =
-            job.read(|doc| load_body(doc, &services, &self.character, self.variant.as_ref(), self.quality.detail()))?;
+        let state = state_doc(job.services(), self.state.as_ref())?;
+        let (scene, def, member, camera_id) = read(job, state.as_ref(), |doc| self.staged(doc, preset))?;
+        let mut body = read(job, state.as_ref(), |doc| {
+            load_body(doc, &services, &self.character, self.variant.as_ref(), self.quality.detail())
+        })?;
         let kind = match &body {
             Body::Kit(_) => "kit",
             Body::Avatar(_) => "imported",

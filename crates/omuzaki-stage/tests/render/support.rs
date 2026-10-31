@@ -93,10 +93,24 @@ impl Harness {
         Self::build(doc, None, renderer)
     }
 
+    /// A harness over `doc` with every service, whose past states and other branches `history` reads (#400).
+    pub fn with_history(doc: TestDoc, history: Arc<dyn omuzaki_history_api::state::HistoryView>) -> Self {
+        Self::build_with(doc, None, Box::new(MockRenderer::new()), ServicesBuilder::new().insert(history))
+    }
+
     fn build(doc: TestDoc, missing: Option<Missing>, renderer: Box<dyn Renderer>) -> Self {
+        Self::build_with(doc, missing, renderer, ServicesBuilder::new())
+    }
+
+    fn build_with(
+        doc: TestDoc,
+        missing: Option<Missing>,
+        renderer: Box<dyn Renderer>,
+        builder: ServicesBuilder,
+    ) -> Self {
         let renderer: Arc<Mutex<Box<dyn Renderer>>> = Arc::new(Mutex::new(renderer));
         let store = Arc::new(MemStore::new());
-        let mut builder = ServicesBuilder::new();
+        let mut builder = builder;
         if missing != Some(Missing::Renderer) {
             builder = builder.insert::<Mutex<Box<dyn Renderer>>>(renderer.clone());
         }
@@ -118,6 +132,11 @@ impl Harness {
         let signal = TestSignal;
         let job = JobCtx::new(JobId(1), &actor, &self.doc, &signal).with_services(&self.services);
         f(&job)
+    }
+
+    /// Runs `f` with the harness's services.
+    pub fn with_services<T>(&self, f: impl FnOnce(&Services) -> T) -> T {
+        f(&self.services)
     }
 
     /// The document the jobs read.

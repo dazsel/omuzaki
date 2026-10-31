@@ -33,6 +33,8 @@ omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-face-api = { path = "../omuzaki-face-api" }
+# State references: `render.preview` and `render.compare` render any state of the project, not only now (#400).
+omuzaki-history-api = { path = "../omuzaki-history-api" }
 omuzaki-io-api = { path = "../omuzaki-io-api" }
 omuzaki-metrics-api = { path = "../omuzaki-metrics-api" }
 # An imported character's avatar, rebuilt from its stored original when it goes on a stage (`body`).
