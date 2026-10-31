@@ -88,7 +88,9 @@ impl BranchCompare {
         }
         let (reference, column) = (self.columns.get(self.reference)?, self.columns.get(n)?);
         Some(match (&reference.tree, &column.tree) {
-            (Ok(a), Ok(b)) => Ok(grouped(changes(a, b).into_iter().filter(|c| !c.path.starts_with("merges")).collect())),
+            (Ok(a), Ok(b)) => {
+                Ok(grouped(changes(a, b).into_iter().filter(|c| !c.path.starts_with("merges")).collect()))
+            }
             (Err(why), _) | (_, Err(why)) => Err(why.clone()),
         })
     }
@@ -121,7 +123,9 @@ impl BranchCompare {
             .show(ctx, |ui| {
                 let reference = self.columns.get(self.reference).map(|c| c.branch.name.to_string()).unwrap_or_default();
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(say(ui.ctx(), Word::BranchCompareAgainst, &[("branch", &reference)])).strong());
+                    ui.label(
+                        RichText::new(say(ui.ctx(), Word::BranchCompareAgainst, &[("branch", &reference)])).strong(),
+                    );
                     ui.label(RichText::new(say(ui.ctx(), Word::BranchCompareOrbit, &[])).color(ds.theme.text2));
                 });
                 self.add_menu(ui, branching, listing, runner);
@@ -217,7 +221,7 @@ impl BranchCompare {
                         Err(e) => tracing::warn!(error = %e, "the switch from the compare was refused"),
                     }
                 }
-                let into = listing.folder_branch().map(|b| b.name.to_string()).unwrap_or_default();
+                let into = listing.folder_name();
                 let merge = say(&ctx, Word::BranchMergeInto, &[("branch", &into)]);
                 if ui.add(Button::new(&merge).ghost().icon(icons::GIT_MERGE)).clicked() {
                     asked = Some(Asked::Merge(id, None));
@@ -245,6 +249,9 @@ impl BranchCompare {
         let ctx = ui.ctx().clone();
         let size = vec2(PICTURE[0] as f32, PICTURE[1] as f32);
         let (rect, response) = ui.allocate_exact_size(size, Sense::drag());
+        let name = self.columns.get(n).map(|c| c.branch.name.to_string()).unwrap_or_default();
+        let label = say(&ctx, Word::BranchComparePicture, &[("branch", &name)]);
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, &label));
         ui.painter().rect_filled(rect, 4.0, ds.theme.bg2);
         if response.dragged() {
             let delta = response.drag_delta();
@@ -314,14 +321,18 @@ impl BranchCompare {
             }
         };
         if groups.is_empty() {
-            ui.label(RichText::new(say(&ctx, Word::BranchCompareSame, &[("branch", &reference)])).color(ds.theme.text2));
+            ui.label(
+                RichText::new(say(&ctx, Word::BranchCompareSame, &[("branch", &reference)])).color(ds.theme.text2),
+            );
             return;
         }
         for group in &groups {
             let badge = say(&ctx, Word::BranchCompareChanges, &[("count", &group.changes.len().to_string())]);
-            Section::new(group.title()).badge(&badge).default_open(true).id_salt(("branch_compare", n, &group.path)).show(
-                ui,
-                |ui| {
+            Section::new(group.title())
+                .badge(&badge)
+                .default_open(true)
+                .id_salt(("branch_compare", n, &group.path))
+                .show(ui, |ui| {
                     if let (Some((character, part)), Some(focus)) = (&group.part, focus) {
                         let select = say(&ctx, Word::BranchCompareSelect, &[("part", part.as_str())]);
                         if ui.add(Button::new(&select).ghost().icon(icons::CURSOR)).clicked() {
@@ -339,11 +350,11 @@ impl BranchCompare {
                             super::short(change.after.as_ref())
                         );
                         ui.add(
-                            egui::Label::new(RichText::new(line).font(ds.text.mono.clone()).color(ds.theme.text2)).wrap(),
+                            egui::Label::new(RichText::new(line).font(ds.text.mono.clone()).color(ds.theme.text2))
+                                .wrap(),
                         );
                     }
-                },
-            );
+                });
         }
     }
 

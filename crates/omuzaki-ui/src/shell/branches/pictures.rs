@@ -183,8 +183,8 @@ impl Rendered {
 
 impl Painter for Rendered {
     fn paint(&self, tree: Arc<Value>, shot: &Preview) -> Result<Vec<u8>, String> {
-        let result = omuzaki_stage::ops::render::history::picture_of(tree, shot, &self.services)
-            .map_err(|e| e.message)?;
+        let result =
+            omuzaki_stage::ops::render::history::picture_of(tree, shot, &self.services).map_err(|e| e.message)?;
         let hash = result.hash.parse().map_err(|e: omuzaki_store_api::HashParseError| e.0)?;
         self.store.get(&hash).map_err(|e| e.to_string())
     }

@@ -61,7 +61,7 @@ impl Menu {
         self.listing.follow(branching);
         let ctx = ui.ctx().clone();
         let ds = ds(&ctx);
-        let name = self.listing.folder_branch().map_or_else(String::new, |b| b.name.to_string());
+        let name = self.listing.folder_name();
         let ready = self.listing.ready().count();
         let text = if ready == 0 {
             say(&ctx, Word::BranchChip, &[("branch", &name)])
@@ -114,21 +114,32 @@ impl Menu {
 
     fn body(&mut self, ui: &mut Ui, ds: &Ds, branching: &Branching) -> Option<Asked> {
         let ctx = ui.ctx().clone();
-        let Some(folder) = self.listing.folder_branch().cloned() else { return None };
+        let Some(folder) = self.listing.folder_branch().cloned() else {
+            // A project's main branch is written down when its first branch is made: until then it is all there is.
+            let Some(id) = self.listing.folder.clone() else { return None };
+            let name = self.listing.folder_name();
+            ui.label(RichText::new(say(&ctx, Word::BranchOn, &[("branch", &name)])).strong());
+            self.problem_line(ui, ds);
+            ui.add_space(6.0);
+            self.new_branch(ui, ds, branching, &id, &name);
+            if self.new.is_none() {
+                ui.label(RichText::new(say(&ctx, Word::BranchAlone, &[("branch", &name)])).color(ds.theme.text2));
+            }
+            return None;
+        };
         let mut asked = None;
         ui.label(RichText::new(say(&ctx, Word::BranchOn, &[("branch", folder.name.as_str())])).strong());
         ui.label(meta(&ctx, ds, &folder));
-        if let Some(problem) = &self.problem {
-            ui.add_space(4.0);
-            ui.label(RichText::new(problem).color(ds.theme.danger));
-        }
+        self.problem_line(ui, ds);
         ui.add_space(6.0);
-        self.new_branch(ui, ds, branching, &folder);
+        self.new_branch(ui, ds, branching, &folder.id, folder.name.as_str());
 
         let live: Vec<BranchInfo> =
             self.listing.branches.iter().filter(|b| b.deleted.is_none() && b.id != folder.id).cloned().collect();
         if live.is_empty() && self.new.is_none() {
-            ui.label(RichText::new(say(&ctx, Word::BranchAlone, &[("branch", folder.name.as_str())])).color(ds.theme.text2));
+            ui.label(
+                RichText::new(say(&ctx, Word::BranchAlone, &[("branch", folder.name.as_str())])).color(ds.theme.text2),
+            );
         }
 
         let ready: Vec<BranchInfo> = self.listing.ready().cloned().collect();
@@ -141,8 +152,9 @@ impl Menu {
             }
         }
         let groups = [
-            (Word::BranchGroupYours, live.iter().filter(|b| !b.auto && matches!(b.created_by, Actor::Person { .. })).collect::<Vec<_>>()),
-            (Word::BranchGroupAgents, live.iter().filter(|b| !b.auto && !matches!(b.created_by, Actor::Person { .. })).collect()),
+            // `main` is the project's own (made by the system): the person's, not an agent's.
+            (Word::BranchGroupYours, live.iter().filter(|b| !b.auto && !by_agent(&b.created_by)).collect::<Vec<_>>()),
+            (Word::BranchGroupAgents, live.iter().filter(|b| !b.auto && by_agent(&b.created_by)).collect()),
             (Word::BranchGroupAuto, live.iter().filter(|b| b.auto).collect()),
         ];
         for (word, branches) in groups {
@@ -172,8 +184,16 @@ impl Menu {
         asked
     }
 
-    /// New branch, and its form while open.
-    fn new_branch(&mut self, ui: &mut Ui, ds: &Ds, branching: &Branching, folder: &BranchInfo) {
+    /// What the last action was refused for.
+    fn problem_line(&self, ui: &mut Ui, ds: &Ds) {
+        if let Some(problem) = &self.problem {
+            ui.add_space(4.0);
+            ui.label(RichText::new(problem).color(ds.theme.danger));
+        }
+    }
+
+    /// New branch, and its form while open: a branch of `folder`, called `folder_name`.
+    fn new_branch(&mut self, ui: &mut Ui, ds: &Ds, branching: &Branching, folder: &BranchId, folder_name: &str) {
         let ctx = ui.ctx().clone();
         let Some((name, title)) = &mut self.new else {
             if ui.add(Button::new(&say(&ctx, Word::BranchNew, &[])).icon(icons::PLUS)).clicked() {
@@ -184,7 +204,7 @@ impl Menu {
         ui.add(TextField::new(&say(&ctx, Word::BranchName, &[]), name).id_salt("branch_new_name"));
         ui.add(TextField::new(&say(&ctx, Word::BranchTitle, &[]), title).id_salt("branch_new_title"));
         ui.label(
-            RichText::new(say(&ctx, Word::BranchNewFrom, &[("branch", folder.name.as_str())]))
+            RichText::new(say(&ctx, Word::BranchNewFrom, &[("branch", folder_name)]))
                 .font(ds.text.small.clone())
                 .color(ds.theme.text2),
         );
@@ -199,7 +219,7 @@ impl Menu {
         } else if make {
             let (name, title) = (name.trim().to_owned(), title.trim().to_owned());
             let made = BranchName::new(name).map_err(|e| e.to_string()).and_then(|name| {
-                let mut new = NewBranch::new(name, folder.id.clone());
+                let mut new = NewBranch::new(name, folder.clone());
                 if !title.is_empty() {
                     new = new.with_title(title);
                 }
@@ -230,18 +250,25 @@ impl Menu {
         let mut asked = None;
         egui::Frame::new().fill(ds.theme.bg2).inner_margin(8.0).corner_radius(6.0).show(ui, |ui| {
             let who = who(&review.by);
-            ui.label(RichText::new(say(&ctx, Word::BranchReady, &[("who", &who), ("branch", branch.name.as_str())])).strong());
+            ui.label(
+                RichText::new(say(&ctx, Word::BranchReady, &[("who", &who), ("branch", branch.name.as_str())]))
+                    .strong(),
+            );
             if let Some(note) = &review.note {
                 ui.label(RichText::new(say(&ctx, Word::BranchNote, &[("note", note)])).color(ds.theme.text2));
             }
             if let Some((id, comment)) = &mut self.sending_back
                 && *id == branch.id
             {
-                ui.add(TextField::new(&say(&ctx, Word::BranchSendBackWhat, &[]), comment).id_salt(("send_back", id.as_str())));
+                ui.add(
+                    TextField::new(&say(&ctx, Word::BranchSendBackWhat, &[]), comment)
+                        .id_salt(("send_back", id.as_str())),
+                );
                 let (mut send, mut cancel) = (false, false);
                 ui.horizontal(|ui| {
                     let label = say(&ctx, Word::BranchSendBack, &[]);
-                    send = ui.add(Button::new(&label).primary().disabled_if(comment.trim().is_empty(), &label)).clicked();
+                    send =
+                        ui.add(Button::new(&label).primary().disabled_if(comment.trim().is_empty(), &label)).clicked();
                     cancel = ui.add(Button::new(&say(&ctx, Word::BranchCancel, &[])).ghost()).clicked();
                 });
                 if send {
@@ -294,7 +321,11 @@ impl Menu {
             if save {
                 let (id, name) = (id.clone(), name.trim().to_owned());
                 let renamed = BranchName::new(name).map_err(|e| e.to_string()).and_then(|name| {
-                    branching.branches.rename(&id, name, branch.title.clone(), &person()).map(|_| ()).map_err(|e| refusal(&e))
+                    branching
+                        .branches
+                        .rename(&id, name, branch.title.clone(), &person())
+                        .map(|_| ())
+                        .map_err(|e| refusal(&e))
                 });
                 self.renaming = None;
                 match renamed {
@@ -321,7 +352,11 @@ impl Menu {
                 LaneState::Open { sessions, .. } => sessions,
                 _ => 0,
             };
-            let line = say(&ctx, Word::BranchSwitchAgents, &[("count", &sessions.to_string()), ("branch", folder.name.as_str())]);
+            let line = say(
+                &ctx,
+                Word::BranchSwitchAgents,
+                &[("count", &sessions.to_string()), ("branch", folder.name.as_str())],
+            );
             ui.label(RichText::new(line).color(ds.theme.warn));
             let (mut go, mut cancel) = (false, false);
             ui.horizontal(|ui| {
@@ -395,6 +430,11 @@ fn refusal(error: &BranchError) -> String {
         Some(hint) => format!("{error}. {hint}"),
         None => error.to_string(),
     }
+}
+
+/// Whether an agent or a plugin made it.
+const fn by_agent(actor: &Actor) -> bool {
+    matches!(actor, Actor::Agent { .. } | Actor::Plugin { .. })
 }
 
 /// Who asked, as the card names them.

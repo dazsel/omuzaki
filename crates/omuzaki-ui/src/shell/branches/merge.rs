@@ -10,6 +10,10 @@
 //! Merge runs `branch.merge` once, with the choices as `resolve`, the unticked units as `exclude` and the previewed
 //! version as `expect`: one transaction, one undo step, in History like any edit. If the folder branch changed since
 //! the preview the merge is refused and the view offers to preview again.
+//!
+//! The result is drawn as the choices change: each change of choices runs the dry run again with them, and its patch
+//! applied to the folder branch's tree is what Merge would make. The common base is drawn beside mine and theirs on
+//! request.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -96,6 +100,8 @@ pub struct Preview {
     pub summary: String,
     /// Rights notes, if any.
     pub rights: Vec<String>,
+    /// The common base point, when there is one.
+    pub base: Option<PointId>,
 }
 
 /// Where the view stands.
@@ -125,6 +131,11 @@ pub struct MergeView {
     phase: Phase,
     mine: Result<Arc<Value>, String>,
     theirs: Result<Arc<Value>, String>,
+    /// The base's tree, once asked for.
+    base: Option<Result<Arc<Value>, String>>,
+    show_base: bool,
+    /// What Merge would make with the choices as they stand, and the arguments it was made with.
+    result: Option<(Value, Result<Arc<Value>, String>)>,
     textures: BTreeMap<String, TextureHandle>,
 }
 
@@ -136,7 +147,13 @@ impl std::fmt::Debug for MergeView {
 
 impl MergeView {
     /// Previews merging `from` (at `at`, a reviewed point, or its head) into the folder branch `into`.
-    pub fn open(from: BranchInfo, at: Option<PointId>, into: String, branching: &Branching, runner: &dyn Runner) -> Self {
+    pub fn open(
+        from: BranchInfo,
+        at: Option<PointId>,
+        into: String,
+        branching: &Branching,
+        runner: &dyn Runner,
+    ) -> Self {
         let mine = Shown::Now.tree(runner, branching.trees.as_ref());
         let theirs = Shown::Point(at.unwrap_or(from.head)).tree(runner, branching.trees.as_ref());
         let mut view = Self {
@@ -150,6 +167,9 @@ impl MergeView {
             phase: Phase::Choosing,
             mine,
             theirs,
+            base: None,
+            show_base: false,
+            result: None,
             textures: BTreeMap::new(),
         };
         view.preview(runner);
@@ -183,9 +203,33 @@ impl MergeView {
         }
     }
 
+    /// What Merge would make with the choices as they stand: the folder branch's tree with the dry run's patch.
+    pub fn result(&self) -> Option<&Result<Arc<Value>, String>> {
+        self.result.as_ref().map(|(_, tree)| tree)
+    }
+
+    /// Makes the result again when the choices changed since it was made.
+    fn follow_choices(&mut self, runner: &dyn Runner) {
+        let args = self.args();
+        if self.preview.is_err() || self.result.as_ref().is_some_and(|(made, _)| *made == args) {
+            return;
+        }
+        let tree = match (&self.mine, run(runner, args.clone(), Mode::DryRun)) {
+            (Ok(mine), Ok(plan)) => {
+                let mut tree = mine.as_ref().clone();
+                omuzaki_doc_api::apply_to(&mut tree, &plan.patch).map(|()| Arc::new(tree)).map_err(|e| e.to_string())
+            }
+            (Err(why), _) => Err(why.clone()),
+            (_, Err(why)) => Err(why),
+        };
+        self.result = Some((args, tree));
+    }
+
     /// Whether every unit that needs a choice has one.
     pub fn ready(&self) -> bool {
-        self.preview.as_ref().is_ok_and(|p| p.units.iter().filter(|u| u.needs_choice).all(|u| self.choices.contains_key(&u.key)))
+        self.preview
+            .as_ref()
+            .is_ok_and(|p| p.units.iter().filter(|u| u.needs_choice).all(|u| self.choices.contains_key(&u.key)))
     }
 
     /// The arguments Merge sends.
@@ -228,7 +272,8 @@ impl MergeView {
         if let Some(at) = self.at {
             args["at"] = json!(at);
         }
-        self.preview = run(runner, args, Mode::DryRun).and_then(|output| read(&output));
+        self.preview = run(runner, args, Mode::DryRun).and_then(|plan| read(&plan.output.unwrap_or(Value::Null)));
+        self.result = None;
         self.choices.clear();
         self.params.clear();
         self.left_out.clear();
@@ -246,6 +291,13 @@ impl MergeView {
 
     /// Draws the view; false once the person closed it.
     pub fn show(&mut self, ctx: &Context, branching: &Branching, runner: &dyn Runner) -> bool {
+        if self.phase == Phase::Choosing {
+            self.follow_choices(runner);
+        }
+        if self.show_base && self.base.is_none() {
+            let base = self.preview.as_ref().ok().and_then(|p| p.base);
+            self.base = base.map(|point| branching.trees.tree(&point));
+        }
         let ds = ds(ctx);
         let mut open = true;
         let mut close = false;
@@ -253,7 +305,7 @@ impl MergeView {
             .id(Id::new("branch_merge"))
             .open(&mut open)
             .collapsible(false)
-            .default_size([720.0, 680.0])
+            .default_size([900.0, 680.0])
             .show(ctx, |ui| {
                 let header = say(
                     ctx,
@@ -261,8 +313,14 @@ impl MergeView {
                     &[("from", self.from.name.as_str()), ("seq", &self.from.seq.to_string()), ("into", &self.into)],
                 );
                 ui.label(RichText::new(header).strong());
-                egui::ScrollArea::vertical().id_salt("branch_merge_body").max_height(560.0).show(ui, |ui| {
-                    self.body(ui, &ds, branching);
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(560.0);
+                        egui::ScrollArea::vertical().id_salt("branch_merge_body").max_height(560.0).show(ui, |ui| {
+                            self.body(ui, &ds, branching);
+                        });
+                    });
+                    ui.vertical(|ui| self.result_column(ui, &ds, branching));
                 });
                 ui.add_space(6.0);
                 close = self.footer(ui, &ds, runner);
@@ -291,6 +349,7 @@ impl MergeView {
             ui.label(RichText::new(line).color(ds.theme.text2));
             return;
         }
+
         if !choosing.is_empty() {
             ui.add_space(8.0);
             ui.label(RichText::new(say(&ctx, Word::BranchMergeNeedsChoice, &[])).strong());
@@ -300,17 +359,28 @@ impl MergeView {
         }
         if !clean.is_empty() {
             ui.add_space(8.0);
-            Section::new(&say(&ctx, Word::BranchMergeClean, &[])).id_salt("branch_merge_clean").default_open(false).show(
-                ui,
-                |ui| {
+            Section::new(&say(&ctx, Word::BranchMergeClean, &[]))
+                .id_salt("branch_merge_clean")
+                .default_open(false)
+                .show(ui, |ui| {
                     for unit in clean {
                         let mut taken = !self.left_out.contains(&unit.key);
                         if ui.checkbox(&mut taken, &unit.title).changed() {
                             self.leave_out(&unit.key, !taken);
                         }
                     }
-                },
-            );
+                });
+        }
+    }
+
+    /// Beside the cards: what Merge would make with the choices as they stand.
+    fn result_column(&mut self, ui: &mut Ui, ds: &Ds, branching: &Branching) {
+        let Ok(preview) = &self.preview else { return };
+        let character = preview.units.iter().filter(|u| u.needs_choice || u.offers).find_map(Unit::character);
+        if let (Some(character), Phase::Choosing) = (character, &self.phase) {
+            let line = say(ui.ctx(), Word::BranchMergeResult, &[]);
+            ui.label(RichText::new(line).font(ds.text.small.clone()).color(ds.theme.text2));
+            self.picture(ui, ds, branching, &character, Side::Result);
         }
     }
 
@@ -324,13 +394,23 @@ impl MergeView {
             }
             if let Some(character) = unit.character() {
                 ui.horizontal(|ui| {
-                    for (word, side) in [(Word::BranchMergeMine, true), (Word::BranchMergeTheirs, false)] {
+                    let mut sides = vec![(Word::BranchMergeMine, Side::Mine), (Word::BranchMergeTheirs, Side::Theirs)];
+                    if self.show_base {
+                        sides.insert(0, (Word::BranchMergeBase, Side::Base));
+                    }
+                    for (word, side) in sides {
                         ui.vertical(|ui| {
-                            ui.label(RichText::new(say(&ctx, word, &[])).font(ds.text.small.clone()).color(ds.theme.text2));
+                            ui.label(
+                                RichText::new(say(&ctx, word, &[])).font(ds.text.small.clone()).color(ds.theme.text2),
+                            );
                             self.picture(ui, ds, branching, &character, side);
                         });
                     }
                 });
+                let word = if self.show_base { Word::BranchMergeHideBase } else { Word::BranchMergeShowBase };
+                if ui.add(Button::new(&say(&ctx, word, &[])).ghost()).clicked() {
+                    self.show_base = !self.show_base;
+                }
             }
             let per_parameter = self.choices.get(&unit.key) == Some(&Choice::PerParameter);
             egui::Grid::new(("branch_merge_rows", &unit.key)).striped(true).show(ui, |ui| {
@@ -340,7 +420,8 @@ impl MergeView {
                 }
                 ui.end_row();
                 for change in &unit.changes {
-                    let short_path = change.path.strip_prefix(&unit.key).unwrap_or(&change.path).trim_start_matches('/');
+                    let short_path =
+                        change.path.strip_prefix(&unit.key).unwrap_or(&change.path).trim_start_matches('/');
                     ui.label(RichText::new(short_path).font(ds.text.mono.clone()));
                     ui.label(super::short(change.base.as_ref()));
                     if per_parameter {
@@ -356,10 +437,8 @@ impl MergeView {
                 }
             });
             ui.horizontal_wrapped(|ui| {
-                let mut choices = vec![
-                    (Choice::Mine, Word::BranchMergeKeepMine),
-                    (Choice::Theirs, Word::BranchMergeTakeTheirs),
-                ];
+                let mut choices =
+                    vec![(Choice::Mine, Word::BranchMergeKeepMine), (Choice::Theirs, Word::BranchMergeTakeTheirs)];
                 if unit.kind == "part" {
                     choices.push((Choice::Both, Word::BranchMergeKeepBoth));
                 }
@@ -367,7 +446,8 @@ impl MergeView {
                 for (choice, word) in choices {
                     let chosen = self.choices.get(&unit.key) == Some(&choice);
                     let label = say(&ctx, word, &[]);
-                    let button = if chosen { Button::new(&label).primary().icon(icons::CHECK) } else { Button::new(&label) };
+                    let button =
+                        if chosen { Button::new(&label).primary().icon(icons::CHECK) } else { Button::new(&label) };
                     if ui.add(button).clicked() {
                         self.choose(&unit.key, choice);
                     }
@@ -378,17 +458,19 @@ impl MergeView {
     }
 
     /// One side's picture of `character`, at the default camera.
-    fn picture(&mut self, ui: &mut Ui, ds: &Ds, branching: &Branching, character: &CharId, mine: bool) {
+    fn picture(&mut self, ui: &mut Ui, ds: &Ds, branching: &Branching, character: &CharId, side: Side) {
         let ctx = ui.ctx().clone();
         let size = vec2(PICTURE[0] as f32 * 0.6, PICTURE[1] as f32 * 0.6);
         let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
         ui.painter().rect_filled(rect, 4.0, ds.theme.bg1);
-        let (shown, tree) = if mine {
-            (Shown::Now, &self.mine)
-        } else {
-            (Shown::Point(self.at.unwrap_or(self.from.head)), &self.theirs)
+        let base = self.preview.as_ref().ok().and_then(|p| p.base);
+        let (shown, tree) = match side {
+            Side::Mine => (Shown::Now, Some(&self.mine)),
+            Side::Theirs => (Shown::Point(self.at.unwrap_or(self.from.head)), Some(&self.theirs)),
+            Side::Base => (base.map_or(Shown::Now, Shown::Point), self.base.as_ref()),
+            Side::Result => (Shown::Now, self.result.as_ref().map(|(_, tree)| tree)),
         };
-        let Ok(tree) = tree else { return };
+        let Some(Ok(tree)) = tree else { return };
         let Some(pictures) = &branching.pictures else { return };
         if tree.get("characters").and_then(|c| c.get(character.as_str())).is_none() {
             let line = say(&ctx, Word::BranchCompareMissing, &[("character", character.as_str())]);
@@ -413,26 +495,38 @@ impl MergeView {
         let mut close = false;
         match self.phase.clone() {
             Phase::Choosing => {
-                let nothing = self.preview.as_ref().map_or(true, |p| p.units.iter().all(|u| !u.offers && !u.needs_choice));
+                let nothing =
+                    self.preview.as_ref().map_or(true, |p| p.units.iter().all(|u| !u.offers && !u.needs_choice));
                 ui.horizontal(|ui| {
-                    let word = if self.left_out.is_empty() { Word::BranchMergeApply } else { Word::BranchMergeApplySelected };
+                    let word =
+                        if self.left_out.is_empty() { Word::BranchMergeApply } else { Word::BranchMergeApplySelected };
                     let label = say(&ctx, word, &[]);
                     let wait = say(&ctx, Word::BranchMergeChooseFirst, &[]);
-                    let button = Button::new(&label).primary().icon(icons::GIT_MERGE).disabled_if(!self.ready() || nothing, &wait);
+                    let button = Button::new(&label)
+                        .primary()
+                        .icon(icons::GIT_MERGE)
+                        .disabled_if(!self.ready() || nothing, &wait);
                     if ui.add(button).clicked() {
                         self.merge(runner);
                     }
                     close = ui.add(Button::new(&say(&ctx, Word::BranchCancel, &[])).ghost()).clicked();
                 });
                 if !self.ready() && !nothing {
-                    ui.label(RichText::new(say(&ctx, Word::BranchMergeChooseFirst, &[])).font(ds.text.small.clone()).color(ds.theme.text2));
+                    ui.label(
+                        RichText::new(say(&ctx, Word::BranchMergeChooseFirst, &[]))
+                            .font(ds.text.small.clone())
+                            .color(ds.theme.text2),
+                    );
                 }
             }
             Phase::Merged => {
                 let line = say(&ctx, Word::BranchMergeDone, &[("from", self.from.name.as_str()), ("into", &self.into)]);
                 ui.label(RichText::new(line).color(ds.theme.ok));
                 ui.horizontal(|ui| {
-                    if ui.add(Button::new(&say(&ctx, Word::BranchMergeUndo, &[])).icon(icons::ARROW_COUNTER_CLOCKWISE)).clicked() {
+                    if ui
+                        .add(Button::new(&say(&ctx, Word::BranchMergeUndo, &[])).icon(icons::ARROW_COUNTER_CLOCKWISE))
+                        .clicked()
+                    {
                         match runner.undo(&person(), &Grants::person()) {
                             Ok(_) => self.phase = Phase::Undone,
                             Err(e) => self.phase = Phase::Failed(e.message),
@@ -460,6 +554,19 @@ impl MergeView {
     }
 }
 
+/// Which state a picture in the view shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Side {
+    /// The folder branch now.
+    Mine,
+    /// The branch merged in, at the point merged.
+    Theirs,
+    /// Their common base.
+    Base,
+    /// What Merge would make.
+    Result,
+}
+
 /// Reads no points: for reading now again.
 struct NoTrees;
 
@@ -469,8 +576,8 @@ impl super::PointTrees for NoTrees {
     }
 }
 
-/// Runs `branch.merge` as the person; its output, or the refusal as "code: message (hint)".
-fn run(runner: &dyn Runner, args: Value, mode: Mode) -> Result<Value, String> {
+/// Runs `branch.merge` as the person; its plan, or the refusal as "code: message (hint)".
+fn run(runner: &dyn Runner, args: Value, mode: Mode) -> Result<omuzaki_ops_api::Plan, String> {
     let request = Request {
         op: OP.to_owned(),
         args,
@@ -482,7 +589,7 @@ fn run(runner: &dyn Runner, args: Value, mode: Mode) -> Result<Value, String> {
         base: None,
     };
     match runner.run(request) {
-        Ok(outcome) => Ok(outcome.plan.output.unwrap_or(Value::Null)),
+        Ok(outcome) => Ok(outcome.plan),
         Err(error) => {
             let code = match error.code {
                 ErrorCode::Conflict => "conflict",
@@ -543,5 +650,6 @@ pub fn read(output: &Value) -> Result<Preview, String> {
         version: output.get("version").cloned().unwrap_or(Value::Null),
         summary: text(output, "summary"),
         rights,
+        base: output.get("base").and_then(Value::as_str).and_then(|b| b.parse().ok()),
     })
 }

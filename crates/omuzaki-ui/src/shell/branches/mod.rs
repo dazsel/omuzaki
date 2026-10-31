@@ -195,6 +195,14 @@ impl Listing {
         self.branches.iter().find(|b| &b.id == folder)
     }
 
+    /// The folder branch's name: its ref's, or, before the project's first branch writes `main` down, its id's.
+    pub fn folder_name(&self) -> String {
+        self.folder_branch()
+            .map(|b| b.name.to_string())
+            .or_else(|| self.folder.as_ref().map(|id| id.as_str().to_owned()))
+            .unwrap_or_default()
+    }
+
     /// The branch called `name`.
     pub fn named(&self, name: &str) -> Option<&BranchInfo> {
         self.branches.iter().find(|b| b.name.as_str() == name)
@@ -279,7 +287,7 @@ impl BranchUi {
             }
             Some(Asked::Merge(id, at)) => {
                 let listing = self.menu.listing(branching);
-                let into = listing.folder_branch().map(|b| b.name.to_string()).unwrap_or_default();
+                let into = listing.folder_name();
                 if let Some(from) = listing.branches.iter().find(|b| b.id == id).cloned() {
                     self.merge = Some(merge::MergeView::open(from, at, into, branching, runner));
                 }
@@ -298,7 +306,7 @@ impl BranchUi {
     /// Opens the merge view of `from` at `at` into the folder branch.
     pub fn open_merge(&mut self, from: &BranchId, at: Option<PointId>, branching: &Branching, runner: &dyn Runner) {
         let listing = self.menu.listing(branching);
-        let into = listing.folder_branch().map(|b| b.name.to_string()).unwrap_or_default();
+        let into = listing.folder_name();
         if let Some(branch) = listing.branches.iter().find(|b| &b.id == from).cloned() {
             self.merge = Some(merge::MergeView::open(branch, at, into, branching, runner));
         }
