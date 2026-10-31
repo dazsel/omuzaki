@@ -45,7 +45,9 @@
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
-use omuzaki_char_api::{BodyTemplateId, CharacterDef, HairParams, HeadParams, LookDef, LookPresetId, PartId, find_kind};
+use omuzaki_char_api::{
+    BodyTemplateId, CharacterDef, HairParams, HeadParams, LookDef, LookPresetId, PartId, find_kind,
+};
 use omuzaki_doc_api::Value;
 use omuzaki_face_api::{FaceProfile, Validate};
 use serde::Deserialize;
@@ -197,7 +199,8 @@ pub fn blend(values: &[(&Value, f64)], lead: usize) -> Value {
         let keys: BTreeSet<&String> = objects.iter().flat_map(|(o, _)| o.keys()).collect();
         let mut out = serde_json::Map::new();
         for key in keys {
-            let present: Option<Vec<(&Value, f64)>> = objects.iter().map(|(o, w)| o.get(key).map(|v| (v, *w))).collect();
+            let present: Option<Vec<(&Value, f64)>> =
+                objects.iter().map(|(o, w)| o.get(key).map(|v| (v, *w))).collect();
             let value = match present {
                 Some(present) => blend(&present, lead),
                 None => match objects.get(lead).and_then(|(o, _)| o.get(key)) {
@@ -368,9 +371,7 @@ fn set(value: &mut Value, path: &[String], to: Option<&Value>) {
 /// nose) is removed, not left empty.
 fn reset(value: &mut Value, neutral: &Value, owned: &BTreeSet<FieldPath>, mine: &BTreeSet<FieldPath>) {
     for path in owned.difference(mine) {
-        let end = (1..=path.len())
-            .find(|&i| get(neutral, &path[..i]).is_none_or(Value::is_null))
-            .unwrap_or(path.len());
+        let end = (1..=path.len()).find(|&i| get(neutral, &path[..i]).is_none_or(Value::is_null)).unwrap_or(path.len());
         set(value, &path[..end], get(neutral, &path[..end]));
     }
 }
@@ -436,11 +437,7 @@ pub fn restyle(
     }
     let entries: Vec<(Option<&'static Style>, f64)> =
         mix.iter().filter(|(_, w)| *w > 0.0).map(|(s, w)| (*s, w / total)).collect();
-    let lead_index = entries
-        .iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| a.1.total_cmp(&b.1))
-        .map_or(0, |(i, _)| i);
+    let lead_index = entries.iter().enumerate().max_by(|(_, a), (_, b)| a.1.total_cmp(&b.1)).map_or(0, |(i, _)| i);
     let lead = entries.get(lead_index).and_then(|(s, _)| *s);
 
     let kit = |template: &BodyTemplateId| {
@@ -477,8 +474,11 @@ pub fn restyle(
         .collect::<Result<_, StyleError>>()?;
 
     let invalid = |what: &str, e: &dyn std::fmt::Display| StyleError::Invalid(format!("{what}: {e}"));
-    let faces: Vec<Value> =
-        results.iter().map(|r| serde_json::to_value(&r.face)).collect::<Result<_, _>>().map_err(|e| invalid("face", &e))?;
+    let faces: Vec<Value> = results
+        .iter()
+        .map(|r| serde_json::to_value(&r.face))
+        .collect::<Result<_, _>>()
+        .map_err(|e| invalid("face", &e))?;
     let face: FaceProfile =
         serde_json::from_value(blend(&weighted(&faces, &entries), lead_index)).map_err(|e| invalid("face", &e))?;
     face.validate().map_err(|e| invalid("face", &e))?;
@@ -487,7 +487,8 @@ pub fn restyle(
     out.face = face;
     for kind in ["head", "body"] {
         let Some(id) = enabled_part(&base, kind) else { continue };
-        let values: Vec<Value> = results.iter().map(|r| r.parts.get(&id).map_or(Value::Null, |p| p.params.clone())).collect();
+        let values: Vec<Value> =
+            results.iter().map(|r| r.parts.get(&id).map_or(Value::Null, |p| p.params.clone())).collect();
         let blended = checked(kind, &blend(&weighted(&values, &entries), lead_index))?;
         if let Some(part) = out.parts.get_mut(&id) {
             part.params = blended;
@@ -570,8 +571,7 @@ fn restyled_look(
         after.preset = style.look.as_deref().map(LookPresetId::new).transpose().map_err(|e| invalid(&e))?;
     }
     let now = look.overrides.all.style.map(f64::from);
-    let axes: Vec<(Option<f64>, f64)> =
-        entries.iter().map(|(s, w)| (s.map_or(now, |s| s.shading), *w)).collect();
+    let axes: Vec<(Option<f64>, f64)> = entries.iter().map(|(s, w)| (s.map_or(now, |s| s.shading), *w)).collect();
     let place = if axes.iter().all(|(a, _)| a.is_none()) {
         None
     } else {
@@ -757,9 +757,10 @@ mod tests {
     fn reset_returns_owned_fields_the_style_leaves_out() {
         let mut value = json!({"eyes": {"scale": 1.4, "lash": {"flick": 0.9}}, "kept": 3});
         let neutral = json!({"eyes": {"scale": 1.0, "lash": {"flick": 0.5}}});
-        let owned: BTreeSet<FieldPath> = [vec!["eyes".into(), "scale".into()], vec!["eyes".into(), "lash".into(), "flick".into()]]
-            .into_iter()
-            .collect();
+        let owned: BTreeSet<FieldPath> =
+            [vec!["eyes".into(), "scale".into()], vec!["eyes".into(), "lash".into(), "flick".into()]]
+                .into_iter()
+                .collect();
         let mine = leaf_set(&json!({"eyes": {"scale": 2.0}}));
         reset(&mut value, &neutral, &owned, &mine);
         assert_eq!(value, json!({"eyes": {"scale": 1.4, "lash": {"flick": 0.5}}, "kept": 3}));
@@ -768,7 +769,12 @@ mod tests {
         reset(&mut value, &json!({}), &[vec!["nose3d".into(), "size".into()]].into_iter().collect(), &BTreeSet::new());
         assert_eq!(value, json!({}));
         let mut value = json!({"nose3d": {"size": 2.0}});
-        reset(&mut value, &json!({"nose3d": null}), &[vec!["nose3d".into(), "size".into()]].into_iter().collect(), &BTreeSet::new());
+        reset(
+            &mut value,
+            &json!({"nose3d": null}),
+            &[vec!["nose3d".into(), "size".into()]].into_iter().collect(),
+            &BTreeSet::new(),
+        );
         assert_eq!(value, json!({"nose3d": null}));
     }
 }
