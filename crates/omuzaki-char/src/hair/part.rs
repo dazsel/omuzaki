@@ -852,6 +852,7 @@ fn hair_material(
         base_texture: Some(texture),
         shading,
         overlays,
+        painted: None,
         alpha: AlphaMode::Mask { cutoff: strands::CUTOFF },
         order_independent: true,
         double_sided: true,

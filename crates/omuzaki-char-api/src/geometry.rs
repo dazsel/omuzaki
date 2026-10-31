@@ -62,6 +62,9 @@ pub struct MaterialSpec {
     /// Face layers composited over the base, in order: the head carries `Base`, the hair carries `Brows` when its
     /// shading says brows show through, and both carry `Overlay`, which is in front of everything.
     pub overlays: Vec<FaceOverlay>,
+    /// A texture painted by hand in the mesh's UV space (the part's texture layers, #2575), drawn over the base and
+    /// under the face layers. Parts build it `None`; the layer stack sets it.
+    pub painted: Option<TextureName>,
     /// How alpha is used.
     pub alpha: AlphaMode,
     /// Blend without sorting (the renderer's `Material::order_independent`); with a mask, a soft edge: hair tips.
@@ -102,6 +105,7 @@ impl MaterialSpec {
             base_texture: None,
             shading: m.shading,
             overlays: Vec::new(),
+            painted: None,
             alpha: m.alpha,
             order_independent: m.order_independent,
             double_sided: m.double_sided,
@@ -140,11 +144,19 @@ impl MaterialSpec {
             Some(name) => Some(textures(name).ok_or_else(|| MaterialError::MissingTexture(name.clone()))?),
             None => None,
         };
-        let overlays = self
+        let painted = match &self.painted {
+            Some(name) => Some(Overlay {
+                texture: textures(name).ok_or_else(|| MaterialError::MissingTexture(name.clone()))?,
+                mapping: Mapping::Uv,
+                strength: 1.0,
+            }),
+            None => None,
+        };
+        let faces = self
             .overlays
             .iter()
-            .map(|o| layers(o.layer).map(|t| o.to_overlay(t)).ok_or(MaterialError::MissingLayer(o.layer)))
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|o| layers(o.layer).map(|t| o.to_overlay(t)).ok_or(MaterialError::MissingLayer(o.layer)));
+        let overlays = painted.into_iter().map(Ok).chain(faces).collect::<Result<Vec<_>, _>>()?;
         Ok(Material {
             base: self.base,
             base_texture,

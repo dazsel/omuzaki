@@ -5,6 +5,7 @@ mod export;
 mod layers;
 mod marks;
 mod painting;
+mod part;
 mod render;
 
 use omuzaki_ops_api::{OpKind, OpMeta, Scope, Undo};

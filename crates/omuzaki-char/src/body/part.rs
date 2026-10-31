@@ -132,6 +132,7 @@ fn skin_material(
             skin: Some(Skin { floor: 0.66, hue_keep: 0.55 }),
         }),
         overlays: Vec::new(),
+        painted: None,
         alpha: omuzaki_render_api::AlphaMode::Opaque,
         order_independent: false,
         double_sided: false,

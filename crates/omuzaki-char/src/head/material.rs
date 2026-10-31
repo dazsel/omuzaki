@@ -77,6 +77,7 @@ pub fn skin_head(colour: Resolve<'_>, p: &HeadParams, overlays: Vec<FaceOverlay>
         base_texture: None,
         shading: Shading::Toon(toon(colour, p, -0.28, 0.28, 0.10)?),
         overlays,
+        painted: None,
         alpha: AlphaMode::Opaque,
         order_independent: false,
         double_sided: false,
@@ -101,6 +102,7 @@ pub fn skin_ear(colour: Resolve<'_>, p: &HeadParams) -> Result<MaterialSpec, Bui
             ..toon(colour, p, -0.1, 0.2, 0.08)?
         }),
         overlays: Vec::new(),
+        painted: None,
         alpha: AlphaMode::Opaque,
         order_independent: false,
         double_sided: true,

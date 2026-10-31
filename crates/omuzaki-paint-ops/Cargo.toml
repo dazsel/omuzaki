@@ -1,6 +1,6 @@
 [package]
 name = "omuzaki-paint-ops"
-description = "The illustrator's ops (`paint.*`): paintings kept in the document as layers of marks, drawn and edited mark by mark by a person or an agent, rendered, sampled and exported as layered art for the 2D puppet."
+description = "The illustrator's ops (`paint.*`, `part.paint.*`): paintings kept in the document as layers of marks, drawn and edited mark by mark by a person or an agent, rendered, sampled, exported as layered art for the 2D puppet, and painted onto a character's parts as textures."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +13,7 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
@@ -22,13 +23,15 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 [dev-dependencies]
 image.workspace = true
 tempfile.workspace = true
+omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
+omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 
 [package.metadata.omuzaki]
 kind = "Implementation"
-summary = "the illustrator's ops: `paint.new`, `paint.delete`, `paint.list`, `paint.get`, `paint.add_layer`, `paint.set_layer`, `paint.remove_layer`, `paint.move_layer`, `paint.draw` (marks, appended, each undoable), `paint.remove_marks`, `paint.replace_mark`, `paint.set_mask`, `paint.brushes`, `paint.render` (a PNG in the asset store and optionally a project file), `paint.sample` and `paint.export_layers` (layered art for the puppet's auto-rig); paintings live under `paintings/<id>` in the document as `omuzaki-paint` data"
+summary = "the illustrator's ops: `paint.new`, `paint.delete`, `paint.list`, `paint.get`, `paint.add_layer`, `paint.set_layer`, `paint.remove_layer`, `paint.move_layer`, `paint.draw` (marks, appended, each undoable), `paint.remove_marks`, `paint.replace_mark`, `paint.set_mask`, `paint.brushes`, `paint.render` (a PNG in the asset store and optionally a project file), `paint.sample` and `paint.export_layers` (layered art for the puppet's auto-rig); paintings live under `paintings/<id>` in the document as `omuzaki-paint` data; painting on a character's parts (#2575): `part.paint.new`, `.stroke`, `.draw`, `.fill`, `.erase`, `.opacity`, `.clear`, `.get` edit a part's texture layer (a painting in its UV space, kept in the character's design), and the crate registers the texture painter (`register_texture_painter!`) the character build paints those layers with"
 # The paint.* ops register themselves (ADR 0015, `cargo xtask lint-registers`).
 registers = true
 

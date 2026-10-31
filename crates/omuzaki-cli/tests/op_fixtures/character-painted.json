@@ -1,0 +1,17 @@
+{
+  "about": "The kit character with a texture layer on its shirt (`paint`, a 1024x1024 painting with one paint layer and one stroke on it), for the `part.paint.*` ops that draw on, erase, fill, clear or read a part's painting.",
+  "base": "character",
+  "steps": [
+    { "op": "part.paint.new", "args": { "character": "kit", "part": "shirt" } },
+    {
+      "op": "part.paint.stroke",
+      "args": {
+        "character": "kit",
+        "part": "shirt",
+        "strokes": [
+          { "brush": "marker", "colour": "#c8324a", "size": 30, "points": [[200, 300], [500, 280], [820, 300]], "tag": "band" }
+        ]
+      }
+    }
+  ]
+}

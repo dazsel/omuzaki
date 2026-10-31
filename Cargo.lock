@@ -5984,12 +5984,15 @@ name = "omuzaki-paint-ops"
 version = "0.0.0"
 dependencies = [
  "image",
+ "omuzaki-char-api",
+ "omuzaki-char-mock",
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-ops-api",
  "omuzaki-ops-mock",
  "omuzaki-paint",
+ "omuzaki-render-api",
  "omuzaki-store-api",
  "omuzaki-store-mock",
  "schemars",
