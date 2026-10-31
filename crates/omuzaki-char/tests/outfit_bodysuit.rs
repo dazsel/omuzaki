@@ -70,6 +70,7 @@ fn a_sheer_bodysuit_blends_its_cloth_over_the_skin_and_an_opaque_one_does_not() 
     assert_eq!(sheer.alpha, AlphaMode::Blend, "the cloth blends over what it covers");
     assert_eq!(sheer.base.a, 102, "40% of the cloth covers");
     assert!(!sheer.receives_shadows, "skin seen through it isn't shadowed twice");
+    assert!(!sheer.double_sided, "its inside doesn't lay the cloth over the skin a second time");
     assert!(
         serde_json::to_value(BodysuitParams::default()).unwrap()["common"].get("sheer").is_none(),
         "opaque isn't written"

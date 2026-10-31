@@ -783,8 +783,8 @@ pub fn fabric_look<C: PartColours>(cx: &C, common: &GarmentCommon) -> Result<Fab
 }
 
 /// Makes `spec` as see-through as `sheer` says ([`GarmentCommon::sheer`]): its coverage drops to `1 - sheer` and it
-/// blends over what lies under it. A sheer cloth doesn't take shadows, which would darken the skin seen through it
-/// twice. `sheer` of 0 leaves `spec` as it is.
+/// blends over what lies under it, one side only. A sheer cloth doesn't take shadows, which would darken the skin seen
+/// through it twice. `sheer` of 0 leaves `spec` as it is.
 pub fn make_sheer(spec: &mut MaterialSpec, sheer: f64) {
     if sheer <= 0.0 {
         return;
@@ -795,6 +795,9 @@ pub fn make_sheer(spec: &mut MaterialSpec, sheer: f64) {
     spec.base.a = cover;
     spec.alpha = AlphaMode::Blend;
     spec.receives_shadows = false;
+    // Only the side facing the eye: a garment is a shell, and its inside seen through its outside would lay the cloth
+    // twice over the skin.
+    spec.double_sided = false;
 }
 
 /// Recolours `output` in place from freshly made `materials` and `textures`, each named `<part>-<suffix>`: every
