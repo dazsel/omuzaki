@@ -514,6 +514,14 @@ pub fn build_part(
     }
     let category = (reg.meta)().category;
     crate::design::deform::apply(&def.design, &def.face.layout, part, category, &mut output, published)?;
+    // The body's skin is what garments over it move with; a garment takes its weights from what lies under it (#2604).
+    match category {
+        PartCategory::Body => crate::skin_transfer::publish(&mut output),
+        PartCategory::Garment => {
+            crate::skin_transfer::transfer(&mut output, published.get::<crate::skin_transfer::SkinFact>());
+        }
+        _ => {}
+    }
     Ok(output)
 }
 

@@ -154,29 +154,32 @@ fn spread(values: &mut [f32]) -> Spread {
     }
 }
 
-impl ArmRoom {
-    /// The character's body as the stage loads it. A host without the builder services builds a kit character with
-    /// the registry's own builder; an imported one needs the store.
-    fn load(&self, ctx: &OpCtx<'_>) -> Result<Body, OpError> {
-        let fallback = BuildServices::default();
-        let builder: &dyn CharacterBuilder = ctx.service::<dyn CharacterBuilder>().unwrap_or(&RegistryBuilder);
-        let with = ctx.service::<BuildServices>().unwrap_or(&fallback);
-        if let Ok(store) = ctx.service::<dyn Store>() {
-            let mtoon = ctx.service::<Capabilities>().map_or(MtoonSupport::NONE, |c| c.mtoon);
-            let services = BodyServices::new(builder, with, store, mtoon, ctx.clock);
-            return load_body(ctx.doc, &services, &self.character, None, BuildQuality::Live);
-        }
-        if is_imported(ctx.doc, &self.character) {
-            return Err(OpError::unavailable("the content store, which holds an imported character's model"));
-        }
-        let def = read_definition(ctx.doc, &self.character, None)?;
-        let options = BuildOptions { variant: None, quality: BuildQuality::Live, rig_export: false };
-        let built = builder.build(&self.character, &def, &options, with).map_err(|e| {
-            OpError::invalid("character", format!("character '{}' doesn't build: {e}", self.character))
-        })?;
-        Ok(Body::Kit(Box::new(built)))
+/// `character`'s body as the stage loads it, for an op that measures it. A host without the builder services builds a
+/// kit character with the registry's own builder; an imported one needs the store.
+///
+/// # Errors
+/// [`OpError`] for a character that doesn't build, or an imported one without the store.
+pub(crate) fn load(ctx: &OpCtx<'_>, character: &CharId) -> Result<Body, OpError> {
+    let fallback = BuildServices::default();
+    let builder: &dyn CharacterBuilder = ctx.service::<dyn CharacterBuilder>().unwrap_or(&RegistryBuilder);
+    let with = ctx.service::<BuildServices>().unwrap_or(&fallback);
+    if let Ok(store) = ctx.service::<dyn Store>() {
+        let mtoon = ctx.service::<Capabilities>().map_or(MtoonSupport::NONE, |c| c.mtoon);
+        let services = BodyServices::new(builder, with, store, mtoon, ctx.clock);
+        return load_body(ctx.doc, &services, character, None, BuildQuality::Live);
     }
+    if is_imported(ctx.doc, character) {
+        return Err(OpError::unavailable("the content store, which holds an imported character's model"));
+    }
+    let def = read_definition(ctx.doc, character, None)?;
+    let options = BuildOptions { variant: None, quality: BuildQuality::Live, rig_export: false };
+    let built = builder
+        .build(character, &def, &options, with)
+        .map_err(|e| OpError::invalid("character", format!("character '{character}' doesn't build: {e}")))?;
+    Ok(Body::Kit(Box::new(built)))
+}
 
+impl ArmRoom {
     /// Measures `body`.
     #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // frame counts
     fn measure(&self, ctx: &OpCtx<'_>, body: &Body) -> Result<ArmRoomResult, OpError> {
@@ -269,7 +272,7 @@ impl Op for ArmRoom {
             return Err(OpError::not_found(format!("there is no character '{}'", self.character))
                 .hint("check the id; characters live under characters/<id>"));
         }
-        let body = self.load(ctx)?;
+        let body = load(ctx, &self.character)?;
         let result = self.measure(ctx, &body)?;
         let output = serde_json::to_value(result).map_err(|e| OpError::internal(format!("the arm room: {e}")))?;
         Ok(Plan {

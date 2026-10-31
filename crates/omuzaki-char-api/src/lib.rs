@@ -44,6 +44,7 @@ pub mod runtime;
 pub mod services;
 pub mod shape;
 pub mod skin;
+pub mod skin_transfer;
 pub mod stature;
 pub mod variant;
 

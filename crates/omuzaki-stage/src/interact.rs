@@ -226,6 +226,8 @@ const SKULL: f32 = 0.75;
 
 /// The gap a touch leaves between bodies that meet, metres: they touch, they don't pass through.
 const TOUCH_GAP: f32 = 0.004;
+/// The steps a hug's spacing takes to stand the trunks the touch gap apart.
+const HUG_STEPS: usize = 3;
 /// How far toward the other's back surface a hug's hand aims, as a share of the way from the axis: inside, so the arm
 /// guard lays it on the surface.
 const INTO_BACK: f32 = 0.85;
@@ -238,7 +240,19 @@ pub fn spacing(kind: InteractKind, a: &MemberBody, b: &MemberBody) -> f32 {
     let ((wa, da, za), (wb, db, zb)) = (a.torso(), b.torso());
     match kind {
         // Chest to chest: each torso's front.
-        InteractKind::Hug => (za + da) + (zb + db) + TOUCH_GAP,
+        // The torsos are measured where they meet: the guard fits them to the clothed body, which can be deepest
+        // above or below the chest, and two bodies of different heights meet off it. From that first guess, b is
+        // stood where its trunk clears a's by the gap, a step at a time (the gap moves one for one with the distance).
+        InteractKind::Hug => {
+            let mut distance = (za + da) + (zb + db) + TOUCH_GAP;
+            for _ in 0..HUG_STEPS {
+                let there = a.at() + a.facing() * distance;
+                let moved = b.shifted(Vec3::new(there.x - b.at().x, 0.0, there.z - b.at().z));
+                let Some(gap) = trunk_gap(a, &moved) else { break };
+                distance += TOUCH_GAP - gap;
+            }
+            distance
+        }
         // Each hand reaches a little over half its arm to meet the other halfway.
         InteractKind::PalmTouch => 0.62 * (a.arm[1] + b.arm[0]).max(0.2),
         // Side by side: torso to torso across the shoulders, with room for the arms between that go round the other.
@@ -513,23 +527,27 @@ pub fn report(a: &MemberBody, b: &MemberBody, overlays: &[Overlay; 2]) -> TouchR
             }
         }
     }
-    out.torsos = match (a.trunk(), b.trunk()) {
-        // Where they come closest along b's axis: the torsos flare, so the chests can meet above the middle.
-        (Some(ta), Some(tb)) => (0..=TORSO_SAMPLES)
-            .map(|k| {
-                let on = tb.a.lerp(tb.b, f32::from(k) / f32::from(TORSO_SAMPLES));
-                let (gap, normal) = ta.gap_to(on, 0.0);
-                // From b's axis back out to its surface toward a.
-                gap - tb_toward(&tb, on, -normal)
-            })
-            .fold(f32::INFINITY, f32::min),
-        _ => f32::INFINITY,
-    };
+    out.torsos = trunk_gap(a, b).unwrap_or(f32::INFINITY);
     out.heads = match (a.head(), b.head()) {
         (Some((ha, ra)), Some((hb, rb))) => ha.distance(hb) - ra - rb,
         _ => f32::INFINITY,
     };
     out
+}
+
+/// The gap between `a`'s and `b`'s trunks where they come closest along b's axis (the torsos flare, so the chests can
+/// meet above the middle), metres, negative where they overlap; `None` without both.
+fn trunk_gap(a: &MemberBody, b: &MemberBody) -> Option<f32> {
+    let (ta, tb) = (a.trunk()?, b.trunk()?);
+    let gap = (0..=TORSO_SAMPLES)
+        .map(|k| {
+            let on = tb.a.lerp(tb.b, f32::from(k) / f32::from(TORSO_SAMPLES));
+            let (gap, normal) = ta.gap_to(on, 0.0);
+            // From b's axis back out to its surface toward a.
+            gap - tb_toward(&tb, on, -normal)
+        })
+        .fold(f32::INFINITY, f32::min);
+    Some(gap)
 }
 
 /// How far `part`'s surface stands from its axis toward `out` (square to the axis) at `on`, a point on the axis.
@@ -586,8 +604,9 @@ mod tests {
     #[test]
     fn a_hug_puts_chests_together_and_hands_on_the_other_back() {
         let a = body(Vec3::ZERO, 0.0);
-        let d = spacing(InteractKind::Hug, &a, &a);
-        assert!((d - (2.0 * (0.09 + 0.01) + TOUCH_GAP)).abs() < 1e-5, "{d}");
+        // Facing a, wherever it stands to begin with: the spacing stands it where the chests meet.
+        let d = spacing(InteractKind::Hug, &a, &body(Vec3::new(0.0, 0.0, 0.7), std::f32::consts::PI));
+        assert!((d - (2.0 * (0.09 + 0.01) + TOUCH_GAP)).abs() < 1e-4, "{d}");
         let b = body(Vec3::new(0.0, 0.0, d), std::f32::consts::PI);
         let [oa, ob] = solve(InteractKind::Hug, &a, &b, &[Overlay::default(); 2]);
         // a's hands land behind b's back (b's back is further from a than b's axis), on either side of b's spine.

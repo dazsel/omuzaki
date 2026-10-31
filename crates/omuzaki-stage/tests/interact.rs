@@ -162,6 +162,9 @@ fn each_touch_meets_on_the_kits_bodies_without_passing_through() {
             for who in ["holder", "partner"] {
                 let b = cast.member(&id(who)).unwrap().touch_body();
                 println!("{who}: root {:?} hands {:?} {:?}", b.at(), b.joints[10], b.joints[11]);
+                for p in b.parts.iter().flatten() {
+                    println!("   {p:?}");
+                }
             }
             let bodies =
                 [cast.member(&id("holder")).unwrap().touch_body(), cast.member(&id("partner")).unwrap().touch_body()];

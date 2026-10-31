@@ -190,17 +190,21 @@ fn the_weights_keep_the_waist_and_the_far_sides_on_the_hips_and_the_thighs_on_th
     };
     let left = JointRef::Humanoid(HumanoidBone::LeftUpperLeg);
     let right = JointRef::Humanoid(HumanoidBone::RightUpperLeg);
+    // Where the skirt lies on the body it takes the skin's weights (#2604), so the cap holds where it stands clear.
+    let body: Vec<_> =
+        stack.output(conformance::BODY).meshes.iter().flat_map(|m| m.geometry.positions.iter().copied()).collect();
+    let clear = |p: omuzaki_core::glam::Vec3| body.iter().all(|b| b.distance(p) > omuzaki_char_api::skin_transfer::FAR);
     let mut thigh_cap_seen = false;
     for v in 0..g.positions.len() {
         let total: f32 = g.weights[v].iter().sum();
         assert!((total - 1.0).abs() < 1e-5, "vertex {v}: weights sum to {total}");
         let p = g.positions[v];
         let thighs = on(v, &left) + on(v, &right);
-        assert!(thighs <= 0.95 + 1e-5, "vertex {v}: thighs carry {thighs}");
+        assert!(thighs <= 0.95 + 1e-5 || !clear(p), "vertex {v}: thighs carry {thighs}");
         if p.y > 0.43 {
             assert!(on(v, &hips) > 0.99, "vertex {v} above the hips is on the hips");
         }
-        if p.x.abs() > 0.10 {
+        if p.x.abs() > 0.10 && clear(p) {
             assert!(thighs < 0.6, "vertex {v} at the far side is mostly on the hips (thighs carry {thighs})");
         }
         if p.y < 0.3 && (p.x - 0.045).abs() < 0.01 {
