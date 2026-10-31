@@ -159,7 +159,10 @@ pub struct Listing {
 
 impl std::fmt::Debug for Listing {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Listing").field("branches", &self.branches.len()).field("folder", &self.folder).finish()
+        f.debug_struct("Listing")
+            .field("branches", &self.branches.len())
+            .field("folder", &self.folder)
+            .finish_non_exhaustive()
     }
 }
 

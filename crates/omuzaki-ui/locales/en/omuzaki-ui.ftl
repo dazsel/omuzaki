@@ -4332,6 +4332,270 @@ ui-shell-agent-chip-count = Agents: { $count }
 ui-shell-agent-chip-waiting = Waiting for you: { $count }
 
 # The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $count (id, never translated): "hair-b"
+ui-shell-branch-agents-on = { $count } agents working
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $branch (id, never translated): "hair-b"
+ui-shell-branch-alone = Make a branch to try an idea without changing { $branch }. Switch back any time; nothing is lost.
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-cancel = Cancel
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $branch (id, never translated): "hair-b"
+ui-shell-branch-chip = Branch: { $branch }
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $branch (id, never translated): "hair-b"
+# $count (id, never translated): "hair-b"
+ui-shell-branch-chip-ready = Branch: { $branch } · { $count } ready
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-close = Close
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-compare = Compare
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-compare-add = Add a branch
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $branch (id, never translated): "hair-b"
+ui-shell-branch-compare-against = Each is compared with { $branch }
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $seq (id, never translated): "hair-b"
+ui-shell-branch-compare-as-of = as of version { $seq }
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $count (id, never translated): "hair-b"
+ui-shell-branch-compare-changes = { $count } differ
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-compare-checkpoint = Brought up to date to compare
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $character (id, never translated): "hair-b"
+ui-shell-branch-compare-missing = No { $character } here
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $why (id, never translated): "hair-b"
+ui-shell-branch-compare-no-picture = No picture: { $why }
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-compare-orbit = Drag a picture to turn them all
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $branch (id, never translated): "hair-b"
+ui-shell-branch-compare-picture = { $branch }, drag to turn
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-compare-reference = Compare with this
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-compare-refresh = Refresh
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-compare-remove = Remove
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $branch (id, never translated): "hair-b"
+ui-shell-branch-compare-same = The same as { $branch }
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $part (id, never translated): "hair-b"
+ui-shell-branch-compare-select = Select { $part }
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-compare-title = Compare branches
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $why (id, never translated): "hair-b"
+ui-shell-branch-compare-unread = Can't be read: { $why }
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-compare-waiting = Drawing…
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-delete = Delete
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-group-agents = Agents' branches
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-group-auto = Kept for you
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-group-bin = Bin
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-group-ready = Ready for review
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-group-yours = Your branches
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-here = in the project folder
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-make = Make branch
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-menu = Branches
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-merge-again = Preview again
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-merge-apply = Merge
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-merge-apply-selected = Merge selected
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-merge-base = Base
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-merge-choose-first = Make a choice on each card above first.
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-merge-clean = Merges cleanly
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $from (id, never translated): "hair-b"
+# $into (id, never translated): "hair-b"
+ui-shell-branch-merge-done = Merged { $from } into { $into }. Ctrl+Z undoes it.
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $why (id, never translated): "hair-b"
+ui-shell-branch-merge-failed = The merge didn't apply: { $why }
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $from (id, never translated): "hair-b"
+# $seq (id, never translated): "hair-b"
+# $into (id, never translated): "hair-b"
+ui-shell-branch-merge-header = Merge { $from } (version { $seq }) into { $into }
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-merge-hide-base = Hide the base
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $branch (id, never translated): "hair-b"
+ui-shell-branch-merge-into = Merge into { $branch }
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-merge-keep-both = Keep both
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-merge-keep-mine = Keep mine
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-merge-mine = Mine
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-merge-needs-choice = Needs a choice
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $from (id, never translated): "hair-b"
+# $into (id, never translated): "hair-b"
+ui-shell-branch-merge-nothing = { $from } has nothing new for { $into }.
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-merge-per-parameter = Choose per parameter
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-merge-result = The result, with these choices
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-merge-show-base = Show the base
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-merge-take-theirs = Take theirs
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-merge-theirs = Theirs
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-merge-title = Merge
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-merge-undo = Undo the merge
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-merge-undone = The merge was undone.
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-merge-unreadable = The merge preview couldn't be read.
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-merged = merged
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-name = Name
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-new = New branch
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $branch (id, never translated): "hair-b"
+ui-shell-branch-new-from = It starts as { $branch } is now.
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $note (id, never translated): "hair-b"
+ui-shell-branch-note = “{ $note }”
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $branch (id, never translated): "hair-b"
+ui-shell-branch-on = You're working on { $branch }
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $who (id, never translated): "hair-b"
+# $branch (id, never translated): "hair-b"
+ui-shell-branch-ready = { $who }: { $branch } is ready
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $reason (id, never translated): "hair-b"
+ui-shell-branch-refused = { $reason }
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-rename = Rename
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-restore = Restore
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-save = Save
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-send-back = Send back
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-send-back-what = What to change
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-sent-back = sent back
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-switch = Switch
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $count (id, never translated): "hair-b"
+# $branch (id, never translated): "hair-b"
+ui-shell-branch-switch-agents = { $count } agents are working on { $branch } and keep working there.
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $branch (id, never translated): "hair-b"
+ui-shell-branch-switch-anyway = Switch to { $branch }
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-branch-title = Title, optional
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $seq (id, never translated): "hair-b"
+ui-shell-branch-version = version { $seq }
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
 # $first (id, never translated): "hair-b"
 # $second (id, never translated): "hair-b"
 ui-shell-dock-splitter = Resize { $first } and { $second }

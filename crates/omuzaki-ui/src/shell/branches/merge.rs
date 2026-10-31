@@ -272,7 +272,8 @@ impl MergeView {
         if let Some(at) = self.at {
             args["at"] = json!(at);
         }
-        self.preview = run(runner, args, Mode::DryRun).and_then(|plan| read(&plan.output.unwrap_or(Value::Null)));
+        self.preview = run(runner, args, Mode::DryRun)
+            .and_then(|plan| read(&plan.output.unwrap_or(Value::Null)).ok_or_else(String::new));
         self.result = None;
         self.choices.clear();
         self.params.clear();
@@ -334,7 +335,13 @@ impl MergeView {
         let preview = match &self.preview {
             Ok(preview) => preview.clone(),
             Err(why) => {
-                ui.label(RichText::new(say(&ctx, Word::BranchMergeFailed, &[("why", why)])).color(ds.theme.danger));
+                // An empty reason is an answer the view can't read.
+                let line = if why.is_empty() {
+                    say(&ctx, Word::BranchMergeUnreadable, &[])
+                } else {
+                    say(&ctx, Word::BranchMergeFailed, &[("why", why)])
+                };
+                ui.label(RichText::new(line).color(ds.theme.danger));
                 return;
             }
         };
@@ -460,8 +467,8 @@ impl MergeView {
     /// One side's picture of `character`, at the default camera.
     fn picture(&mut self, ui: &mut Ui, ds: &Ds, branching: &Branching, character: &CharId, side: Side) {
         let ctx = ui.ctx().clone();
-        let size = vec2(PICTURE[0] as f32 * 0.6, PICTURE[1] as f32 * 0.6);
-        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+        let frame = vec2(PICTURE[0] as f32 * 0.6, PICTURE[1] as f32 * 0.6);
+        let (rect, _) = ui.allocate_exact_size(frame, egui::Sense::hover());
         ui.painter().rect_filled(rect, 4.0, ds.theme.bg1);
         let base = self.preview.as_ref().ok().and_then(|p| p.base);
         let (shown, tree) = match side {
@@ -603,12 +610,9 @@ fn run(runner: &dyn Runner, args: Value, mode: Mode) -> Result<omuzaki_ops_api::
     }
 }
 
-/// The dry run's output as a [`Preview`].
-///
-/// # Errors
-/// In words, when the output isn't what `branch.merge` answers.
-pub fn read(output: &Value) -> Result<Preview, String> {
-    let units = output.get("units").and_then(Value::as_array).ok_or("the preview lists no units")?;
+/// The dry run's output as a [`Preview`]; `None` when it isn't what `branch.merge` answers.
+pub fn read(output: &Value) -> Option<Preview> {
+    let units = output.get("units").and_then(Value::as_array)?;
     let text = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).unwrap_or_default().to_owned();
     let units = units
         .iter()
@@ -645,7 +649,7 @@ pub fn read(output: &Value) -> Result<Preview, String> {
         .flatten()
         .map(|r| r.as_str().map_or_else(|| r.to_string(), str::to_owned))
         .collect();
-    Ok(Preview {
+    Some(Preview {
         units,
         version: output.get("version").cloned().unwrap_or(Value::Null),
         summary: text(output, "summary"),

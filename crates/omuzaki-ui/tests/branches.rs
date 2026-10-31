@@ -332,7 +332,10 @@ fn a_part_both_sides_changed_needs_a_choice_merges_as_one_step_and_undoes() {
     press(&mut h, "Show the base");
     h.state().pictures.settle();
     let base_width = h.state().shots.lock().unwrap()[drawn..].iter().map(|s| s.width).collect::<Vec<_>>();
-    assert!(base_width.iter().any(|w| w.is_some_and(|w| w != 0.25 && w != 0.3)), "the base is drawn: {base_width:?}");
+    assert!(
+        base_width.iter().any(|w| w.is_some_and(|w| (w - 0.25).abs() > 1e-9 && (w - 0.3).abs() > 1e-9)),
+        "the base is drawn: {base_width:?}"
+    );
     press(&mut h, "Merge");
     assert_eq!(h.state().ui.merge().unwrap().phase(), &Phase::Merged);
     assert_eq!(width(h.state().runner()), Some(0.3), "theirs was taken");
@@ -448,4 +451,85 @@ fn compare_draws_every_branch_at_one_camera_and_lists_what_each_changes() {
     let groups = compare.groups(1).unwrap().unwrap();
     let head = groups.iter().find(|g| g.path == HEAD).unwrap();
     assert_eq!(head.changes.iter().find(|c| c.path.ends_with("half_width")).unwrap().after, Some(json!(0.33)));
+}
+
+/// The menu with a review card, the compare and the merge view over the kit drawn on the GPU, for the pull request.
+/// `OMUZAKI_EVIDENCE_OUT=<folder> cargo test -p omuzaki-ui --test branches -- --ignored`.
+#[test]
+#[ignore = "renders the kit on the GPU (lavapipe in CI) and writes evidence images"]
+fn branches_evidence() {
+    use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
+    use omuzaki_ui::ds::apply_settings;
+    use omuzaki_ui::shell::branches::pictures::Rendered;
+    let Ok(out) = std::env::var("OMUZAKI_EVIDENCE_OUT") else { panic!("set OMUZAKI_EVIDENCE_OUT to a folder") };
+    let out = std::path::PathBuf::from(out);
+    std::fs::create_dir_all(&out).unwrap();
+    omuzaki_ui::link();
+    let dir = tempfile::tempdir().unwrap();
+    let core = core_on(Document::project(dir.path()).unwrap(), Services::default()).unwrap();
+    let character = studio::open_character(core.runner.as_ref()).unwrap();
+    let renderer = WgpuRenderer::headless(&HeadlessOptions { adapter: AdapterPreference::Software }).unwrap();
+    let store = omuzaki_store::DiskStore::open(dir.path().join("pictures")).unwrap();
+    let pictures = StatePictures::start(Box::new(Rendered::new(Box::new(renderer), Arc::new(store)))).unwrap();
+    let branching = core.branching(Some(pictures.clone())).unwrap();
+    let rig = Rig {
+        _dir: dir,
+        core,
+        branching,
+        pictures,
+        shots: Arc::default(),
+        ui: BranchUi::default(),
+        focus: EditFocus::new(character),
+        switched: false,
+    };
+    let make = |name: &str, width: f64, legs: Option<f64>, ready: Option<&str>| {
+        let branch = rig.branch(name);
+        let lane = rig.lane(&branch.id);
+        set_width(lane.as_ref(), width);
+        if let Some(legs) = legs {
+            set_legs(lane.as_ref(), legs);
+        }
+        rig.branching.branches.checkpoint(&branch.id, "work", ready.map(str::to_owned), &you()).unwrap();
+        branch
+    };
+    let wide = make("wide", 0.3, Some(1.2), Some("A wider head and longer legs, as asked"));
+    let narrow = make("narrow", 0.17, None, None);
+    set_width(rig.runner(), 0.24);
+
+    let mut h = Harness::builder().with_size(vec2(1600.0, 900.0)).wgpu().build_ui_state(
+        |ui, r: &mut Rig| {
+            apply_settings(ui.ctx(), Settings::default());
+            egui::CentralPanel::default().show(ui, |ui| {
+                r.ui.menu.chip(ui, &r.branching);
+                let runner = Arc::clone(&r.core.runner);
+                r.switched |= r.ui.show(ui.ctx(), &r.branching, runner.as_ref(), Some(&r.focus));
+            });
+        },
+        rig,
+    );
+    let settle = |h: &mut Harness<'_, Rig>| {
+        for _ in 0..3 {
+            h.run_steps(3);
+            h.state().pictures.settle();
+        }
+        h.run_steps(3);
+    };
+    h.state_mut().ui.menu.toggle();
+    settle(&mut h);
+    h.render().unwrap().save(out.join("branches-menu.png")).unwrap();
+
+    let branching = h.state().branching.clone();
+    let runner = Arc::clone(&h.state().core.runner);
+    h.state_mut().ui = BranchUi::default();
+    h.state_mut().ui.open_compare(&[BranchId::main(), wide.id.clone(), narrow.id], &branching, runner.as_ref());
+    settle(&mut h);
+    h.render().unwrap().save(out.join("branches-compare.png")).unwrap();
+
+    h.state_mut().ui = BranchUi::default();
+    h.state_mut().ui.open_merge(&wide.id, None, &branching, runner.as_ref());
+    settle(&mut h);
+    h.render().unwrap().save(out.join("branches-merge-choosing.png")).unwrap();
+    press(&mut h, "Take theirs");
+    settle(&mut h);
+    h.render().unwrap().save(out.join("branches-merge-theirs.png")).unwrap();
 }

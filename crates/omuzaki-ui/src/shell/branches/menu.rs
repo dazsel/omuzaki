@@ -69,7 +69,11 @@ impl Menu {
             say(&ctx, Word::BranchChipReady, &[("branch", &name), ("count", &ready.to_string())])
         };
         let colour = if ready == 0 { ds.theme.text2 } else { ds.theme.accent };
-        let label = RichText::new(format!("{} {text}", icons::GIT_BRANCH)).font(ds.text.small.clone()).color(colour);
+        // The glyph in the icon font, the words in the status bar's.
+        let mut label = egui::text::LayoutJob::default();
+        let size = ds.text.small.size;
+        label.append(icons::GIT_BRANCH, 0.0, egui::TextFormat::simple(ds.text.icon(size, false), colour));
+        label.append(&text, size * 0.4, egui::TextFormat::simple(ds.text.small.clone(), colour));
         let response = ui.add(egui::Button::new(label).frame(false)).on_hover_text(say(&ctx, Word::BranchMenu, &[]));
         if response.clicked() {
             self.toggle();
@@ -116,7 +120,7 @@ impl Menu {
         let ctx = ui.ctx().clone();
         let Some(folder) = self.listing.folder_branch().cloned() else {
             // A project's main branch is written down when its first branch is made: until then it is all there is.
-            let Some(id) = self.listing.folder.clone() else { return None };
+            let id = self.listing.folder.clone()?;
             let name = self.listing.folder_name();
             ui.label(RichText::new(say(&ctx, Word::BranchOn, &[("branch", &name)])).strong());
             self.problem_line(ui, ds);
@@ -218,14 +222,14 @@ impl Menu {
             self.new = None;
         } else if make {
             let (name, title) = (name.trim().to_owned(), title.trim().to_owned());
-            let made = BranchName::new(name).map_err(|e| e.to_string()).and_then(|name| {
+            let created = BranchName::new(name).map_err(|e| e.to_string()).and_then(|name| {
                 let mut new = NewBranch::new(name, folder.clone());
                 if !title.is_empty() {
                     new = new.with_title(title);
                 }
                 branching.branches.create(new, &person()).map_err(|e| refusal(&e))
             });
-            match made {
+            match created {
                 Ok(_) => {
                     self.new = None;
                     self.problem = None;

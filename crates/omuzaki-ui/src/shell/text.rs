@@ -223,6 +223,7 @@ words! {
     BranchCompareReference = "ui-shell-branch-compare-reference" => "Compare with this",
     BranchCompareAsOf = "ui-shell-branch-compare-as-of" => "as of version {seq}",
     BranchCompareRefresh = "ui-shell-branch-compare-refresh" => "Refresh",
+    BranchCompareCheckpoint = "ui-shell-branch-compare-checkpoint" => "Brought up to date to compare",
     BranchCompareSame = "ui-shell-branch-compare-same" => "The same as {branch}",
     BranchCompareChanges = "ui-shell-branch-compare-changes" => "{count} differ",
     BranchCompareMissing = "ui-shell-branch-compare-missing" => "No {character} here",
@@ -257,6 +258,7 @@ words! {
     BranchMergeUndo = "ui-shell-branch-merge-undo" => "Undo the merge",
     BranchMergeUndone = "ui-shell-branch-merge-undone" => "The merge was undone.",
     BranchMergeAgain = "ui-shell-branch-merge-again" => "Preview again",
+    BranchMergeUnreadable = "ui-shell-branch-merge-unreadable" => "The merge preview couldn't be read.",
     BranchMergeFailed = "ui-shell-branch-merge-failed" => "The merge didn't apply: {why}",
 }
 

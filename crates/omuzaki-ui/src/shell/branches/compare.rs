@@ -202,7 +202,7 @@ impl BranchCompare {
                 let as_of = say(&ctx, Word::BranchCompareAsOf, &[("seq", &seq.to_string())]);
                 ui.label(RichText::new(as_of).font(ds.text.small.clone()).color(ds.theme.text2));
                 if open_lane && ui.add(Button::new(&say(&ctx, Word::BranchCompareRefresh, &[])).ghost()).clicked() {
-                    self.refresh(n, branching, runner);
+                    self.refresh(n, &say(&ctx, Word::BranchCompareCheckpoint, &[]), branching, runner);
                 }
             });
         }
@@ -359,9 +359,9 @@ impl BranchCompare {
     }
 
     /// Makes a point of column `n`'s branch now and shows it.
-    fn refresh(&mut self, n: usize, branching: &Branching, runner: &dyn Runner) {
+    fn refresh(&mut self, n: usize, label: &str, branching: &Branching, runner: &dyn Runner) {
         let Some(column) = self.columns.get_mut(n) else { return };
-        match branching.branches.checkpoint(&column.branch.id, "Compare", None, &person()) {
+        match branching.branches.checkpoint(&column.branch.id, label, None, &person()) {
             Ok(point) => {
                 column.shown = Shown::Point(point);
                 column.tree = column.shown.tree(runner, branching.trees.as_ref());
