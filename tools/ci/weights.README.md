@@ -13,6 +13,11 @@ render tests. At 137 the packer put that call and the `omuzaki-char` partition w
 was cancelled at the 45-minute cap three times with every finished test passing. The other three crates keep their
 numbers.
 
+It is also pinned to one part (`parts`): split by weight alone it went into three partitions on `main`'s full run, so
+three shards each compiled and linked its ~150 test binaries on top of their own crates, and the one that also built
+`omuzaki-ui` ran out of runner disk (`ld` bus error, #2690; `main` run on 6407c318). Whole, it takes one shard of its
+own, about 25 minutes with its compile.
+
 ## Current numbers (2026-10-15, issue #2118)
 
 Measured on the six test jobs of merge-queue run 38810711080 (24 affected crates). For every `cargo nextest run` call:
