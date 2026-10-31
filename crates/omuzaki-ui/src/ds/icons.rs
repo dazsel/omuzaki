@@ -200,3 +200,7 @@ pub const FILE_CODE: &str = egui_phosphor::regular::FILE_CODE;
 pub const CURSOR: &str = egui_phosphor::regular::CURSOR_CLICK;
 /// Compare two states: a diff.
 pub const GIT_DIFF: &str = egui_phosphor::regular::GIT_DIFF;
+/// A branch: the project folder's branch and the branch menu.
+pub const GIT_BRANCH: &str = egui_phosphor::regular::GIT_BRANCH;
+/// Merge one branch into another.
+pub const GIT_MERGE: &str = egui_phosphor::regular::GIT_MERGE;

@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use omuzaki_doc_api::{DocPath, DocRead, DocVersion, Value, lookup};
 use omuzaki_history_api::state::{BranchStore, HistoryError, HistoryView, StateRef};
-use omuzaki_ops_api::{JobCtx, OpError, Services};
+use omuzaki_ops_api::{Actor, CancelFlag, JobCtx, JobDoc, JobId, JobSignal, Op, OpError, Services};
+
+use super::preview::{Preview, PreviewResult};
 
 /// A state's tree, read like a document.
 #[derive(Clone, Debug)]
@@ -38,6 +40,12 @@ impl DocRead for StateDoc {
     }
 }
 
+impl JobDoc for StateDoc {
+    fn read(&self, f: &mut dyn FnMut(&dyn DocRead)) {
+        f(self);
+    }
+}
+
 /// The tree `state` names, from `services`' history; `None` for the op's own document (no state, `now`, or this
 /// lane's own branch).
 ///
@@ -63,6 +71,41 @@ pub fn read<R>(job: &JobCtx<'_>, state: Option<&StateDoc>, f: impl FnOnce(&dyn D
     match state {
         Some(doc) => f(doc),
         None => job.read(f),
+    }
+}
+
+/// `preview` of the character as `tree` holds it, rendered with `services` outside any runner: the studio's pictures
+/// of branches and of a merge's two sides, which must not add steps to the history they show. The picture goes to
+/// the services' store, like `render.preview`'s.
+///
+/// # Errors
+/// What `render.preview`'s work reports: a character the tree doesn't have, a shot that doesn't frame, a missing
+/// service, a failed render.
+pub fn picture_of(tree: Arc<Value>, preview: &Preview, services: &Services) -> Result<PreviewResult, OpError> {
+    let doc = StateDoc::new(tree);
+    let actor = Actor::System;
+    let job = JobCtx::new(JobId(0), &actor, &doc, &Quiet).with_services(services);
+    let preview = Preview { state: None, ..preview.clone() };
+    let value = preview.work(&job)?;
+    serde_json::from_value(value).map_err(|e| OpError::internal(format!("reading the picture back: {e}")))
+}
+
+/// A job signal for a picture nobody watches: no progress, never cancelled, spends nothing.
+struct Quiet;
+
+impl JobSignal for Quiet {
+    fn progress(&self, _stage: &str, _fraction: f32) {}
+
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+
+    fn cancel_flag(&self) -> CancelFlag {
+        CancelFlag::new()
+    }
+
+    fn spend(&self, _usd_micros: u64) -> Result<(), OpError> {
+        Err(OpError::denied("a picture of a state spends nothing"))
     }
 }
 

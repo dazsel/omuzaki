@@ -134,6 +134,11 @@ impl Harness {
         f(&job)
     }
 
+    /// Runs `f` with the harness's services.
+    pub fn with_services<T>(&self, f: impl FnOnce(&Services) -> T) -> T {
+        f(&self.services)
+    }
+
     /// The document the jobs read.
     pub fn doc(&self) -> &MemDoc {
         &self.doc.0

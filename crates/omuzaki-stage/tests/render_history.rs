@@ -139,3 +139,16 @@ fn a_state_needs_a_shot_and_a_render_reference_still_reads_as_one() {
     assert!(matches!(op.a, omuzaki_stage::ops::render::compare::Side::Render(_)), "a hash stays a render");
     assert!(matches!(op.b, omuzaki_stage::ops::render::compare::Side::State(StateRef::Now)));
 }
+
+#[test]
+fn a_tree_renders_outside_any_runner_to_the_same_picture_as_its_state() {
+    let harness = harness();
+    let by_state = preview(&harness, json!({ "tx": 2 })).unwrap_or_else(|e| panic!("{e}"));
+    let mut tree = harness.doc().root().clone();
+    tree["characters"]["mock"]["palette"]["outfit"] = json!("#d02020");
+    let op: Preview = serde_json::from_value(shot()).expect("reads");
+    let direct = harness
+        .with_services(|services| omuzaki_stage::ops::render::history::picture_of(Arc::new(tree), &op, services))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(direct.hash, by_state.hash, "the studio's picture of a tree is the op's picture of that state");
+}

@@ -6928,6 +6928,7 @@ dependencies = [
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-face-api",
+ "omuzaki-history-api",
  "omuzaki-http",
  "omuzaki-http-mock",
  "omuzaki-input",
