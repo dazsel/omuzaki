@@ -295,6 +295,7 @@ impl Worker {
     fn render(&self, snapshot: &Snapshot, character: &CharId) -> Option<String> {
         let preview = Preview {
             character: character.clone(),
+            state: None,
             variant: None,
             scene: None,
             camera: None,

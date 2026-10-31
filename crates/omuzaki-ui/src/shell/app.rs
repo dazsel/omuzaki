@@ -179,6 +179,8 @@ pub struct Shell {
     sheet: bool,
     /// The Settings window, while it is open.
     settings: Option<SettingsWindow>,
+    /// The branch chip's menu, and the compare and merge windows while they are open.
+    branches: super::branches::BranchUi,
 }
 
 impl Shell {
@@ -235,6 +237,7 @@ impl Shell {
             attention: false,
             sheet: false,
             settings: None,
+            branches: super::branches::BranchUi::default(),
             palette: Palette::default(),
             requests,
         };
@@ -359,7 +362,39 @@ impl Shell {
         {
             self.settings = None;
         }
+        if let Some(branching) = self.models.get::<super::branches::Branching>().cloned() {
+            let focus = self.models.get::<EditFocus>().cloned();
+            if self.branches.show(&ctx, &branching, self.runner.as_ref(), focus.as_ref()) {
+                self.follow_folder();
+            }
+        }
         self.save_if_edited(&ctx);
+    }
+
+    /// The branch windows: the menu, and the compare and merge windows while they are open.
+    pub fn branch_ui(&mut self) -> &mut super::branches::BranchUi {
+        &mut self.branches
+    }
+
+    /// Follows the project folder to the branch it switched to (`docs/design/branches.md` 5.5): the runner already
+    /// routes the person's calls to the new folder lane, so the shell subscribes to that lane's events (the old
+    /// stream stops at its next event, its inbox gone), every panel is built again over the new branch's document,
+    /// and History reads the new branch's log.
+    pub fn follow_folder(&mut self) {
+        self.inbox = Arc::default();
+        self.frame_events.clear();
+        self.events = match self.runner.subscribe(&Grants::person()) {
+            Ok(events) => Some(events),
+            Err(error) => {
+                tracing::warn!(%error, "panels will see no events from the branch switched to");
+                None
+            }
+        };
+        self.bodies = Bodies::default();
+        self.note = Note::Nothing;
+        // Which steps are undone belongs to the old branch's log.
+        self.models.insert(HistoryLog::default());
+        self.refresh_history();
     }
 
     /// The Settings window, while it is open.
@@ -1234,6 +1269,10 @@ impl Shell {
                     ui.label(small(say(&ctx, Word::StatusNoFence, &[])));
                 } else {
                     ui.label(small(say(&ctx, Word::StatusFence, &[])));
+                }
+                if let Some(branching) = self.models.get::<super::branches::Branching>().cloned() {
+                    self.branches.menu.chip(ui, &branching);
+                    ui.separator();
                 }
                 // The OS input capture indicator: drawn in every state while the hub runs, and its heartbeat.
                 if let Some(surface) = self.models.get::<crate::input::InputSurface>() {

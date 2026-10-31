@@ -1,8 +1,9 @@
 //! The light-rig library: the prototype's seven rigs, the measurement rig and our own designs, as data. Each rig is one
 //! TOML file under `library/light-rigs/`: the seven transcribed from the golden manifest's `spec.rig` blocks,
-//! `measure-flat` (flat frontal light for the `measure.*` ops, `docs/design/likeness-measures.md` D10), and `stage`
-//! (coloured spots from above, a strong rim and a dark stage, #1165). Only lighting numbers are stored here; no image,
-//! mesh or likeness is.
+//! `measure-flat` (flat frontal light for the `measure.*` ops, `docs/design/likeness-measures.md` D10), `stage`
+//! (coloured spots from above, a strong rim and a dark stage, #1165), `short-rim`, `library-day` and `flat-cel` (flat
+//! 2D-animation light whose lit side is exactly the albedo). Only lighting numbers are stored here; no image, mesh or
+//! likeness is.
 //!
 //! Units are three.js's (render-api D10), so every number is copied as the prototype wrote it and never rescaled.
 //! Parts of a rig that the render contract has no field for (the key light's shadow frustum, the skin floor) stay in
@@ -21,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use super::RecipeError;
 
 /// The rigs shipped with the crate, by name. Each file is parsed on use, so a broken file fails the test that loads it.
-static LIBRARY: [(&str, &str); 11] = [
+static LIBRARY: [(&str, &str); 12] = [
     ("viewer-studio", include_str!("../../library/light-rigs/viewer-studio.toml")),
     ("viewer-candle", include_str!("../../library/light-rigs/viewer-candle.toml")),
     ("viewer-moonlit", include_str!("../../library/light-rigs/viewer-moonlit.toml")),
@@ -33,6 +34,7 @@ static LIBRARY: [(&str, &str); 11] = [
     ("stage", include_str!("../../library/light-rigs/stage.toml")),
     ("short-rim", include_str!("../../library/light-rigs/short-rim.toml")),
     ("library-day", include_str!("../../library/light-rigs/library-day.toml")),
+    ("flat-cel", include_str!("../../library/light-rigs/flat-cel.toml")),
 ];
 
 /// Directional lights shine from `position` toward this point. Three.js aims every directional light at the origin

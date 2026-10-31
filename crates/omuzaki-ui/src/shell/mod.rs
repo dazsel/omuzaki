@@ -12,12 +12,14 @@
 //!   the runner it starts with;
 //! - [`host`], [`dock`], [`saver`]: the panels built and how one is drawn, how panels are docked and constrained, and
 //!   the background thread that writes layouts;
+//! - [`branches`]: the branch chip and menu, comparing branches and the merge view;
 //! - [`app`]: the [`Shell`] that draws a frame from all of them.
 
 // Layout arithmetic converts between small integers and `f32` (window sizes, counts); every value is bounded by a screen.
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 
 pub mod app;
+pub mod branches;
 pub mod class;
 pub mod compare;
 pub mod dock;

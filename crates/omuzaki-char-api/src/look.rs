@@ -42,7 +42,7 @@ use std::collections::BTreeMap;
 use omuzaki_core::colour::Colour;
 use omuzaki_core::id::Slug;
 use omuzaki_doc_api::Value;
-use omuzaki_render_api::{ColourGrade, Outline, ParamValue, ProgramParams, Shading};
+use omuzaki_render_api::{ColourGrade, Outline, ParamValue, ProgramParams, RenderError, Shading, Stylize, Toon};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -228,6 +228,11 @@ pub struct SceneLook {
     /// `strength` 0 turns them off.
     #[serde(skip_serializing_if = "OcclusionOverride::is_empty")]
     pub occlusion: OcclusionOverride,
+    /// The drawn look laid over the frame (halftone, hatching, posterize, paper, vignette, lens fringe, split toning:
+    /// `omuzaki-render-api`'s `Stylize`), as one block: a layer that sets it replaces the layer below's. An empty
+    /// block turns a lower layer's off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stylize: Option<Stylize>,
 }
 
 /// Ambient occlusion and contact shadows as a look layer holds them: every leaf optional. Whether a fringe shadows the
@@ -512,18 +517,22 @@ impl ClassLook {
                 Shading::Program { name: current, params } if current == name => {
                     params.extend(program.params.iter().map(|(k, v)| (k.clone(), *v)));
                 }
-                shading => *shading = Shading::Program { name: name.clone(), params: program.params.clone() },
+                shading => {
+                    // A program that relights a toon (`stylized`) carries the part's toon over, as this look scales it,
+                    // so the shade colours and the skin treatment the part chose survive the swap.
+                    let mut params = match shading {
+                        Shading::Toon(toon) if TOON_PROGRAMS.contains(&name.as_str()) => {
+                            toon_params(&self.scaled(*toon))
+                        }
+                        _ => ProgramParams::new(),
+                    };
+                    params.extend(program.params.iter().map(|(k, v)| (k.clone(), *v)));
+                    *shading = Shading::Program { name: name.clone(), params };
+                }
             }
         }
         match &mut out.shading {
-            Shading::Toon(toon) => {
-                if let Some(scale) = self.softness_scale {
-                    toon.softness = (toon.softness * scale).clamp(0.0, 1.0);
-                }
-                if let Some(scale) = self.rim_scale {
-                    toon.rim.strength *= scale;
-                }
-            }
+            Shading::Toon(toon) => *toon = self.scaled(*toon),
             Shading::Program { name, params } => {
                 if let Some(extra) = self.program_params.get(name) {
                     params.extend(extra.iter().map(|(k, v)| (k.clone(), *v)));
@@ -544,6 +553,17 @@ impl ClassLook {
             styled(&mut out, style);
         }
         out
+    }
+
+    /// `toon` with this look's softness and rim scales.
+    fn scaled(&self, mut toon: Toon) -> Toon {
+        if let Some(scale) = self.softness_scale {
+            toon.softness = (toon.softness * scale).clamp(0.0, 1.0);
+        }
+        if let Some(scale) = self.rim_scale {
+            toon.rim.strength *= scale;
+        }
+        toon
     }
 
     /// [`apply`](Self::apply), then the renderer's own material check on the result, so a look that is valid on its
@@ -583,6 +603,37 @@ impl ClassLook {
     }
 }
 
+/// The stylized program (`omuzaki-render`'s `stylized`): multi-band cel, a cel highlight, a lit-edge rim and a warm
+/// terminator over the part's own toon, for animated-film looks.
+pub const STYLIZED_PROGRAM: &str = "stylized";
+
+/// Programs that relight a toon from `cel-*` parameters: a look that swaps a toon material to one carries the toon over
+/// ([`toon_params`]).
+const TOON_PROGRAMS: [&str; 1] = [STYLIZED_PROGRAM];
+
+/// A toon as the `cel-*` parameters of a program that relights it (the style axis's programs, `stylized`).
+fn toon_params(toon: &Toon) -> ProgramParams {
+    let mut params = ProgramParams::new();
+    let mut put = |name: &str, value: ParamValue| {
+        if let Ok(key) = Slug::new(name) {
+            params.insert(key, value);
+        }
+    };
+    put("cel-shade", ParamValue::Colour(toon.shade));
+    put("cel-shift", ParamValue::Float(toon.shift));
+    put("cel-softness", ParamValue::Float(toon.softness));
+    put("cel-rim", ParamValue::Colour(toon.rim.colour));
+    put("cel-rim-power", ParamValue::Float(toon.rim.power));
+    put("cel-rim-strength", ParamValue::Float(toon.rim.strength));
+    put("cel-emissive", ParamValue::Colour(toon.emissive));
+    put("cel-skin", ParamValue::Float(if toon.skin.is_some() { 1.0 } else { 0.0 }));
+    if let Some(skin) = toon.skin {
+        put("cel-skin-floor", ParamValue::Float(skin.floor));
+        put("cel-skin-hue", ParamValue::Float(skin.hue_keep));
+    }
+    params
+}
+
 /// The skin program (`omuzaki-render`'s `skin`): subsurface-scattered skin at the physical end of the style axis.
 pub const SKIN_PROGRAM: &str = "skin";
 /// The physical program (`omuzaki-render`'s `physical`): every other surface at the physical end of the style axis.
@@ -602,19 +653,8 @@ fn styled(spec: &mut MaterialSpec, style: f32) {
     match &mut spec.shading {
         Shading::Toon(toon) => {
             let program = if toon.skin.is_some() { SKIN_PROGRAM } else { PHYSICAL_PROGRAM };
-            let mut params = ProgramParams::new();
-            put(&mut params, "cel-shade", ParamValue::Colour(toon.shade));
-            put(&mut params, "cel-shift", ParamValue::Float(toon.shift));
-            put(&mut params, "cel-softness", ParamValue::Float(toon.softness));
-            put(&mut params, "cel-rim", ParamValue::Colour(toon.rim.colour));
-            put(&mut params, "cel-rim-power", ParamValue::Float(toon.rim.power));
-            put(&mut params, "cel-rim-strength", ParamValue::Float(toon.rim.strength));
-            put(&mut params, "cel-emissive", ParamValue::Colour(toon.emissive));
-            put(&mut params, "cel-skin", ParamValue::Float(if toon.skin.is_some() { 1.0 } else { 0.0 }));
-            if let Some(skin) = toon.skin {
-                put(&mut params, "cel-skin-floor", ParamValue::Float(skin.floor));
-                put(&mut params, "cel-skin-hue", ParamValue::Float(skin.hue_keep));
-            } else {
+            let mut params = toon_params(toon);
+            if toon.skin.is_none() {
                 // Cloth for the most part: a matte, softly sheened weave.
                 put(&mut params, "roughness", ParamValue::Float(0.75));
                 put(&mut params, "sheen", ParamValue::Float(0.35));
@@ -641,7 +681,7 @@ fn derived_line(base: Colour) -> Colour {
 
 impl SceneLook {
     /// The field names, as parameter paths spell them.
-    pub const FIELDS: [&'static str; 5] = ["bloom", "depth_of_field", "grain", "grade", "occlusion"];
+    pub const FIELDS: [&'static str; 6] = ["bloom", "depth_of_field", "grain", "grade", "occlusion", "stylize"];
 
     /// True when it sets nothing.
     pub fn is_empty(&self) -> bool {
@@ -657,6 +697,7 @@ impl SceneLook {
             grain: first(self.grain.as_ref(), base.grain.as_ref()),
             grade: self.grade.over(&base.grade),
             occlusion: self.occlusion.over(&base.occlusion),
+            stylize: first(self.stylize.as_ref(), base.stylize.as_ref()),
         }
     }
 
@@ -683,6 +724,15 @@ impl SceneLook {
             return Err(invalid("scene.occlusion.strength", format!("{strength} must be in 0..=1")));
         }
         check_non_negative("scene.occlusion.contact", self.occlusion.contact)?;
+        if let Some(stylize) = self.stylize
+            && let Err(e) = stylize.validate()
+        {
+            let reason = match e {
+                RenderError::Invalid { reason, .. } => reason,
+                other => other.to_string(),
+            };
+            return Err(invalid("scene.stylize", reason));
+        }
         Ok(())
     }
 }
@@ -845,6 +895,9 @@ fn parse_path(path: &str) -> Result<Vec<&str>, LookError> {
                 known(leaf_name, leaves, "field")?;
                 leaf(3, leaf_name)?;
             }
+        } else if field == "stylize" {
+            // Its parts and their fields are checked when the edited look is read back (unknown names are refused
+            // there, naming the field), so any depth is accepted here.
         } else {
             leaf(2, field)?;
         }

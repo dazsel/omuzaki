@@ -142,6 +142,10 @@ fn fs_outline(in: HullOut) -> @location(0) vec4<f32> {
     if (material.flags.z == ALPHA_MASK && mask_coverage(uv, in.colour) < material.alpha.x) {
         discard;
     }
+    // A dissolved surface takes its line with it.
+    if (fx_cut(fx_at(in.local))) {
+        discard;
+    }
     var light = vec3<f32>(frame.look.x);
     let lighting_mix = material.outline_mix.x;
     if (mtoon_on()) {

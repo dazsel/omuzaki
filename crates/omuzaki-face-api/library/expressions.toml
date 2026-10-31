@@ -14,11 +14,11 @@
 # stays until it is hidden. Accents are momentary: they play over the mood, which steps back while they show, and stop
 # on their own. Moods hold at least 1.1 s before another replaces it (`dwell_s`), so faces don't flicker, and their
 # fades follow their family: alert faces (surprise, fear, anger) come in in 0.12 s, leave in 0.3 s and cut in through
-# another's hold; warm faces (happy, shy, smug) take 0.3 s and 0.42 s; down faces (sad, worried, sleepy) take 0.45 s
+# another's hold; warm faces (happy, grin, shy, smug) take 0.3 s and 0.42 s; down faces (sad, worried, sleepy) take 0.45 s
 # and 0.6 s; the rest keep the default 0.12 s and 0.2 s.
 #
 # Curves: `smooth` for most moods (soft in, soft out), `ease_out` for the ones that should show early (surprise, a
-# laugh, fear), `ease_in` for the ones that should creep in (sleepy, smug).
+# laugh, a grin, fear), `ease_in` for the ones that should creep in (sleepy, smug).
 
 # ---------------------------------------------------------------------------------------------------------- visemes
 
@@ -59,6 +59,14 @@ kind = "emotion"
 playback = { group = "mood", fade_in_s = 0.3, fade_out_s = 0.42, dwell_s = 1.1 }
 curve = "ease_out"
 deltas = { eyesSqueeze = 1.0, jawOpen = 0.8, mouthSmileLeft = 1.0, mouthSmileRight = 1.0, mouthStretchLeft = 0.3, mouthStretchRight = 0.3, blush = 0.6, browInnerUp = 0.5 }
+
+[grin]
+# The toothy grin of Western toon acting: eyes open (where `happy` closes them to arcs), a wide smile pulled up at the
+# corners with both rows of teeth showing, the cheeks lifting the lower lids a little.
+kind = "emotion"
+playback = { group = "mood", fade_in_s = 0.3, fade_out_s = 0.42, dwell_s = 1.1 }
+curve = "ease_out"
+deltas = { jawOpen = 0.3, mouthSmileLeft = 1.0, mouthSmileRight = 1.0, mouthStretchLeft = 0.7, mouthStretchRight = 0.7, mouthUpperUpLeft = 0.7, mouthUpperUpRight = 0.7, mouthLowerDownLeft = 0.6, mouthLowerDownRight = 0.6, cheekSquintLeft = 0.5, cheekSquintRight = 0.5, eyeWideLeft = 0.2, eyeWideRight = 0.2, browOuterUpLeft = 0.35, browOuterUpRight = 0.35 }
 
 [relaxed]
 kind = "emotion"

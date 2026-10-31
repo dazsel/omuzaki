@@ -275,6 +275,17 @@ fn studio_shell(cc: &eframe::CreationContext<'_>, core: Option<Core>, dir: Optio
             Err(error) => tracing::warn!(%error, "History shows no pictures"),
         }
     }
+    if let Some(core) = &core {
+        let pictures = match (dir, cc.wgpu_render_state.as_ref()) {
+            (Some(dir), Some(gpu)) => branch_pictures(dir, gpu)
+                .inspect_err(|error| tracing::warn!(%error, "branches are compared without pictures"))
+                .ok(),
+            _ => None,
+        };
+        if let Some(branching) = core.branching(pictures) {
+            shell.insert_view(branching);
+        }
+    }
     if let Some(core) = core {
         shell.insert_view(Agents(core.sessions));
     }
@@ -286,6 +297,20 @@ fn studio_shell(cc: &eframe::CreationContext<'_>, core: Option<Core>, dir: Optio
     first_run.open_if_new(&shell.requests());
     shell.insert_view(first_run);
     shell
+}
+
+/// Pictures of branches and of a merge's two sides, rendered on egui's own device by a renderer of their own and kept
+/// beside History's.
+fn branch_pictures(
+    dir: &Path,
+    gpu: &eframe::egui_wgpu::RenderState,
+) -> Result<omuzaki_ui::shell::branches::StatePictures, String> {
+    use omuzaki_ui::shell::branches::pictures::{Rendered, StatePictures};
+    let renderer =
+        WgpuRenderer::from_device(&gpu.adapter, gpu.device.clone(), gpu.queue.clone()).map_err(|e| e.to_string())?;
+    let store = omuzaki_store::DiskStore::open(dir.join(omuzaki_ui::shell::pictures::PICTURES_DIR))
+        .map_err(|e| e.to_string())?;
+    StatePictures::start(Box::new(Rendered::new(Box::new(renderer), Arc::new(store))))
 }
 
 /// History's pictures of the project in `dir`, rendered on egui's own device by a renderer of their own.

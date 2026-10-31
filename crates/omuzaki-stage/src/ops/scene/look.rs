@@ -1,9 +1,9 @@
-//! What a scene looks like around its cast (design D2, D8): `stage.set_backdrop`, `stage.set_ground` and
-//! `stage.set_post`.
+//! What a scene looks like around its cast (design D2, D8): `stage.set_backdrop`, `stage.set_ground`,
+//! `stage.set_post`, and how its cast moves as drawn animation: `stage.set_timing` and `stage.set_squash`.
 
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
-use omuzaki_render_api::{BackdropFit, Colour, Tonemap};
-use omuzaki_stage_api::{Backdrop, Bars, DepthOfFieldDef, GradeDef, GroundKind, OcclusionDef, SceneId};
+use omuzaki_render_api::{BackdropFit, Colour, Stylize, Tonemap};
+use omuzaki_stage_api::{Backdrop, Bars, DepthOfFieldDef, GradeDef, GroundKind, OcclusionDef, SceneId, Squash};
 use omuzaki_store_api::{ContentHash, Store};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -274,6 +274,11 @@ pub struct SetPost {
     /// metres; a field left out takes its default: 5 mm, 0.6 and 1.5 cm), or `off`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occlusion: Option<OrOff<OcclusionDef>>,
+    /// The drawn look laid over the frame, or `off`: halftone dots, ink hatching, posterized tones, paper, a vignette,
+    /// a lens fringe and split toning (each part optional; sizes are fractions of the frame's height). Replaces the
+    /// scene's whole stylize block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stylize: Option<OrOff<Stylize>>,
 }
 
 impl Op for SetPost {
@@ -281,7 +286,8 @@ impl Op for SetPost {
         OpMeta {
             name: "stage.set_post",
             summary: "Change a scene's post look: bloom on or off, tone mapping, depth of field, film grain, colour \
-                      grade and ambient occlusion with contact shadows (`off` removes an effect). Only the fields \
+                      grade, ambient occlusion with contact shadows and the drawn stylize look (halftone, hatching, \
+                      posterize, paper, vignette, lens fringe, split toning; `off` removes an effect). Only the fields \
                       given change.",
             kind: OpKind::Edit,
             scope: Scope::EditScene,
@@ -310,6 +316,9 @@ impl Op for SetPost {
         if let Some(occlusion) = &self.occlusion {
             post.occlusion = occlusion.clone().into_option();
         }
+        if let Some(stylize) = &self.stylize {
+            post.stylize = stylize.clone().into_option();
+        }
         let id = edit.id.clone();
         let plan = edit.finish(ctx, serde_json::Value::Null)?;
         let output = json!({ "scene": id.as_str(), "changed": changed(&plan.patch) });
@@ -318,3 +327,223 @@ impl Op for SetPost {
 }
 
 register_op!(SetPost);
+
+/// Sets how a scene's cast moves in time: every frame, or held as drawn animation is. Only the poses hold; the camera,
+/// lights, effects and render keep the frame rate.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [{"body": "twos"}, {"body": "threes", "face": "twos", "hold_secondary": false}, {"body": "ones"}, {"scene": "night_stream", "body_hz": 6}],
+    "x-omuzaki-fixture" = "scenes"
+))]
+pub struct SetTiming {
+    /// The scene; the one the project opens in when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<SceneId>,
+    /// The body's timing by name: `ones` (every frame), `twos` (12 poses a second, as at 24 fps on twos) or `threes`
+    /// (8 a second).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<Beat>,
+    /// The body's poses per second, `0..=60` (0 is every frame), in place of `body`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_hz: Option<f32>,
+    /// The face's timing by name, as `body`. Left out: the scene's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub face: Option<Beat>,
+    /// The face's updates per second, `0..=60`, in place of `face`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub face_hz: Option<f32>,
+    /// Whether hair and cloth hold with the body (the drawn look) or keep moving between held poses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_secondary: Option<bool>,
+}
+
+/// A named animation beat at 24 fps.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Beat {
+    /// Every frame: smooth.
+    Ones,
+    /// A new pose every second frame at 24 fps: 12 a second.
+    Twos,
+    /// A new pose every third frame at 24 fps: 8 a second.
+    Threes,
+}
+
+impl Beat {
+    /// Poses per second.
+    pub fn hz(self) -> f32 {
+        match self {
+            Self::Ones => 0.0,
+            Self::Twos => 12.0,
+            Self::Threes => 8.0,
+        }
+    }
+}
+
+/// `named` or `hz` (not both), checked to `0..=60`.
+fn rate(field: &str, named: Option<Beat>, hz: Option<f32>) -> Result<Option<f32>, OpError> {
+    match (named, hz) {
+        (Some(_), Some(_)) => Err(OpError::invalid(format!("{field}_hz"), format!("give `{field}` or `{field}_hz`, not both"))),
+        (Some(beat), None) => Ok(Some(beat.hz())),
+        (None, Some(hz)) if hz.is_finite() && (0.0..=60.0).contains(&hz) => Ok(Some(hz)),
+        (None, Some(hz)) => Err(OpError::invalid(format!("{field}_hz"), format!("{hz} is outside 0 to 60 a second"))
+            .hint("0 moves every frame; 12 is on twos and 8 on threes at 24 fps")),
+        (None, None) => Ok(None),
+    }
+}
+
+impl Op for SetTiming {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "stage.set_timing",
+            summary: "Time a scene's cast like drawn animation: poses held on twos or threes (or any rate) while the \
+                      camera and render stay smooth, the face on its own beat, hair and cloth held or flowing. `ones` \
+                      moves every frame again.",
+            kind: OpKind::Edit,
+            scope: Scope::EditScene,
+            undo: Undo::Auto,
+        }
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let body = rate("body", self.body, self.body_hz)?;
+        let face = rate("face", self.face, self.face_hz)?;
+        let mut edit = SceneEdit::open(ctx.doc, self.scene.as_ref())?;
+        let timing = &mut edit.def.scene.timing;
+        timing.body_hz = body.unwrap_or(timing.body_hz);
+        timing.face_hz = face.unwrap_or(timing.face_hz);
+        timing.hold_secondary = self.hold_secondary.unwrap_or(timing.hold_secondary);
+        let now = *timing;
+        let id = edit.id.clone();
+        let plan = edit.finish(ctx, serde_json::Value::Null)?;
+        let output = json!({
+            "scene": id.as_str(),
+            "body_hz": now.body_hz,
+            "face_hz": now.face_hz,
+            "hold_secondary": now.hold_secondary,
+            "changed": changed(&plan.patch),
+        });
+        Ok(Plan { output: Some(output), ..plan })
+    }
+}
+
+register_op!(SetTiming);
+
+/// Sets how a scene's cast squashes and stretches: bodies stretch as they move up or down and squash when that motion
+/// stops or turns, keeping their volume. Drawn only: the rig, the physics and the face see the body as posed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [{"preset": "cartoon"}, {"preset": "subtle"}, {"preset": "rubber", "limit": 0.3}, {"stretch": 0.08, "squash": 0.15}, {"preset": "off"}],
+    "x-omuzaki-fixture" = "scenes"
+))]
+pub struct SetSquash {
+    /// The scene; the one the project opens in when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<SceneId>,
+    /// A starting point by name: `off`, `subtle` (a lively body that still reads as solid), `cartoon` (the classic
+    /// bounce) or `rubber` (a soft, jiggling one). The fields below adjust it; left out, they adjust the scene's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<SquashPreset>,
+    /// Stretch for each metre per second the body moves up or down, `0..=1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stretch: Option<f32>,
+    /// Squash for each metre per second of the weight's lag at a sudden stop or start, `0..=1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub squash: Option<f32>,
+    /// How fast the weight bounces back after an impact, hertz, `0.5..=12`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounce_hz: Option<f32>,
+    /// How quickly the bounce dies, `0.05..=1` (1 settles with no wobble).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub damping: Option<f32>,
+    /// The most the height changes either way, as a share of it, `0..=0.6`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<f32>,
+}
+
+/// A named squash and stretch.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SquashPreset {
+    /// None: the body as posed.
+    Off,
+    /// A lively body that still reads as solid.
+    Subtle,
+    /// The classic cartoon bounce.
+    Cartoon,
+    /// A soft body that jiggles after every landing.
+    Rubber,
+}
+
+impl SquashPreset {
+    /// The settings it names.
+    pub fn settings(self) -> Squash {
+        match self {
+            Self::Off => Squash::OFF,
+            Self::Subtle => Squash { stretch: 0.04, squash: 0.08, bounce_hz: 3.5, damping: 0.55, limit: 0.1 },
+            Self::Cartoon => Squash { stretch: 0.1, squash: 0.2, bounce_hz: 3.0, damping: 0.35, limit: 0.25 },
+            Self::Rubber => Squash { stretch: 0.16, squash: 0.35, bounce_hz: 4.5, damping: 0.18, limit: 0.4 },
+        }
+    }
+}
+
+/// `value` if given, checked to `lo..=hi`.
+fn squash_field(field: &str, value: Option<f32>, lo: f32, hi: f32) -> Result<Option<f32>, OpError> {
+    match value {
+        Some(v) if !(v.is_finite() && (lo..=hi).contains(&v)) => {
+            Err(OpError::invalid(field, format!("{v} is outside {lo} to {hi}")))
+        }
+        _ => Ok(value),
+    }
+}
+
+impl Op for SetSquash {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "stage.set_squash",
+            summary: "Give a scene's cast squash and stretch: bodies stretch as they rise or fall and squash on a landing \
+                      or a push-off, keeping their volume, then bounce back. A preset (`subtle`, `cartoon`, `rubber`) or \
+                      the gains by hand; `off` draws bodies as posed.",
+            kind: OpKind::Edit,
+            scope: Scope::EditScene,
+            undo: Undo::Auto,
+        }
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let stretch = squash_field("stretch", self.stretch, 0.0, 1.0)?;
+        let squash = squash_field("squash", self.squash, 0.0, 1.0)?;
+        let bounce = squash_field("bounce_hz", self.bounce_hz, 0.5, 12.0)?;
+        let damping = squash_field("damping", self.damping, 0.05, 1.0)?;
+        let limit = squash_field("limit", self.limit, 0.0, 0.6)?;
+        let mut edit = SceneEdit::open(ctx.doc, self.scene.as_ref())?;
+        let q = &mut edit.def.scene.squash;
+        if let Some(preset) = self.preset {
+            *q = preset.settings();
+        }
+        q.stretch = stretch.unwrap_or(q.stretch);
+        q.squash = squash.unwrap_or(q.squash);
+        q.bounce_hz = bounce.unwrap_or(q.bounce_hz);
+        q.damping = damping.unwrap_or(q.damping);
+        q.limit = limit.unwrap_or(q.limit);
+        let now = *q;
+        let id = edit.id.clone();
+        let plan = edit.finish(ctx, serde_json::Value::Null)?;
+        let output = json!({
+            "scene": id.as_str(),
+            "stretch": now.stretch,
+            "squash": now.squash,
+            "bounce_hz": now.bounce_hz,
+            "damping": now.damping,
+            "limit": now.limit,
+            "on": !now.is_off(),
+            "changed": changed(&plan.patch),
+        });
+        Ok(Plan { output: Some(output), ..plan })
+    }
+}
+
+register_op!(SetSquash);
+
