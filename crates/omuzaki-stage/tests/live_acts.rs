@@ -14,14 +14,16 @@ mod support;
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use omuzaki_anim::body::LivingBody;
 use omuzaki_anim::retarget::ArkitRetarget;
 use omuzaki_anim::{BusAnimator, BusAnimatorParams};
 use omuzaki_anim_api::{
-    Bus, Channel, ChannelBuf, Cues, DeviceProfile, FrameSource, HumanoidBone, HumanoidPose, LifeConfig, LifeLayer,
-    Ownership, Source, Tick,
+    BodyStyle, Bus, Channel, ChannelBuf, Cues, DeviceProfile, FrameSource, HumanoidBone, HumanoidPose, LifeConfig,
+    LifeLayer, Ownership, Source, Tick,
 };
 use omuzaki_anim_mock::track::{SyntheticSpec, TrackReplay, synthetic_track};
 use omuzaki_core::time::{FakeClock, Seconds};
@@ -101,11 +103,16 @@ impl Rig {
 
     /// A performer reading `source`, or nothing, whose life layer leaves the bus alone.
     fn new(source: Option<Box<dyn FrameSource>>) -> Self {
+        Self::animated(source, Box::new(BusAnimator::new(BusAnimatorParams::default())))
+    }
+
+    /// The same with `animator` posing the body.
+    fn animated(source: Option<Box<dyn FrameSource>>, animator: Box<dyn omuzaki_anim_api::Animator>) -> Self {
         let parts = PerformerParts {
             source: Box::new(NoSource),
             retarget: Box::new(ArkitRetarget::new(DeviceProfile::Webcam)),
             life: Box::new(Still),
-            animator: Box::new(BusAnimator::new(BusAnimatorParams::default())),
+            animator,
         };
         Self::with(Performer::new(parts, ChannelBuf::NEUTRAL, HumanoidPose::REST), source)
     }
@@ -434,4 +441,134 @@ fn a_drive_binding_is_saved_with_the_scene_and_its_undo_reaches_the_live_perform
         })
         .unwrap_err();
     assert_eq!(error.field.as_deref(), Some("weight"), "{error}");
+}
+
+/// The world rotation of `bone` in `pose`, from the hips.
+fn world(pose: &HumanoidPose, bone: HumanoidBone) -> omuzaki_core::glam::Quat {
+    let mut chain = vec![bone];
+    while let Some(parent) = chain.last().and_then(|b| b.parent()) {
+        chain.push(parent);
+    }
+    chain.iter().rev().fold(omuzaki_core::glam::Quat::IDENTITY, |q, b| q * pose.get(*b))
+}
+
+#[test]
+fn act_react_knocks_the_tracked_body_and_hands_it_back_exactly_with_the_face_untouched() {
+    omuzaki_stage::link();
+    let living = || {
+        let track = synthetic_track(&SyntheticSpec { seconds: 60.0, ..SyntheticSpec::default() });
+        Rig::animated(Some(Box::new(TrackReplay::new(track))), Box::new(LivingBody::new(BodyStyle::default(), 3)))
+    };
+    let (mut plain, mut knocked) = (living(), living());
+    plain.run_for(1.0);
+    knocked.run_for(1.0);
+    let answer = run(&knocked.services(), "act.react", json!({ "at": "face", "strength": 1.5 })).unwrap();
+    assert!((answer["back_in_s"].as_f64().unwrap() - 1.2).abs() < 1e-6, "{answer}");
+    let mut furthest = 0.0_f32;
+    for frame in 0..90 {
+        let (a, b) = (plain.step(), knocked.step());
+        assert_eq!(a.values, b.values, "the face is the tracker's on every step");
+        let off = world(&a.pose, HumanoidBone::Head).angle_between(world(&b.pose, HumanoidBone::Head)).to_degrees();
+        furthest = furthest.max(off);
+        // The command lands on the step after the call; 1.2 s later the body is the tracked one again, exactly.
+        if frame >= 74 {
+            assert_eq!(a.pose, b.pose, "back exactly on step {frame}");
+        }
+    }
+    assert!(furthest > 8.0, "the head was knocked: {furthest} degrees");
+    // Out of range is refused, naming the field.
+    let e = run(&knocked.services(), "act.react", json!({ "strength": 9 })).unwrap_err();
+    assert_eq!((e.code, e.field.as_deref()), (ErrorCode::Invalid, Some("strength")), "{e:?}");
+}
+
+/// A motion-capture skeleton with a spine and a left arm, and four seconds of motion on it at 30 fps: the spine turns
+/// and the elbow folds and opens.
+fn mocap() -> (String, String) {
+    let bone = |id: u32, name: &str, dir: &str, axis: &str, dof: &str| {
+        format!(
+            "  begin\n    id {id}\n    name {name}\n    direction {dir}\n    length 4\n    axis {axis} XYZ\n    dof {dof}\n  end\n"
+        )
+    };
+    let mut asf = ":units\n  length 0.45\n:bonedata\n".to_owned();
+    asf += &bone(1, "lowerback", "0 1 0", "0 0 0", "rx ry rz");
+    asf += &bone(2, "lhumerus", "1 0 0", "0 0 -90", "rx ry rz");
+    asf += &bone(3, "lradius", "1 0 0", "0 0 -90", "rx");
+    asf += ":hierarchy\n  begin\n    root lowerback\n    lowerback lhumerus\n    lhumerus lradius\n  end\n";
+    let mut amc = ":FULLY-SPECIFIED\n:DEGREES\n".to_owned();
+    for k in 0..120 {
+        let t = k as f32 / 30.0;
+        let (turn, elbow) = (25.0 * (1.3 * t).sin(), 45.0 + 40.0 * (2.1 * t).sin());
+        writeln!(
+            amc,
+            "{}\nroot 0 {} 0 0 0 0\nlowerback 0 {turn} 0\nlhumerus 0 0 -60\nlradius {elbow}",
+            k + 1,
+            30.0 + t
+        )
+        .unwrap();
+    }
+    (asf, amc)
+}
+
+#[test]
+fn an_imported_take_plays_live_through_act_clip_exactly_on_the_living_body() {
+    omuzaki_stage::link();
+    omuzaki_anim::link();
+    let (asf, amc) = mocap();
+    let mut doc = MemDoc::from_value(json!({ "characters": { "kit": { "name": "Kit" } } }));
+    let (actor, clock) = (Actor::Person { name: "performer".into() }, FakeClock::new(Seconds(0.0)));
+    let import = json!({
+        "character": "kit", "id": "talk", "skeleton": {"text": asf}, "motion": {"text": amc}, "fps": 30.0
+    });
+    let op = (find("motion.import").unwrap().decode)(import).unwrap();
+    let planned = op.plan(&OpCtx::new(&doc, &actor, &clock)).unwrap();
+    omuzaki_doc_api::DocWrite::apply(&mut doc, &planned.patch).unwrap();
+    let take = omuzaki_anim::motion::asf::Skeleton::parse(&asf).unwrap().motion(&amc, 30.0, 0.9).unwrap().in_place();
+
+    // A webcam moves the head the whole time; the take is played over it, as recorded.
+    let track = synthetic_track(&SyntheticSpec { seconds: 60.0, ..SyntheticSpec::default() });
+    let mut rig =
+        Rig::animated(Some(Box::new(TrackReplay::new(track))), Box::new(LivingBody::new(BodyStyle::default(), 3)));
+    rig.run_for(0.5);
+    let services = rig.services();
+    let ctx = OpCtx::new(&doc, &actor, &clock).with_services(&services);
+    let args = json!({ "clip": "talk", "character": "kit", "fade_s": 0.0, "over_tracking": true });
+    let op = (find("act.clip").unwrap().decode)(args).unwrap();
+    op.plan(&ctx).unwrap();
+    // The command lands on the next step, which starts the act; the step after shows it one step in, and from there
+    // the body is the take on every bone, the tracked head and the living body's motion included.
+    rig.step();
+    let mut worst = 0.0_f32;
+    for n in 0..230_u32 {
+        let step = rig.step();
+        let theirs = take.sample((n + 1) as f32 / 60.0);
+        for bone in HumanoidBone::ALL {
+            let (a, b) = (step.pose.get(bone), theirs.get(bone));
+            worst = worst.max((a - b).length().min((a + b).length()));
+        }
+        assert!((step.pose.hips_offset - theirs.hips_offset).length() < 1e-6, "step {n}");
+    }
+    assert!(worst < 1e-6, "the live body is the take: {worst} off");
+
+    // Under tracking (the default) the webcam keeps the head, and the living body hands the rest over in half a
+    // second, after which every other bone is the take.
+    let mut rig = Rig::animated(None, Box::new(LivingBody::new(BodyStyle::default(), 3)));
+    rig.run_for(0.5);
+    let services = rig.services();
+    let ctx = OpCtx::new(&doc, &actor, &clock).with_services(&services);
+    let args = json!({ "clip": "talk", "character": "kit", "fade_s": 0.0 });
+    (find("act.clip").unwrap().decode)(args).unwrap().plan(&ctx).unwrap();
+    rig.step();
+    let mut worst = 0.0_f32;
+    for n in 0..230_u32 {
+        let step = rig.step();
+        let theirs = take.sample((n + 1) as f32 / 60.0);
+        if n < 30 {
+            continue;
+        }
+        for bone in HumanoidBone::ALL.into_iter().filter(|b| !matches!(b, HumanoidBone::Neck | HumanoidBone::Head)) {
+            let (a, b) = (step.pose.get(bone), theirs.get(bone));
+            worst = worst.max((a - b).length().min((a + b).length()));
+        }
+    }
+    assert!(worst < 1e-6, "under the head the live body is the take: {worst} off");
 }

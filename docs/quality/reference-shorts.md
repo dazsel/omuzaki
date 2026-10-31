@@ -59,6 +59,11 @@ issues are under the epic.
    `quality: "live"` for a quick draft).
 4. `python3 tools/reference-loop/compare.py ours.webm reference.mp4 OUT` (OUT outside the repository) and read the
    sheets pair by pair: face, framing, light, captions, timing.
-5. Score it: `python3 tools/reference-loop/parity.py ours.webm reference.mp4 OUT --made-with "..." --assets <the
-   textures and layers it was built from>` for PSNR, SSIM and the worst frames (it refuses copied assets).
+5. Score it with `parity.loop` (MCP, the CLI or a script; `omuzaki-parity`), on frames extracted from both videos
+   (`ffmpeg -i ours.webm ours/%04d.png`): `parity.target.set` names the reference frames once, then every iteration
+   is `parity.loop { target, ours: { pattern: "ours/%04d.png", count }, made_with, previous }`. It refuses a render
+   built from reference pixels, lines the frames up in time, and reports `done` only when the exact difference map is
+   0 on every frame, with the worst frames and regions, what to change (camera, colour, shape), an evidence sheet and
+   the change since the previous run. `parity.overlay` draws onion, exact, delta E, edges, wipe and the rest for any
+   one frame. (`tools/reference-loop/parity.py` remains for a quick PSNR and SSIM pass straight on the videos.)
 6. File each gap under the epic (#2393) with what "matches" means, close them in chunks, and render again.

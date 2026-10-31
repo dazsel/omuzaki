@@ -1,4 +1,4 @@
-//! The shape field: dials, the age's dials and sculpt strokes as one displacement of a part's vertices, applied in
+//! The shape field: dials, the anatomy, the age's dials and sculpt strokes as one displacement of a part's vertices, applied in
 //! [`build_part`](crate::build_part) after the part is built and scaled to its stature.
 //!
 //! The field is a function of a vertex's position and its [`Membership`] (its skin weights by region): dials sum at
@@ -276,6 +276,33 @@ fn dial_terms(def: &DesignDef, body: Option<&BodyFrame>, head: Option<&HeadFrame
                 }
                 let mirror = side == Some(DialSide::Right);
                 if let Some(term) = place_effect(effect, v, mirror, body, head) {
+                    terms.push(term);
+                }
+            }
+        }
+    }
+    // The anatomy (#2614): each structure's change of thickness at its place, with the age's descent.
+    let laxity = def.anatomy.factor(super::Factor::Laxity);
+    for structure in &library.structures {
+        let sides: &[Option<DialSide>] =
+            if structure.sided { &[Some(DialSide::Left), Some(DialSide::Right)] } else { &[None] };
+        let descent = def.age.map_or(0.0, |age| structure.descent_at(age, laxity));
+        let mut effects = None;
+        for &side in sides {
+            let v = structure.value(&def.anatomy, def.age, side);
+            if v == 0.0 {
+                continue;
+            }
+            let mirror = side == Some(DialSide::Right);
+            for effect in effects.get_or_insert_with(|| structure.effects_at(descent)).iter() {
+                if let Some(term) = place_effect(effect, v, mirror, body, head) {
+                    terms.push(term);
+                }
+            }
+        }
+        for (effect, v) in structure.sag_at(descent) {
+            for &side in sides {
+                if let Some(term) = place_effect(&effect, v, side == Some(DialSide::Right), body, head) {
                     terms.push(term);
                 }
             }

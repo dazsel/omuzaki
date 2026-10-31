@@ -10,9 +10,11 @@ use serde_json::json;
 use super::{load, store};
 use crate::ops::character::access;
 
-/// Sets a character's age in years, one control for every part: the age-aware dials (a child's full cheeks and small
-/// jaw, the hollowing temples and dropping jowls of age), the skin's folds, spots and flush and the hair's grey, all
-/// re-derived at build time and added to whatever the dials and layers already say. Leave `age` out to remove it (the
+/// Sets a character's age in years, one control for every part, through the anatomy: a child's full cheeks, small jaw
+/// and nose; then fat pads that deflate and slide toward the jowl, bone that recedes round the eye and the jaw, a
+/// lengthening nose, and folds cut into the skin (the nasolabial fold, marionette lines, crow's feet, the forehead);
+/// with the skin's cavities, spots and flush and the hair's grey, all re-derived at build time and added to whatever
+/// the anatomy, the dials and the layers already say. Leave `age` out to remove it (the
 /// template's own look).
 ///
 /// Works in every look: the shape moves the same way, and how far the folds and spots show follows the look's style
@@ -60,16 +62,17 @@ impl Op for CharacterSetAge {
         let changes = store(ctx, &self.character, &design)?;
         let moved: Vec<String> = match (self.age, design_library()) {
             (Some(age), Ok(lib)) => lib
-                .dials
+                .structures
                 .iter()
-                .filter(|d| d.at_age(age).abs() > 0.02)
-                .map(|d| format!("{} {:+.2}", d.id, d.at_age(age)))
+                .filter(|s| s.at_age(age).abs() > 0.05)
+                .map(|s| format!("{} {:+.1}", s.id, s.at_age(age)))
+                .chain(lib.dials.iter().filter(|d| d.at_age(age).abs() > 0.02).map(|d| format!("{} {:+.2}", d.id, d.at_age(age))))
                 .collect(),
             _ => Vec::new(),
         };
         let layers = self.age.and_then(|age| design_library().ok().map(|l| l.age.at(age)));
         let summary = json!({
-            "character": self.character, "age": self.age, "dials": moved,
+            "character": self.character, "age": self.age, "anatomy": moved,
             "skin": layers.map(|l| json!({"grey": l.grey, "wrinkles": l.wrinkles, "spots": l.spots, "flush": l.flush})),
             "changed": !changes.is_empty(),
         });

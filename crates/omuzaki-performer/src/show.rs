@@ -4,7 +4,9 @@
 //! deterministically and the App runs it on the performer thread every few milliseconds. Each step:
 //!
 //! 1. **hears** ([`Ears`]): the floor (the human always has it), addressing and the follow-up window, barge-in on
-//!    `Held` with one resume after `Rejected` or a backchannel, echo, mute and private turns;
+//!    `Held` with one resume after `Rejected` or a backchannel, echo, mute and private turns; and listens with its
+//!    face while the person talks (#2453): a listening face from the decision layer on their partial words about once
+//!    a second, and a nod on each backchannel cue of their voice;
 //! 2. **thinks** ([`Brain`]): pulls the reply as it streams, chunks it into sentences and queues each one on the
 //!    [`Voice`] at once, within the 20 s per-turn cap, holding them while the human talks (dropped after 3 s);
 //! 3. **decides** (#2348): asks the decision layer which face fits the line or the person, and falls back to the
@@ -29,8 +31,9 @@ use omuzaki_performer_api::event::{PerformerEvent, SafetyVerdict, TranscriptLine
 use omuzaki_performer_api::ids::{PersonaRevision, VoiceId};
 use omuzaki_performer_api::intent::{Intent, StyleTag};
 use omuzaki_performer_api::limits::{
-    FLOOR_WAIT_S, FOLLOW_UP_WINDOW_S, INTENT_BURST, INTENTS_PER_S, MOVE_INTERVAL_S, PROACTIVE_INTERVAL_S,
-    PROACTIVE_SILENCE_S, SAME_EMOTE_COOLDOWN_S, TALK_SHARE_MAX, TALK_SHARE_WINDOW_S, TURN_SPEECH_S,
+    BACKCHANNEL_NOD, FLOOR_WAIT_S, FOLLOW_UP_WINDOW_S, INTENT_BURST, INTENTS_PER_S, LISTEN_FACE_INTERVAL_S,
+    MOVE_INTERVAL_S, NOD_GAP_S, PROACTIVE_INTERVAL_S, PROACTIVE_SILENCE_S, REACTION_APEX, SAME_EMOTE_COOLDOWN_S,
+    SPEAKING_DAMP, TALK_SHARE_MAX, TALK_SHARE_WINDOW_S, TURN_SPEECH_S,
 };
 use omuzaki_performer_api::speech::{SpeakHow, SpeechHandle, SpeechState, Voice};
 use omuzaki_performer_api::stage::{Inventory, Stage, StageError};
@@ -286,6 +289,11 @@ impl Turn {
         self.queued.iter().any(|q| !q.handle.state().is_final())
     }
 
+    /// Whether a chunk is sounding now (not only queued or synthesising).
+    fn audible(&self) -> bool {
+        self.queued.iter().any(|q| matches!(q.handle.state(), SpeechState::Playing { .. }))
+    }
+
     /// Speech queued so far: each chunk's length as the voice reports it, or an estimate until it does.
     fn estimated_s(&self) -> f64 {
         self.queued
@@ -463,6 +471,9 @@ pub struct Show {
     spoken: VecDeque<(f64, f64, String)>,
     echoes: u64,
     last_proactive: Option<Seconds>,
+    /// When the last listening face (from a partial) and the last listener's nod were asked for.
+    last_listen_face: Option<Seconds>,
+    last_nod: Option<Seconds>,
 }
 
 impl Show {
@@ -496,6 +507,8 @@ impl Show {
             spoken: VecDeque::new(),
             echoes: 0,
             last_proactive: None,
+            last_listen_face: None,
+            last_nod: None,
         }
     }
 
@@ -609,9 +622,52 @@ impl Show {
                     self.last_heard = Some(end);
                     self.heard_final(now, utterance, &text, start, end, private);
                 }
+                Heard::Partial { text, private, .. } => self.heard_partial(now, &text, private),
+                Heard::Backchannel { .. } => self.listener_nod(now),
                 _ => {}
             }
         }
+    }
+
+    /// The person's words so far, while they talk: a listening face from the decision layer, at most once per
+    /// [`LISTEN_FACE_INTERVAL_S`]. Private words never reach the decision layer, and the face stays still while the
+    /// performer itself is speaking.
+    fn heard_partial(&mut self, now: Seconds, text: &str, private: bool) {
+        if private || !self.config.reactions || self.talking_since.is_none() || self.speaking() {
+            return;
+        }
+        if self.last_listen_face.is_some_and(|t| now.0 - t.0 < LISTEN_FACE_INTERVAL_S) || self.pending.is_some() {
+            return;
+        }
+        self.last_listen_face = Some(now);
+        self.ask(now, Moment::Listening, text.to_owned(), None);
+    }
+
+    /// A backchannel cue in the person's voice: a nod, while they talk and the performer doesn't, at most once per
+    /// [`NOD_GAP_S`].
+    fn listener_nod(&mut self, now: Seconds) {
+        if !self.config.reactions || self.talking_since.is_none() || self.speaking() {
+            return;
+        }
+        if self.last_nod.is_some_and(|t| now.0 - t.0 < NOD_GAP_S) || self.turn.as_ref().is_some_and(|t| t.private) {
+            return;
+        }
+        self.last_nod = Some(now);
+        let turn = self.turn.as_ref().map_or(0, |t| t.number);
+        let nod = Intent::nod(BACKCHANNEL_NOD);
+        let mut lines = Vec::new();
+        let checked = self.check(turn, &nod, &mut lines);
+        for line in lines {
+            self.push(now, line);
+        }
+        if let Some(intent) = checked.and_then(|i| self.admit_at(turn, &i, Source::Reaction, now)) {
+            self.apply(turn, now, intent);
+        }
+    }
+
+    /// Whether the performer's own voice is playing now (not cut by the person).
+    fn speaking(&self) -> bool {
+        self.turn.as_ref().is_some_and(|t| t.held.is_none() && t.playing())
     }
 
     fn heard_final(&mut self, now: Seconds, utterance: u64, text: &str, start: Seconds, end: Seconds, private: bool) {
@@ -939,6 +995,12 @@ impl Show {
         let mut state: Vec<String> = self.context.iter().cloned().collect();
         if moment == Moment::Speaking {
             state.push(format!("{}: {line}", self.persona_name));
+        } else {
+            // The person's line, unless it is already the last one remembered (a final is remembered before it asks).
+            let heard = format!("person: {line}");
+            if state.last() != Some(&heard) {
+                state.push(heard);
+            }
         }
         let ask = Ask::new(moment, state.join("\n"), questions);
         let ticket = match self.parts.decider.as_mut() {
@@ -995,7 +1057,17 @@ impl Show {
         for line in lines {
             self.push(now, line);
         }
+        // Damped only while its voice is sounding: the face that opens a reply, decided before the first chunk
+        // plays, keeps its full strength.
+        let audible = self.turn.as_ref().is_some_and(|t| t.held.is_none() && t.audible());
+        let damp = if audible { SPEAKING_DAMP } else { 1.0 };
         for intent in checked {
+            let intent = match intent {
+                Intent::Emote { expression, intensity, hold_s, .. } => {
+                    Intent::emote(expression, intensity.min(REACTION_APEX) * damp, hold_s)
+                }
+                other => other,
+            };
             if let Some(intent) = self.admit_at(pending.turn, &intent, Source::Reaction, now) {
                 self.apply(pending.turn, now, intent);
             }

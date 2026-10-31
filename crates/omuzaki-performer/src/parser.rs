@@ -276,6 +276,11 @@ pub fn parse_tag(run: &str) -> Result<Tag, ParseIssueKind> {
             [p] => Tag::Intent(Intent::move_to(p.parse::<PlaceId>().map_err(|_| bad)?)),
             _ => return Err(bad),
         },
+        "nod" => match args.as_slice() {
+            [] => Tag::Intent(Intent::nod(1.0)),
+            [v] => Tag::Intent(Intent::nod(number(v)?)),
+            _ => return Err(bad),
+        },
         "style" => {
             if args.is_empty() {
                 return Err(bad);

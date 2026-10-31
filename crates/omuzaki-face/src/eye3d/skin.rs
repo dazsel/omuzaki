@@ -17,6 +17,7 @@ pub fn texture(design: &EyeDesign, width: u32) -> Canvas {
     if style > 0.0 {
         ink(&mut canvas, design, style);
     }
+    super::paint::skin(&mut canvas, design);
     canvas
 }
 

@@ -514,8 +514,9 @@ fn evidence_texture(
 /// Five `MToon` spheres under a key light and a hemisphere, at time 0.8 s: the shade and rim; a hard, texture-shifted
 /// terminator; the matcap; a normal map with an emissive texture; a scrolling, turning base texture. With
 /// `OMUZAKI_RENDER_OUT=<dir>` it saves `mtoon-omuzaki.png` (as the spec says), `mtoon-omuzaki-gi0.png` (GI
-/// equalisation off, as three-vrm draws) and the textures. The three-vrm page on the `evidence/render-live` branch
-/// (`592/three-vrm-page.html`) draws the same scene from the same numbers and textures.
+/// equalisation off, as three-vrm draws) and the textures. The three-vrm page in `tests/three_vrm/` draws the same
+/// scene from the same numbers and textures (`node render.mjs` there, with `three` and the `MToon` package in its
+/// `node_modules` and the saved textures in its `out/`).
 #[test]
 #[allow(clippy::too_many_lines, reason = "one scene, five materials, written out so they read like the three-vrm page")]
 fn mtoon_spheres_evidence() {

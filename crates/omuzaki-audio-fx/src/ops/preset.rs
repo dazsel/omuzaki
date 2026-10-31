@@ -21,8 +21,8 @@ impl Op for Kinds {
     fn meta() -> OpMeta {
         OpMeta {
             name: "audio.fx.kinds",
-            summary: "List the voice-effect kinds (EQ, gate, compressor, pitch, robot, radio, limiter, ...) with each \
-                      parameter's unit, range and default, and each kind's latency.",
+            summary: "List the voice-effect kinds (EQ, gate, compressor, pitch, robot, radio, limiter, noise \
+                      suppression, ...) with each parameter's unit, range and default, and each kind's latency.",
             kind: OpKind::Query,
             scope: Scope::Read,
             undo: Undo::None,

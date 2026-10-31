@@ -154,6 +154,27 @@ impl Segmenter {
         }
     }
 
+    /// Changes how long a pause must last to end the segment in progress, from the next frame on (the
+    /// [`TurnTaker`](crate::turn::TurnTaker) sets it per pause). The configured `min_silence_ms` is the default.
+    pub fn set_min_silence_ms(&mut self, ms: u32) {
+        self.cfg.min_silence_ms = ms;
+    }
+
+    /// Whether a segment is open (speech has started and not yet ended).
+    #[must_use]
+    pub const fn is_open(&self) -> bool {
+        matches!(self.state, State::Speech { .. })
+    }
+
+    /// Inside an open segment, the frames since the last speech frame (0 while speech goes on); `None` when idle.
+    #[must_use]
+    pub const fn pause_frames(&self) -> Option<usize> {
+        match self.state {
+            State::Speech { last_speech_frame, .. } => Some(self.next_frame - 1 - last_speech_frame),
+            State::Idle => None,
+        }
+    }
+
     /// Forgets a segment in progress without reporting it (the microphone was muted: nothing was heard). The stream
     /// position carries on.
     pub fn abandon(&mut self) {
