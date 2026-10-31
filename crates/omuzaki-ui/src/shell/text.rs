@@ -86,6 +86,7 @@ words! {
     PaletteNothing = "ui-shell-palette-nothing" => "No results for '{query}'",
     PalettePanel = "ui-shell-palette-panel" => "Panel",
     PaletteWorkspace = "ui-shell-palette-workspace" => "Workspace",
+    PaletteDescribe = "ui-shell-palette-describe" => "Make a character from these words",
     PaletteRun = "ui-shell-palette-run" => "Run",
     PaletteDryRun = "ui-shell-palette-dry-run" => "Dry run",
     PaletteFixFields = "ui-shell-palette-fix-fields" => "Fix the fields marked above first",

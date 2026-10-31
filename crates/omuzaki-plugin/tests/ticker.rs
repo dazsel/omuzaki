@@ -30,10 +30,9 @@ fn dropping_the_engine_joins_the_ticker() {
     }
     assert_eq!(ticker_threads(), 1);
     drop(engine);
-    // A joined thread can stay listed for a moment: the join returns when the kernel clears its id, a little before
-    // the task leaves `/proc` (#2661). A thread left running stays listed for the whole wait.
-    let gone = std::time::Instant::now();
-    while ticker_threads() != 0 && gone.elapsed() < std::time::Duration::from_secs(5) {
+    // The join returns once the thread has exited; the kernel drops its `/proc` entry a moment later.
+    let reaped = std::time::Instant::now();
+    while ticker_threads() != 0 && reaped.elapsed() < std::time::Duration::from_secs(5) {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     assert_eq!(ticker_threads(), 0, "the ticker thread is joined, not left running");

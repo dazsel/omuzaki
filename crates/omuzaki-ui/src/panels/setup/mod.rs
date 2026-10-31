@@ -138,6 +138,8 @@ pub struct SetupPanel {
     read_at: Option<f64>,
     /// The Import card's drop zone is open.
     importing: bool,
+    /// The Describe card's text box is open, with its words.
+    describing: Option<std::cell::RefCell<String>>,
     /// Where Go-live's button asked to go, while the flow finishes.
     exit: Option<Exit>,
     /// The egui frame the panel was last drawn in.
@@ -189,6 +191,15 @@ impl SetupPanel {
                     events.push_back(Event::ChooseCharacter(omuzaki_setup::CharacterChoice::ImportVrm));
                 }
                 Ask::OpenImport => self.importing = true,
+                Ask::OpenDescribe => {
+                    self.describing.get_or_insert_with(Default::default);
+                }
+                Ask::Describe(words) => {
+                    if let Some(host) = self.host.as_mut() {
+                        host.stage_description(words);
+                    }
+                    events.push_back(Event::ChooseCharacter(omuzaki_setup::CharacterChoice::FromSheetOrIdea));
+                }
                 Ask::Agent => {
                     if let Some(shell) = ctx.view::<ShellRequests>() {
                         shell.push(ShellRequest::ShowPanel(super::agent::ID));
@@ -228,6 +239,10 @@ impl SetupPanel {
                 for answer in host.run_effect(runner, actor, &effect).into_iter().rev() {
                     events.push_front(answer);
                 }
+                // A character made from words opens in the edit panels, so the person sees what the words made.
+                if let Some(id) = host.take_opened() {
+                    crate::panels::edit::EditFocus::from_ctx(ctx).open(Some(id));
+                }
             }
         }
     }
@@ -256,7 +271,7 @@ impl Panel for SetupPanel {
         let reopened = frame > self.drawn.saturating_add(1);
         self.drawn = frame;
         if reopened && self.flow.as_ref().is_some_and(|flow| flow.progress().finished) {
-            (self.flow, self.probes, self.exit, self.importing) = (None, None, None, false);
+            (self.flow, self.probes, self.exit, self.importing, self.describing) = (None, None, None, false, None);
         }
         let flow = self.flow.get_or_insert_with(|| {
             let resume = ctx.view::<FirstRun>().map(FirstRun::progress).unwrap_or_default();
@@ -278,6 +293,7 @@ impl Panel for SetupPanel {
             host: host.as_ref(),
             skipped: &skipped,
             importing: self.importing,
+            describing: self.describing.as_ref(),
         };
         // The dock pads the panel's card; the flow adds no margin of its own.
         ui.scope(|ui| {

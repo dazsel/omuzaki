@@ -285,7 +285,8 @@ fn problems_show_after_a_pause_and_f8_goes_to_each() {
 fn ops_completes_areas_then_ops_then_a_calls_fields() {
     let mut h = rig();
     focus_editor(&mut h);
-    h.event(Event::Text("ops::par".into()));
+    // `par` alone would offer `parity` first.
+    h.event(Event::Text("ops::part".into()));
     h.run_steps(3);
     assert!(h.query_by_label_contains("part  ").is_some(), "the area list offers part: {:#?}", all_strings(&h));
     press(&mut h, Modifiers::NONE, Key::Enter);

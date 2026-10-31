@@ -1,7 +1,7 @@
 //! `part.add`: put a new part of any registered kind into a character.
 
 use omuzaki_char_api::{
-    CharId, CharacterDef, PartDef, PartId, PartKindId, PartKindRegistration, find_kind, paths,
+    Attach, CharId, CharacterDef, PartDef, PartId, PartKindId, PartKindRegistration, find_kind, paths,
 };
 use omuzaki_doc_api::Value;
 use omuzaki_face_api::ParamErrors;
@@ -57,6 +57,11 @@ pub struct PartAdd {
     #[serde(default)]
     #[schemars(with = "Option<std::collections::BTreeMap<String, Value>>")]
     pub params: Option<Value>,
+    /// Where the part is fixed: a bone, or another part's anchor (`accessory.list_anchors`). Neckwear hangs on its
+    /// shirt: a tie or collar needs `{"to": "anchor", "part": "shirt", "anchor": "collar_ring"}`. Leave out for a
+    /// part that follows its kind's own placement.
+    #[serde(default)]
+    pub attach: Option<Attach>,
 }
 
 /// The starting parameters: the kind's defaults, or `given` laid over them, normalised through the kind.
@@ -147,13 +152,16 @@ impl Op for PartAdd {
         if let Some(parent) = &self.parent {
             access::part(&def, &self.character, parent, "parent")?;
         }
+        if let Some(Attach::Anchor { part, .. }) = &self.attach {
+            access::part(&def, &self.character, part, "attach/part")?;
+        }
         let default_layer = tree::layer_of(kind);
         let part = PartDef {
             kind: self.kind.clone(),
             parent: self.parent.clone(),
             enabled: true,
             layer: self.layer.unwrap_or(default_layer),
-            attach: None,
+            attach: self.attach.clone(),
             params: starting_params(kind, self.params.as_ref())?,
         };
         let mut after = def.clone();

@@ -13,7 +13,7 @@
 //! The take is the same for every style with the same seed, so two styles compare like for like.
 
 use omuzaki_anim_api::{Animator, BodyStyle, Bus, Channel, Cues, HumanoidBone as B, HumanoidPose, Impact, Tick};
-use omuzaki_core::glam::Quat;
+use omuzaki_core::glam::{Quat, Vec3};
 use omuzaki_core::rng::Rng;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -373,4 +373,117 @@ pub fn measure_reaction(
     }
     out.settled_s = (last_off + 1 - hit_frame) as f32 / TAKE_FPS;
     out
+}
+
+/// How a sequence of poses moves (`measure_poses`): the pose statistics of [`BodyMotion`], plus where the arms rest,
+/// for any body: a living body, a clip a person authored, or a motion-capture take (`motion.import`). Comparing a
+/// living-body style with a recorded performer's take on these numbers says which dial to turn.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PoseMotion {
+    /// Seconds measured.
+    pub seconds: f32,
+    /// Share of the 0.5 s windows with the whole upper body still.
+    pub frozen_share: f32,
+    /// Mean turning speed of the hips, spine and chest, degrees a second.
+    pub torso_deg_s: f32,
+    /// Mean turning speed of the shoulders, arms and wrists, degrees a second.
+    pub arms_deg_s: f32,
+    /// Mean turning speed of the finger bones, degrees a second.
+    pub fingers_deg_s: f32,
+    /// The fastest turn of any bone, degrees a second.
+    pub peak_deg_s: f32,
+    /// The bone that turned fastest.
+    pub peak_bone: String,
+    /// The upper arms' mean angle from hanging straight down, degrees (0 hangs, 90 is the T-pose), both sides.
+    pub arms_from_down_deg: f32,
+    /// The elbows' mean bend, degrees (0 straight).
+    pub elbow_deg: f32,
+    /// Share of the time either wrist is above its elbow: how much of the take is spent with a hand up.
+    pub hand_up_share: f32,
+}
+
+/// The world rotation of `bone` from the hips through its parents.
+fn world(pose: &HumanoidPose, bone: B) -> Quat {
+    let mut q = pose.get(bone);
+    let mut at = bone.parent();
+    while let Some(p) = at {
+        q = pose.get(p) * q;
+        at = p.parent();
+    }
+    q
+}
+
+/// Measures `poses`, one every `1 / fps` seconds.
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // bounded counts
+pub fn measure_poses(poses: &[HumanoidPose], fps: f32) -> PoseMotion {
+    let fps = if fps.is_finite() && fps > 0.0 { fps } else { TAKE_FPS };
+    let window = (FROZEN_WINDOW_S * fps).round().max(1.0) as usize;
+    let finger_bones: Vec<B> = B::ALL
+        .into_iter()
+        .filter(|b| ["Thumb", "Index", "Middle", "Ring", "Little"].iter().any(|f| b.name().contains(f)))
+        .collect();
+    let (mut torso, mut arms, mut fingers, mut peak) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f32);
+    let mut peak_bone = B::Hips;
+    let (mut frozen, mut windows, mut moving) = (0u32, 0u32, false);
+    let (mut from_down, mut elbow, mut up) = (0.0_f64, 0.0_f64, 0u32);
+    let sides = [(B::LeftUpperArm, B::LeftLowerArm, 1.0_f32), (B::RightUpperArm, B::RightLowerArm, -1.0)];
+    for (i, pose) in poses.iter().enumerate() {
+        for (upper, lower, x) in sides {
+            let along = Vec3::new(x, 0.0, 0.0);
+            let arm = world(pose, upper) * along;
+            from_down += f64::from(arm.angle_between(Vec3::NEG_Y).to_degrees()) / 2.0;
+            elbow += f64::from(angle_deg(pose.get(lower), Quat::IDENTITY)) / 2.0;
+            let forearm = world(pose, lower) * along;
+            up += u32::from(forearm.y > 0.0);
+        }
+        if i > 0 {
+            let prev = &poses[i - 1];
+            let turn = |b: B| angle_deg(prev.get(b), pose.get(b)) * fps;
+            torso += f64::from(TORSO.iter().map(|b| turn(*b)).sum::<f32>() / TORSO.len() as f32);
+            arms += f64::from(ARMS.iter().map(|b| turn(*b)).sum::<f32>() / ARMS.len() as f32);
+            fingers += f64::from(finger_bones.iter().map(|b| turn(*b)).sum::<f32>() / finger_bones.len() as f32);
+            for b in B::ALL {
+                if turn(b) > peak {
+                    peak = turn(b);
+                    peak_bone = b;
+                }
+            }
+            moving |= UPPER.iter().any(|b| turn(*b) >= FROZEN_DEG_S);
+        }
+        if (i + 1) % window == 0 {
+            windows += 1;
+            frozen += u32::from(!moving);
+            moving = false;
+        }
+    }
+    let n = poses.len().max(1) as f64;
+    let steps = poses.len().saturating_sub(1).max(1) as f64;
+    PoseMotion {
+        seconds: poses.len() as f32 / fps,
+        frozen_share: if windows == 0 { 0.0 } else { frozen as f32 / windows as f32 },
+        torso_deg_s: (torso / steps) as f32,
+        arms_deg_s: (arms / steps) as f32,
+        fingers_deg_s: (fingers / steps) as f32,
+        peak_deg_s: peak,
+        peak_bone: peak_bone.name().to_owned(),
+        arms_from_down_deg: (from_down / n) as f32,
+        elbow_deg: (elbow / n) as f32,
+        hand_up_share: (f64::from(up) / (2.0 * n)) as f32,
+    }
+}
+
+/// The poses `style` gives on `take` from `base`, seeded by `seed`: what [`measure`] measures, for [`measure_poses`].
+#[allow(clippy::cast_precision_loss)] // frame counts
+pub fn living_poses(style: &BodyStyle, take: &Take, base: &HumanoidPose, seed: u64) -> Vec<HumanoidPose> {
+    let mut body = LivingBody::new(*style, seed);
+    take.frames
+        .iter()
+        .enumerate()
+        .map(|(i, frame)| {
+            body.hear(&frame.cues);
+            let mut pose = *base;
+            body.animate(Tick::at_rate(i as u64, TAKE_FPS), &frame.bus, &[], &mut pose);
+            pose
+        })
+        .collect()
 }
