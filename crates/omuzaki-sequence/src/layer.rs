@@ -1591,10 +1591,14 @@ mod tests {
         };
         let alpha_at = |p: &Pixmap, x: u32, y: u32| p.pixel(x, y).unwrap().alpha();
         let apart = painted(&[square("a", 0.4, None, 0.5), square("b", 0.6, None, 0.5)], 0.5);
-        let group = layer(serde_json::json!({"id": "g", "draw": {"kind": "group"}, "x": 0.5, "y": 0.5, "opacity": 0.5}));
+        let group =
+            layer(serde_json::json!({"id": "g", "draw": {"kind": "group"}, "x": 0.5, "y": 0.5, "opacity": 0.5}));
         let together = painted(&[group, square("a", 0.4, Some("g"), 1.0), square("b", 0.6, Some("g"), 1.0)], 0.5);
         let (middle, side) = ((108, 192), (80, 192));
-        assert!(alpha_at(&apart, middle.0, middle.1) > alpha_at(&apart, side.0, side.1) + 40, "faded apart, they stack");
+        assert!(
+            alpha_at(&apart, middle.0, middle.1) > alpha_at(&apart, side.0, side.1) + 40,
+            "faded apart, they stack"
+        );
         let (m, s) = (alpha_at(&together, middle.0, middle.1), alpha_at(&together, side.0, side.1));
         assert!(m.abs_diff(s) <= 2 && (120..=136).contains(&m), "faded as a group, half everywhere: {m} and {s}");
         assert_eq!(Draw::Group {}.kind(), "group");
