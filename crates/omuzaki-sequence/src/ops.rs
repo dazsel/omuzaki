@@ -970,7 +970,7 @@ impl Op for RenderSequence {
         let mut replacement = target.replace()?;
         let file =
             replacement.file().try_clone().map_err(|e| OpError::internal(format!("the video file's handle: {e}")))?;
-        let mut writer = ShortWriter::create(file, std::path::Path::new(&out), def.size, def.fps, None)
+        let mut writer = ShortWriter::create(file, std::path::Path::new(&out), def.size, def.fps, None, false)
             .map_err(SequenceError::from)?;
         let mut stopped: Option<OpError> = None;
         let mut done = 0usize;
