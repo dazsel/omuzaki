@@ -182,6 +182,14 @@ pub struct Accents {
 }
 
 impl Accents {
+    /// The accents at `s` times their size about `about`: the roots move, the lifts scale.
+    pub fn size_about(&mut self, s: f32, about: Vec3) {
+        for (root, lift) in self.groups.values_mut().flatten() {
+            *root = about + (*root - about) * s;
+            *lift *= s;
+        }
+    }
+
     /// The accent pieces of `params`' enabled ahoge, bun and tail groups, each root lifted by `field`. Empty without a
     /// field, so nothing moves.
     pub fn new(params: &HairParams, field: Option<&Field>, head: &dyn HeadSurface) -> Self {

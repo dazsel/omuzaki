@@ -231,6 +231,35 @@ impl CompiledGroup {
     }
 }
 
+impl CompiledGroup {
+    /// The group at `s` times its size about `about`: its clumps' points, widths and thicknesses, its ties and its shell.
+    pub fn size_about(&mut self, s: f32, about: Vec3) {
+        let at = |p: Vec3| about + (p - about) * s;
+        let k = f64::from(s);
+        for clump in &mut self.clumps {
+            clump.rest.iter_mut().for_each(|p| *p = at(*p));
+            clump.width = Taper {
+                start: clump.width.start * k,
+                mid: clump.width.mid * k,
+                tip: clump.width.tip * k,
+                ..clump.width
+            };
+            clump.thickness = Bulge { base: clump.thickness.base * k, swell: clump.thickness.swell * k };
+        }
+        match &mut self.geometry {
+            GroupGeometry::Tube | GroupGeometry::Strip { .. } => {}
+            GroupGeometry::Tied { ties } => {
+                for tie in ties {
+                    tie.centre = at(tie.centre);
+                    tie.radius *= s;
+                    tie.tube *= s;
+                }
+            }
+            GroupGeometry::Shell(shell) => shell.positions.iter_mut().for_each(|p| *p = at(*p)),
+        }
+    }
+}
+
 /// Appends the mirror image of `shell` to it, reversing each mirrored triangle's winding.
 fn mirror_shell(shell: &mut MeshData, mid_x: f32) {
     let n = u32::try_from(shell.positions.len()).unwrap_or(0);

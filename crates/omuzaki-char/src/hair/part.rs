@@ -30,10 +30,10 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 
 use omuzaki_char_api::{
-    AnchorsFact, BodyRegion, BuildCtx, BuildError, Bulge, FaceOverlay, Generator, GroupId, HAIR_UV, HairParams,
-    HairShading, HeadSurface, JointRef, KindProvenance, LockProfile, MaterialName, MaterialSpec, PartCategory, PartId,
-    PartKind, PartMesh, PartMeta, PartOutput, PointedEars, Quality, RecolourCtx, Recoloured, StatureFact, Taper,
-    TextureName,
+    AnchorsFact, BodyFit, BodyRegion, BuildCtx, BuildError, Bulge, FaceOverlay, Generator, GroupId, HAIR_UV,
+    HairParams, HairShading, HeadSurface, JointRef, KindProvenance, LockProfile, MaterialName, MaterialSpec,
+    PartCategory, PartId, PartKind, PartMesh, PartMeta, PartOutput, PointedEars, Quality, RecolourCtx, Recoloured,
+    StatureFact, Taper, TextureName,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{Vec2, Vec3};
@@ -124,11 +124,26 @@ pub fn build_with(
     let fail = |message: String| BuildError::Part { part: ctx.part.clone(), message };
     let mut stream =
         compile::stream(params.rng, &mut ctx.rng).map_err(|seed| fail(format!("invalid legacy seed {seed}")))?;
+    // The groups are written for the template's head, so they are compiled and placed against the head at that size (and
+    // the body as it then looks), then sized with the head about its joint: a smaller head wears a smaller bob of the
+    // same proportions, its volume and clearances too, not the template's standing off it.
+    let (size, joint) = head.own_size();
+    #[allow(clippy::float_cmp)] // exactly 1 is the template's head, bit for bit
+    let sized = size != 1.0;
+    let (template_head, template_body) = if sized {
+        let to = size.recip();
+        (
+            omuzaki_char_api::sized_head(head.clone(), to, joint),
+            body.clone().map(|b| omuzaki_char_api::sized_fit(b, to, joint)),
+        )
+    } else {
+        (head.clone(), body.clone())
+    };
     let mut entries = compile::compile_groups_over(
         params,
         generators,
-        head.as_ref(),
-        body.as_deref(),
+        template_head.as_ref(),
+        template_body.as_deref(),
         ctx.palette,
         ctx.quality,
         stream.as_mut(),
@@ -137,11 +152,29 @@ pub fn build_with(
     drop(stream);
     apply_streaks(params, ctx.palette, &mut entries).map_err(|e| ctx.fail(e.to_string()))?;
 
-    let frame = OutwardFrame { head: head.centre(), body_axis: body_axis(ctx, head.centre()) };
-    let accents = place(params, ctx, head.as_ref(), &frame, keep_out.as_ref(), depth.as_ref(), &mut entries)?;
+    let mut accents = {
+        let keep_out = template_body.as_deref().map(BodyKeepOut::new);
+        let depth = template_body.as_deref().map(BodyDepth::new);
+        let centre = template_head.centre();
+        let frame = OutwardFrame { head: centre, body_axis: body_axis(template_body.as_deref(), centre) };
+        let ears = (size.recip(), joint);
+        place(params, ctx, template_head.as_ref(), ears, &frame, keep_out.as_ref(), depth.as_ref(), &mut entries)?
+    };
+    if sized {
+        for entry in &mut entries {
+            entry.group.size_about(size, joint);
+        }
+        accents.size_about(size, joint);
+    }
+    let frame = OutwardFrame { head: head.centre(), body_axis: body_axis(body.as_deref(), head.centre()) };
     let mut warnings = Vec::new();
     let chains = tail_chains(params, ctx, head.as_ref(), &accents)?;
-    let strays = Strays::of(params, head.as_ref(), ctx.quality);
+    let mut strays = Strays::of(params, template_head.as_ref(), ctx.quality);
+    if sized {
+        for wisp in &mut strays.baby {
+            wisp.size_about(size, joint);
+        }
+    }
     let Meshes { mut stat, mut dynamic, ties } = mesh_groups(
         &entries,
         strays,
@@ -155,7 +188,7 @@ pub fn build_with(
     )
     .map_err(|e| ctx.fail(e.to_string()))?;
     if let Some(body) = &depth {
-        clear_vertices(body, stat.as_mut(), dynamic.as_mut());
+        clear_vertices(body, head.as_ref(), stat.as_mut(), dynamic.as_mut());
     }
 
     let material_name = hair_material_name(ctx.part).map_err(|e| ctx.fail(format!("material name: {e}")))?;
@@ -279,10 +312,12 @@ fn bind_to_strands<'a>(mesh: &MeshData, strands: &'a [Chain], runs: &mut Vec<Run
 ///
 /// # Errors
 /// [`BuildError::Part`] if a fringe cannot be cleared.
+#[allow(clippy::too_many_arguments, reason = "the placing's inputs, each used once")]
 fn place(
     params: &HairParams,
     ctx: &BuildCtx<'_>,
     head: &dyn omuzaki_char_api::HeadSurface,
+    ears: (f32, Vec3),
     frame: &OutwardFrame,
     keep_out: Option<&BodyKeepOut>,
     depth: Option<&BodyDepth>,
@@ -293,7 +328,7 @@ fn place(
     if let Some(field) = &field {
         volume::swell(entries, field, head, &accents);
     }
-    make_way_for_ears(params, ctx, head, entries);
+    make_way_for_ears(params, ctx, head, ears, entries);
     lock::shape(entries, frame, head, keep_out);
     // After the lock shapes, so a curled or split fringe or framing lock is cleared as it is drawn, and before the
     // shells tuck under the locks where they finally lie.
@@ -396,10 +431,27 @@ fn out_of(body: &BodyDepth, mut p: Vec3, margin: f32) -> Vec3 {
 /// and the curtain's strips, whose own keep-out leaves the base of the neck to the head. The simulated mesh keeps
 /// [`SAG_ROOM`] more: its colliders sit inside the body, so hanging under gravity it settles a few millimetres toward
 /// it.
-fn clear_vertices<'a>(body: &BodyDepth, stat: Option<&mut Skinned<'a>>, dynamic: Option<&mut Skinned<'a>>) {
+fn clear_vertices<'a>(
+    body: &BodyDepth,
+    head: &dyn HeadSurface,
+    stat: Option<&mut Skinned<'a>>,
+    dynamic: Option<&mut Skinned<'a>>,
+) {
+    let centre = head.centre();
+    // How far `p` is inside the head, metres (negative outside).
+    let inside = |p: Vec3| (p - centre).try_normalize().map_or(0.0, |u| head.radius(u) - (p - centre).length());
     for (mesh, margin) in [(stat, lock::CLEARANCE), (dynamic, lock::CLEARANCE + SAG_ROOM)] {
         for p in mesh.into_iter().flat_map(|m| m.geometry.positions.iter_mut()) {
-            *p = out_of(body, *p, margin);
+            let cleared = out_of(body, *p, margin);
+            // Where the head meets the neck, a push off a neck that is thick against the head (a small head's) can
+            // drive the nape's hair into the skull: there the head wins, and the hair goes no deeper than it was.
+            let allowed = inside(*p).max(0.0);
+            *p = if inside(cleared) > allowed {
+                let u = (cleared - centre).normalize_or_zero();
+                centre + u * (head.radius(u) - allowed)
+            } else {
+                cleared
+            };
         }
     }
 }
@@ -434,11 +486,19 @@ fn clear_fringes(
 
 /// Routes every lock behind the pointed ears the head published ([`ears::make_way`], #2449), unless the hair is set to
 /// cover them. Shells (the scalp cap) are left as they are: they lie under the ears.
-fn make_way_for_ears(params: &HairParams, ctx: &BuildCtx<'_>, head: &dyn HeadSurface, entries: &mut [CompiledEntry]) {
+fn make_way_for_ears(
+    params: &HairParams,
+    ctx: &BuildCtx<'_>,
+    head: &dyn HeadSurface,
+    (s, about): (f32, Vec3),
+    entries: &mut [CompiledEntry],
+) {
     if params.ears == PointedEars::Cover {
         return;
     }
-    let covers: Vec<EarCover> = ctx.published.get::<EarCoverFact>().values().copied().collect();
+    #[allow(clippy::float_cmp)] // exactly 1 leaves the covers bit for bit
+    let covers: Vec<EarCover> =
+        ctx.published.get::<EarCoverFact>().values().map(|c| if s == 1.0 { *c } else { c.about(s, about) }).collect();
     for entry in entries.iter_mut().filter(|e| !matches!(e.group.geometry, GroupGeometry::Shell(_))) {
         ears::make_way(&covers, head, &mut entry.group.clumps);
     }
@@ -446,13 +506,18 @@ fn make_way_for_ears(params: &HairParams, ctx: &BuildCtx<'_>, head: &dyn HeadSur
 
 /// Tucks every shell (the scalp cap) under the locks drawn over it ([`cap::tuck`]), so no lock cuts through it.
 fn tuck_shells(head: &dyn HeadSurface, entries: &mut [CompiledEntry]) {
-    let locks: Vec<(Vec<Vec3>, Taper, Bulge)> = entries
+    let locks: Vec<(Vec<Vec3>, Taper, Bulge, bool)> = entries
         .iter()
         .filter(|e| !matches!(e.group.geometry, GroupGeometry::Shell(_)))
-        .flat_map(|e| e.group.clumps.iter().map(|c| (c.rest.clone(), c.width, c.thickness)))
+        .flat_map(|e| {
+            let outer = matches!(e.group.geometry, GroupGeometry::Strip { .. });
+            e.group.clumps.iter().map(move |c| (c.rest.clone(), c.width, c.thickness, outer))
+        })
         .collect();
-    let locks: Vec<cap::Lock<'_>> =
-        locks.iter().map(|(rest, width, thickness)| cap::Lock { rest, width, thickness }).collect();
+    let locks: Vec<cap::Lock<'_>> = locks
+        .iter()
+        .map(|(rest, width, thickness, outer)| cap::Lock { rest, width, thickness, outer: *outer })
+        .collect();
     for entry in entries {
         if let GroupGeometry::Shell(shell) = &mut entry.group.geometry {
             cap::tuck(shell, head, &locks);
@@ -525,10 +590,8 @@ fn apply_streaks(
 }
 
 /// The body's vertical axis as `(x, z)`: the torso's centre in the upper back, else the head's own.
-fn body_axis(ctx: &BuildCtx<'_>, head: Vec3) -> Vec2 {
-    ctx.fit()
-        .ok()
-        .and_then(|fit| fit.section(BodyRegion::Torso, BODY_AXIS_AT))
+fn body_axis(body: Option<&dyn BodyFit>, head: Vec3) -> Vec2 {
+    body.and_then(|fit| fit.section(BodyRegion::Torso, BODY_AXIS_AT))
         .map_or(Vec2::new(head.x, head.z), |s| Vec2::new(s.centre.x, s.centre.z))
 }
 

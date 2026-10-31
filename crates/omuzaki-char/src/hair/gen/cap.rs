@@ -193,15 +193,23 @@ pub struct Lock<'a> {
     pub width: &'a Taper,
     /// Its thickness along it.
     pub thickness: &'a Bulge,
+    /// Whether it is the outer layer over the shell (the curtain over the crown and the back), which the shell stays
+    /// under ([`OVER_REACH`]).
+    pub outer: bool,
 }
 
+/// How far round a shell vertex the locks that bound it from above are looked for, metres: where locks part or leave a
+/// gap (the whorl at the crown), the shell, swollen with the style's fullness, would otherwise stand up through it as a
+/// plug, so it stays under the outer face of the hair within this reach.
+const OVER_REACH: f32 = 0.03;
 /// How far under a lock's inner face the shell tucks, metres.
 pub const TUCK_MARGIN: f32 = 0.0015;
 /// The share of a lock's half width the tuck covers, so the shell stays up along the lock's edges, where a dip would
 /// show between locks.
 const TUCK_FOOTPRINT: f32 = 0.85;
 
-/// Lowers the shell under every lock that would cut through it (#2412). The shell stands up to 26 mm off the scalp at
+/// Lowers the shell under every lock that would cut through it (#2412). Nor does it stand above the hair round it
+/// ([`OVER_REACH`]). The shell stands up to 26 mm off the scalp at
 /// the crown and a lock that lies across it at a shallow angle, a fringe diving to the forehead, crosses its surface
 /// along a ragged line: in a close-up a jagged patchwork of shell and lock. Under the middle of each lock (the lock's
 /// footprint), the shell drops to [`TUCK_MARGIN`] below the lock's inner face, never below [`MIN_CLEARANCE`] off the
@@ -216,7 +224,7 @@ pub fn tuck(shell: &mut MeshData, head: &dyn HeadSurface, locks: &[Lock<'_>]) {
             #[allow(clippy::cast_possible_truncation)] // a lock's width in metres
             let reach = l.width.start.max(l.width.mid).max(l.width.tip) as f32 * 0.5;
             let (lo, hi) = l.rest.iter().fold((Vec3::MAX, Vec3::MIN), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
-            (lo - Vec3::splat(reach), hi + Vec3::splat(reach))
+            (lo - Vec3::splat(reach.max(OVER_REACH)), hi + Vec3::splat(reach.max(OVER_REACH)))
         })
         .collect();
     let mut moved = false;
@@ -225,6 +233,8 @@ pub fn tuck(shell: &mut MeshData, head: &dyn HeadSurface, locks: &[Lock<'_>]) {
         let (r, Some(u)) = (offset.length(), offset.try_normalize()) else { continue };
         let floor = head.radius(u) + MIN_CLEARANCE * 1.5;
         let mut limit = r;
+        // The outer face of the hair round the vertex: the shell is the underlayer and stands no higher.
+        let mut outer = f32::NEG_INFINITY;
         for (lock, (lo, hi)) in locks.iter().zip(&boxes) {
             if v.clamp(*lo, *hi) != *v {
                 continue;
@@ -243,7 +253,13 @@ pub fn tuck(shell: &mut MeshData, head: &dyn HeadSurface, locks: &[Lock<'_>]) {
                 if lateral < lock.width.at(t) * 0.5 * TUCK_FOOTPRINT {
                     limit = limit.min(along - lock.thickness.at(t) * 0.5 - TUCK_MARGIN);
                 }
+                if lock.outer && lateral < OVER_REACH {
+                    outer = outer.max(along + lock.thickness.at(t) * 0.5);
+                }
             }
+        }
+        if outer.is_finite() {
+            limit = limit.min(outer);
         }
         let target = limit.max(floor);
         if target < r {
