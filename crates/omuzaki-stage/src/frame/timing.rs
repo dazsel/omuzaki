@@ -40,6 +40,8 @@ pub(crate) struct Holds {
     face: Option<u64>,
     /// When the body last moved, for the runtimes' catch-up step.
     body_time: Option<f64>,
+    /// The last frame's time: a clock that goes back (a restart, a seek) moves everything at once.
+    last: Option<f64>,
 }
 
 impl Holds {
@@ -61,6 +63,10 @@ impl Holds {
             return HoldFrame::all(tick.dt);
         }
         let now = tick.time.0;
+        if self.last.is_some_and(|last| now < last) {
+            *self = Self { timing: self.timing, ..Self::default() };
+        }
+        self.last = Some(now);
         let body_slot = Timing::slot(now, self.timing.body_hz);
         let body = body_slot.is_none() || body_slot != self.body;
         let secondary_dt = match (body, self.timing.hold_secondary && body_slot.is_some()) {
