@@ -56,7 +56,7 @@ fn fabric(params: &[(&str, ParamValue)]) -> Shading {
 
 /// The cloth preset `name`: the program `fabric-<name>` with its own defaults.
 fn preset(name: &str) -> Shading {
-    Shading::Program { name: slug(&format!("fabric-{name}")), params: Default::default() }
+    Shading::Program { name: slug(&format!("fabric-{name}")), params: omuzaki_render_api::ProgramParams::new() }
 }
 
 const PRESETS: [&str; 6] = ["cotton", "satin", "knit", "leather", "denim", "velvet"];
