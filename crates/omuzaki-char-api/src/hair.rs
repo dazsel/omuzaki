@@ -1474,7 +1474,7 @@ pub struct HairShading {
     /// Coloured streaks laid over shares of the clumps, applied in order (CB-34). See [`HairShading::apply_to_clumps`].
     pub streaks: Vec<Streak>,
     /// How much of the prototype's inner-layer darkening is applied, `0..=1` (the kit's default, `0.3`, keeps the
-    /// hair a light, even mass, as the anime samples read): `1` is the designed
+    /// hair a light, even mass, as anime hair reads): `1` is the designed
     /// darkening, so a clump authored darker (`shade < 1`) keeps its shade; `0` is none, and every clump is drawn at
     /// full shade `1.0`. Applied to [`HairClump::shade`] on the CPU as `shade += (1 - d) * (1 - shade)`, so the hair
     /// program's parameters don't change.
@@ -1532,12 +1532,12 @@ pub struct HairShading {
     /// How far the occlusion looks for hair and head around each vertex, metres, `0.01..=0.1`.
     pub occlusion_reach: f64,
     /// Where the shadow starts, as the cosine between the surface and the light, `-1..=1`: below 0 the light wraps
-    /// further round the hair, as `MToon`'s shade shift does. The default, `-0.45`, lights most of the hair as the anime
-    /// samples' `MToon` hair is lit; the prototype's was `-0.05`.
+    /// further round the hair, as `MToon`'s shade shift does. The default, `-0.45`, lights most of the hair as anime
+    /// `MToon` hair is lit; the prototype's was `-0.05`.
     pub shade_shift: f64,
     /// How soft the shadow's edge is, `0..=1`: half the width of the blend from light to shade, in the same cosine
-    /// (`MToon`'s `1 - shade toony`, halved). `0` is a hard cel edge; the default, `0.45`, is soft, as the anime samples'
-    /// is; the prototype's was `0.22`.
+    /// (`MToon`'s `1 - shade toony`, halved). `0` is a hard cel edge; the default, `0.45`, is soft, as anime `MToon`
+    /// hair's is; the prototype's was `0.22`.
     pub shade_softness: f64,
     /// The natural colour the root, mid, tip, shade, line, outline, ring and rim colours were made from, if they were
     /// (`hair.colour.natural`, #2524): kept so the next edit starts from it. Setting the colours by hand keeps it as a
@@ -1621,7 +1621,7 @@ const RING_WOBBLE: f64 = 0.012;
 const RING_TEETH: f64 = 0.25;
 
 /// The hair's default terminator: the shadow starts well past square to the light, as `MToon` hair's does with its
-/// shade shift (the anime samples' `-0.3`, on a half-Lambert scale).
+/// shade shift (`-0.3` on a half-Lambert scale).
 pub const SHADE_SHIFT: f64 = -0.45;
 /// The hair's default terminator softness: a soft edge, as `MToon` hair's with a low shade toony.
 pub const SHADE_SOFTNESS: f64 = 0.45;

@@ -17,10 +17,10 @@
 //! [`HairPigment::gradient`], a shadow tone that deepens the hue, strand lines and outline a shade darker, and a ring
 //! and rim lit toward white.
 //!
-//! **Any colour** (from the comparison with the openly licensed anime samples): [`companions`] makes the same set from a
+//! **Any colour**: [`companions`] makes the same set from a
 //! hair colour picked by hand, for `hair.recolour`, so platinum or pink hair does not keep the default brown's shadow,
-//! lines and outline. Its shadow is an anime one: as light as those samples' hair shades (their shade colour is about nine tenths
-//! of the lit one, leaning toward the hair's own hue), not the deeper natural tone.
+//! lines and outline. Its shadow is an anime one: light (about nine tenths of the lit colour, leaning toward the
+//! hair's own hue), not the deeper natural tone.
 
 use omuzaki_char_api::HairPigment;
 use omuzaki_core::colour::Colour;
@@ -142,7 +142,7 @@ pub struct Companions {
 
 /// Rec. 709 luma weights, linear.
 const LUMA: Vec3 = Vec3::new(0.2126, 0.7152, 0.0722);
-/// The anime shadow multiplier's level, linear (about 0.87 in `sRGB`): anime sample hair shades by about this much.
+/// The anime shadow multiplier's level, linear (about 0.87 in `sRGB`): anime hair shades by about this much.
 const ANIME_SHADE: f32 = 0.74;
 
 #[allow(clippy::cast_possible_truncation)] // parameters checked to 0..=1
