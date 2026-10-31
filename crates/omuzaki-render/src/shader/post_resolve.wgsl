@@ -6,8 +6,11 @@
 // colour weighted by alpha. Tone mapping before averaging is what keeps a bright edge from fizzing; it matches the
 // spike's per-fragment tone mapping. After the average come the effects that live in display space: grade, grain and a
 // whisper of dither, all on the straight colour, so alpha is never touched and a transparent pixel stays transparent.
-// Last, a backdrop shown as authored (a gradient or a texture) is laid under the result in those encoded values, as a
-// compositor lays a transparent output over a picture.
+// Then a backdrop shown as authored (a gradient or a texture) is laid under the result in those encoded values, as a
+// compositor lays a transparent output over a picture. Last comes the drawn look (`Stylize` in render-api): a lens
+// fringe (red and blue read from slightly different places, so it is done while gathering), posterized tones, split
+// toning, a halftone screen, ink hatching, paper and a vignette, on the straight colour of the composite, so it covers
+// the backdrop too and never changes alpha.
 
 struct Params {
     exposure: f32,
@@ -29,6 +32,17 @@ struct Params {
     top: vec4<f32>,      // the gradient's ends, premultiplied, sRGB-encoded
     bottom: vec4<f32>,
     uv_offset: vec2<f32>,
+    style_flags: u32,    // see STYLE_*
+    posterize: f32,      // tone levels
+    // The stylize settings, packed by `pass/resolve.rs` (`style_params`): sizes are in output pixels, inks and tints are
+    // sRGB-encoded display values.
+    //   0: halftone cell, cos, sin, threshold      1: halftone ink, strength
+    //   2: hatch spacing, width, cos, sin          3: hatch ink, strength
+    //   4: hatch threshold, cross threshold, paper strength, paper scale
+    //   5: paper tint, vignette strength           6: vignette radius, softness, fringe, split balance
+    //   7: split shadows, split strength           8: split highlights, 0
+    //   9: output width, output height, 0, 0
+    style: array<vec4<f32>, 10>,
 }
 
 const BACKDROP_GRADIENT: u32 = 1u;
@@ -42,6 +56,15 @@ const FLAG_GRADE: u32 = 4u;
 const FLAG_GRAIN: u32 = 8u;
 const FLAG_DITHER: u32 = 16u;
 const FLAGS_AFTER_AVERAGE: u32 = 28u; // grade, grain and dither
+
+const STYLE_FRINGE: u32 = 1u;
+const STYLE_POSTERIZE: u32 = 2u;
+const STYLE_SPLIT: u32 = 4u;
+const STYLE_HALFTONE: u32 = 8u;
+const STYLE_HATCH: u32 = 16u;
+const STYLE_PAPER: u32 = 32u;
+const STYLE_VIGNETTE: u32 = 64u;
+const DISPLAY_LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 
 @group(0) @binding(0) var colour: texture_2d<f32>;
 @group(0) @binding(1) var colour_sampler: sampler;
@@ -213,29 +236,143 @@ fn backdrop_at(at: vec2<f32>, uv: vec2<f32>, texel: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(rgb * alpha, alpha) + behind * (1.0 - alpha);
 }
 
+// ---- the drawn look ----
+
+fn style_on(flag: u32) -> bool {
+    return (params.style_flags & flag) != 0u;
+}
+
+// A fixed lattice value in 0..1 for the paper: a function of the cell alone, so the paper is the same on every frame.
+fn lattice(cell: vec2<i32>) -> f32 {
+    let c = bitcast<vec2<u32>>(cell);
+    return f32(pcg(c.x ^ pcg(c.y ^ 0x9e3779b9u)) >> 8u) * (1.0 / 16777216.0);
+}
+
+// Smooth value noise at `q` (lattice units).
+fn value_noise(q: vec2<f32>) -> f32 {
+    let i = vec2<i32>(floor(q));
+    let f = fract(q);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = lattice(i);
+    let b = lattice(i + vec2<i32>(1, 0));
+    let c = lattice(i + vec2<i32>(0, 1));
+    let d = lattice(i + vec2<i32>(1, 1));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+// Coverage of an edge at `edge`, `x` running across it, anti-aliased over `aa` either side: 1 inside, 0 outside.
+fn inside(x: f32, edge: f32, aa: f32) -> f32 {
+    return 1.0 - smoothstep(edge - aa, edge + aa, x);
+}
+
+// How far below `threshold` the luma is, 0..1: 0 at and above the threshold, 1 at black.
+fn darkness(luma: f32, threshold: f32) -> f32 {
+    return saturate((threshold - luma) / max(threshold, 1e-3));
+}
+
+// `p` turned by the angle whose cosine and sine are `cs`.
+fn turned(p: vec2<f32>, cs: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(cs.x * p.x - cs.y * p.y, cs.y * p.x + cs.x * p.y);
+}
+
+// The drawn look on a straight display colour `c` at output pixel `p` (pixel centres at .5).
+fn stylize(colour_in: vec3<f32>, p: vec2<f32>) -> vec3<f32> {
+    var c = colour_in;
+    let s = params.style;
+    let size = s[9].xy;
+    let centre = size * 0.5;
+    if (style_on(STYLE_POSTERIZE)) {
+        // On luma, the colour scaled to the step, so hue survives every step.
+        let luma = dot(c, DISPLAY_LUMA);
+        if (luma > 1e-4) {
+            let stepped = floor(luma * params.posterize + 0.5) / params.posterize;
+            c = c * (stepped / luma);
+        }
+    }
+    if (style_on(STYLE_SPLIT)) {
+        let luma = dot(c, DISPLAY_LUMA);
+        let pivot = 0.5 + 0.5 * s[6].w;
+        let t = smoothstep(0.0, 1.0, saturate(luma - pivot + 0.5));
+        let tint = mix(s[7].rgb, s[8].rgb, t);
+        // The tint at the pixel's own luma, so the grade moves hue and never brightness.
+        let toned = tint * (luma / max(dot(tint, DISPLAY_LUMA), 1e-3));
+        c = mix(c, toned, s[7].w);
+    }
+    let luma = dot(clamp(c, vec3<f32>(0.0), vec3<f32>(1.0)), DISPLAY_LUMA);
+    if (style_on(STYLE_HALFTONE)) {
+        // A spot-function screen: dot area grows with the darkness, so a flat tone prints as an even field of dots.
+        let cell = s[0].x;
+        let q = turned(p - centre, s[0].yz) / cell;
+        let distance = length(fract(q) - vec2<f32>(0.5)) * 2.0;
+        let dark = darkness(luma, s[0].w);
+        let radius = 2.0 * sqrt(dark / 3.14159265);
+        let cover = select(0.0, inside(distance, radius, 1.0 / cell), dark > 0.0);
+        c = c * mix(vec3<f32>(1.0), s[1].rgb, cover * s[1].w);
+    }
+    if (style_on(STYLE_HATCH)) {
+        let spacing = s[2].x;
+        let q = turned(p - centre, s[2].zw) / spacing;
+        let aa = 1.0 / spacing;
+        let first = darkness(luma, s[4].x);
+        let along = abs(fract(q.y) - 0.5) * 2.0;
+        var cover = select(0.0, inside(along, s[2].y * first, aa), first > 0.0);
+        let second = darkness(luma, s[4].y);
+        let across = abs(fract(q.x) - 0.5) * 2.0;
+        cover = max(cover, select(0.0, inside(across, s[2].y * second, aa), second > 0.0 && s[4].y > 0.0));
+        c = c * mix(vec3<f32>(1.0), s[3].rgb, cover * s[3].w);
+    }
+    if (style_on(STYLE_PAPER)) {
+        let q = p / s[4].w;
+        // Two octaves, the coarse one stretched along x, read as fibres more than as noise.
+        let n = 0.65 * value_noise(q * vec2<f32>(0.35, 1.0)) + 0.35 * value_noise(q * 2.7 + vec2<f32>(17.0, 3.0));
+        c = c * (1.0 - s[4].z * n) * s[5].rgb;
+    }
+    if (style_on(STYLE_VIGNETTE)) {
+        let d = length((p - centre) / (0.5 * size.y));
+        c = c * (1.0 - s[5].w * smoothstep(s[6].x, s[6].x + s[6].y, d));
+    }
+    return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// The averaged scene at output position `p` (output pixels, centres at .5), premultiplied and sRGB-encoded: one exact
+// texel when the sizes match and `exact`, else bilinear taps over the pixel's footprint in the internal image.
+fn gather(p: vec2<f32>, exact: bool) -> vec4<f32> {
+    if (params.taps == 0u) {
+        if (exact) {
+            return shade(textureLoad(colour, vec2<i32>(p), 0), p / params.internal);
+        }
+        let uv = p * params.ratio / params.internal;
+        return shade(textureSampleLevel(colour, colour_sampler, uv, 0.0), uv);
+    }
+    var sum = vec4<f32>(0.0);
+    let corner = p - vec2<f32>(0.5);
+    for (var y = 0u; y < params.taps; y++) {
+        for (var x = 0u; x < params.taps; x++) {
+            // Taps spread evenly over the output pixel's footprint in the internal image.
+            let offset = (vec2<f32>(f32(x), f32(y)) + 0.5) / f32(params.taps);
+            let uv = (corner + offset) * params.ratio / params.internal;
+            sum = sum + shade(textureSampleLevel(colour, colour_sampler, uv, 0.0), uv);
+        }
+    }
+    return sum / f32(params.taps * params.taps);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let at = in.clip.xy * params.ratio / params.internal;
     let uv = at * params.uv_scale + params.uv_offset;
     let texel = textureSample(backdrop_image, backdrop_sampler, uv);
-    var sum = vec4<f32>(0.0);
-    var count = 1.0;
-    if (params.taps == 0u) {
-        sum = shade(textureLoad(colour, vec2<i32>(in.clip.xy), 0), in.clip.xy / params.internal);
-    } else {
-        count = f32(params.taps * params.taps);
-        let pixel = floor(in.clip.xy);
-        for (var y = 0u; y < params.taps; y++) {
-            for (var x = 0u; x < params.taps; x++) {
-                // Taps spread evenly over the output pixel's footprint in the internal image.
-                let offset = (vec2<f32>(f32(x), f32(y)) + 0.5) / f32(params.taps);
-                let uv = (pixel + offset) * params.ratio / params.internal;
-                sum = sum + shade(textureSampleLevel(colour, colour_sampler, uv, 0.0), uv);
-            }
-        }
+    var gathered = gather(in.clip.xy, true);
+    if (style_on(STYLE_FRINGE)) {
+        // A lens fringe: red is read a little nearer the centre and blue a little farther out (so red spreads outward),
+        // growing with the distance from the centre: `fringe` output heights at one half-height out.
+        let shift = (in.clip.xy - params.style[9].xy * 0.5) * 2.0 * params.style[6].z;
+        let red = gather(in.clip.xy - shift, false);
+        let blue = gather(in.clip.xy + shift, false);
+        gathered = vec4<f32>(red.r, gathered.g, blue.b, gathered.a);
     }
-    let alpha = sum.a / count;
-    var encoded = sum.rgb / count;       // premultiplied, encoded
+    let alpha = gathered.a;
+    var encoded = gathered.rgb;          // premultiplied, encoded
     if ((params.flags & FLAGS_AFTER_AVERAGE) != 0u) {
         // Grade, grain and dither act on the straight colour, then the output's alpha encoding applies as usual.
         let straight = select(vec3<f32>(0.0), encoded / alpha, alpha > 0.0);
@@ -246,6 +383,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let behind = backdrop_at(at, uv, texel);
         encoded = encoded + behind.rgb * (1.0 - alpha);
         coverage = alpha + behind.a * (1.0 - alpha);
+    }
+    if ((params.style_flags & ~STYLE_FRINGE) != 0u && coverage > 0.0) {
+        encoded = stylize(encoded / coverage, in.clip.xy) * coverage;
     }
     if (params.premultiplied == 1u) {
         return vec4<f32>(encoded, coverage);
