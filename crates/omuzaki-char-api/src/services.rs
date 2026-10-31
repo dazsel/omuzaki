@@ -163,7 +163,7 @@ inventory::collect!(TexturePainterRegistration);
 macro_rules! register_texture_painter {
     ($paint:path) => {
         $crate::__inventory::submit! { $crate::TexturePainterRegistration { paint: $paint } }
-        $crate::__record_registration!("texture painter", $paint);
+        $crate::__record_registration!("texture_painter", $paint);
     };
 }
 
