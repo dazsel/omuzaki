@@ -125,6 +125,7 @@ impl GoldenBless {
 pub(super) fn golden_preview(character: &CharId, variant: Option<&VariantId>, scene: &GoldenScene) -> Preview {
     Preview {
         character: character.clone(),
+        state: None,
         variant: variant.cloned(),
         scene: None,
         camera: None,

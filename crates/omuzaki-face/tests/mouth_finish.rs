@@ -157,6 +157,58 @@ fn a_flat_face_has_no_gloss_on_a_closed_mouth_but_a_kiss_keeps_one() {
     assert!(kissing.is_some(), "pushed-forward lips always read as glossy");
 }
 
+// ------------------------------------------------------------------------------------------------ full lips
+
+fn full_lips(full: f64, fullness: f64) -> FaceProfile {
+    let mut p = lips(0.0);
+    (p.mouth.lips.full, p.mouth.lips.fullness) = (full, fullness);
+    p
+}
+
+/// The two lip shapes full lips fill: (upper lip's highest point, lower lip's lowest point).
+fn lip_extent(list: &DrawList) -> Option<(f32, f32)> {
+    let fills: Vec<PathRef> = list
+        .cmds()
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::Fill { path, paint: Paint::Solid(_), .. } => Some(*path),
+            _ => None,
+        })
+        .collect();
+    let [upper, lower] = fills[..] else { return None };
+    let top = points(list, upper).iter().fold(f32::MIN, |m, p| m.max(p.y));
+    let bottom = points(list, lower).iter().fold(f32::MAX, |m, p| m.min(p.y));
+    Some((top, bottom))
+}
+
+#[test]
+fn full_lips_are_off_by_default_and_frame_the_mouth_line_when_on() {
+    let rest = params(|_| {});
+    assert!(lip_extent(&piece(MouthPiece::Gloss, &lips(0.0), &rest)).is_none(), "no full lips by default");
+    let profile = full_lips(1.0, 1.0);
+    let line = profile.layout.mouth_y as f32;
+    let list = piece(MouthPiece::Gloss, &profile, &rest);
+    let (top, bottom) = lip_extent(&list).expect("an upper and a lower lip");
+    assert!(top > line && bottom < line, "the lips sit over and under the line: {top} {bottom} against {line}");
+    assert_eq!(count_strokes(&list), 2, "each lip is outlined");
+}
+
+#[test]
+fn fullness_thickens_the_lips_and_an_open_mouth_keeps_them() {
+    let rest = params(|_| {});
+    let thickness = |fullness| {
+        let (top, bottom) = lip_extent(&piece(MouthPiece::Gloss, &full_lips(1.0, fullness), &rest)).unwrap();
+        top - bottom
+    };
+    assert!(thickness(2.0) > 1.5 * thickness(1.0), "{} against {}", thickness(2.0), thickness(1.0));
+    let open = params(|m| m.open = 0.8);
+    assert!(lip_extent(&piece(MouthPiece::Gloss, &full_lips(1.0, 1.0), &open)).is_some());
+}
+
+fn count_strokes(list: &DrawList) -> usize {
+    list.cmds().iter().filter(|c| matches!(c, Cmd::Stroke { .. })).count()
+}
+
 // ------------------------------------------------------------------------------------------------ closed fang
 
 #[test]

@@ -746,6 +746,22 @@ impl Stage {
         self.character.set_skin_floor(renderer, &self.built, floor).map(drop)
     }
 
+    /// Runs the surface fx `fx` (a burn, a dissolve, turning to stone) over every material of the character whose name
+    /// contains none of `spare` (`["eye"]` keeps the eyes clear), or takes it off with `None`. It stays on through
+    /// look edits and variant swaps. Cold: updates every material; a sequence calls it once a frame while the front
+    /// moves.
+    ///
+    /// # Errors
+    /// [`StageError::Render`] if the renderer refuses a material; the materials are as they were.
+    pub fn set_surface_fx(
+        &mut self,
+        renderer: &mut dyn Renderer,
+        fx: Option<omuzaki_render_api::SurfaceFx>,
+        spare: &[String],
+    ) -> Result<(), StageError> {
+        self.character.set_surface_fx(renderer, &self.built, fx, spare).map(drop)
+    }
+
     /// Does the renderer work the last [`set_scene`](Self::set_scene) owes and records it as done: the ground (a new
     /// disc, or none), the skin floor (every toon skin material updated in place to the scene's floor, or back to
     /// its own), the environment (made from its sky or its loaded HDRI, or released) and the props (the builds the
