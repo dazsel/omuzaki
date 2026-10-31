@@ -6362,6 +6362,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-face",
  "omuzaki-face-api",
  "omuzaki-link-build",
  "omuzaki-ops-api",

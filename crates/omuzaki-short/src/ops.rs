@@ -3,6 +3,7 @@
 //! plain script to a directed short file). A short is given as a file of the project (`path`, a `*.short.toml`) or
 //! inline (`short`), so an agent can iterate on one without writing files.
 
+use std::collections::BTreeMap;
 use std::io::Read as _;
 use std::sync::Mutex;
 
@@ -15,6 +16,7 @@ use omuzaki_puppet::bundle::{self, Bundle};
 use omuzaki_puppet::layers::LayeredArt;
 use omuzaki_render_api::{Capabilities, MtoonSupport, Renderer};
 use omuzaki_stage::body::{Body, BodyServices, load_body};
+use omuzaki_stage::frame::face::FacePoints;
 use omuzaki_stage::ops::render::job::{RenderQuality, character_bytes, check_size, cost};
 use omuzaki_stage::recipe::LightRig;
 use omuzaki_stage::scene::alone::{ShotChoice, StagedScene, cast_alone, occlusion_in_look, post_in_look, stage_alone};
@@ -30,7 +32,7 @@ use crate::draft;
 use crate::encode::{ShortWriter, wav_bytes};
 use crate::error::ShortError;
 use crate::puppet::render_puppet_short;
-use crate::render::{ShortScene, frame_count, render_short};
+use crate::render::{FrameSink, ShortScene, frame_count, render_short, span_frames};
 use crate::speech::{SpeechServices, TtsSpeaker};
 use crate::timeline::{Measures, Timeline};
 use crate::voice::{SPEECH_WPM, Synthesis, VoiceTrack, read_wav_from, voice_for};
@@ -396,7 +398,9 @@ fn default_true() -> bool {
     "examples" = [
         {"short": {"character": "kit", "line": [{"text": "Hello!", "face": "happy", "camera": "close+punch"}]}},
         {"short": {"character": "kit", "line": [{"text": "A quick draft."}]}, "out": "shorts/draft.webm",
-         "size": [540, 960], "quality": "live"}
+         "size": [540, 960], "quality": "live"},
+        {"short": {"character": "kit", "line": [{"text": "Just this moment, every pixel kept."}]},
+         "span": [0.5, 1.0], "out": "shorts/moment.webm", "lossless": true, "face_points": true}
     ],
     "x-omuzaki-fixture" = "character"
 ))]
@@ -416,6 +420,19 @@ pub struct RenderShort {
     /// Replace the video if it is there.
     #[serde(default = "default_true")]
     pub replace: bool,
+    /// Seconds from and to: render only this stretch, for a quick look at the part you changed. The short is
+    /// performed from its start, so the stretch looks as it does in the whole; the video starts at its first frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<[f32; 2]>,
+    /// Keep every pixel: a lossless video, many times larger, for scoring against a reference frame by frame (the
+    /// codec adds no error of its own) or a master to edit from.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lossless: bool,
+    /// Also write where the face's eyes, mouth and chin landed in each frame, in pixels, beside the video
+    /// (`<video>.points.json`: one `{eye_right, eye_left, mouth, chin}` per frame, `{}` where no painted face is in
+    /// the picture), ready to pass to `parity.loop` as `ours_points`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub face_points: bool,
 }
 
 /// What `short.render` gives back.
@@ -425,8 +442,11 @@ pub struct RenderedShort {
     pub path: String,
     /// Its bytes.
     pub bytes: u64,
-    /// Frames, and the rate.
+    /// Frames in the video.
     pub frames: u64,
+    /// The short's frame the video starts at: 0, or the first frame of `span`.
+    #[serde(default)]
+    pub first_frame: u64,
     /// Frames per second.
     pub fps: u32,
     /// Width and height.
@@ -438,6 +458,9 @@ pub struct RenderedShort {
     /// The voice as a WAV beside the video, when it couldn't go in (no libopus on this machine).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice_wav: Option<String>,
+    /// Where the face landed in each frame, when asked (`face_points`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub face_points: Option<String>,
     /// Seconds rendering took per second of video.
     pub realtime_factor: f32,
     /// The timeline's measures.
@@ -453,7 +476,25 @@ impl RenderShort {
             def.check()?;
         }
         check_size(def.size, self.quality)?;
+        if let Some([from, to]) = self.span
+            && !(from.is_finite() && to.is_finite() && from >= 0.0 && to > from)
+        {
+            return Err(OpError::invalid("span", format!("[{from}, {to}] is not a stretch of time"))
+                .hint("give seconds from and to, the second after the first: `[12.0, 15.5]`"));
+        }
         Ok(def)
+    }
+
+    /// The frames this render draws.
+    fn frames(&self, timeline: &Timeline, fps: u32) -> Result<std::ops::Range<u64>, OpError> {
+        let frames = span_frames(self.span, fps, frame_count(timeline.duration, fps));
+        if frames.is_empty() {
+            return Err(OpError::invalid(
+                "span",
+                format!("the span holds no frame of the short, which is {:.2} s long", timeline.duration),
+            ));
+        }
+        Ok(frames)
     }
 }
 
@@ -469,8 +510,10 @@ fn write_file(job: &JobCtx<'_>, path: &str, bytes: &[u8]) -> Result<(), OpError>
 /// Seconds per frame of a 1080x1920 render on a software GPU (lavapipe on four cores), by quality: the slowest machine a
 /// short renders on, so the estimate (and the job's time cap, four times it) holds there. A real GPU is far faster.
 const SOFTWARE_FRAME_S: [f32; 3] = [0.6, 1.5, 2.0];
-/// Seconds per frame that don't scale with the size: the performer, captions and the encoder.
-const FRAME_OVERHEAD_S: f32 = 0.1;
+/// Seconds per frame that don't scale with the size: the performer, the face painter, skinning the character, captions
+/// and the encoder. Measured on a software GPU (four cores): a 270x480 offline short of 1957 frames took 31 minutes,
+/// 0.95 s a frame, almost all of it this part, so a small render of a long short needs it to keep its time cap.
+const FRAME_OVERHEAD_S: f32 = 1.0;
 /// Seconds before the first frame: opening the GPU device, compiling its pipelines and building the character, on a
 /// software GPU with other work beside it.
 const SETUP_S: f32 = 20.0;
@@ -491,11 +534,14 @@ fn render_seconds(frames: u64, size: [u32; 2], quality: RenderQuality) -> f32 {
 /// the encoder.
 const PUPPET_FRAME_S: f32 = 0.25;
 
+/// Seconds per puppet frame that don't scale with the size: the performer, captions and the encoder.
+const PUPPET_OVERHEAD_S: f32 = 0.1;
+
 /// The estimate of a puppet render of `frames` frames of `size`.
 #[allow(clippy::cast_precision_loss, reason = "frame and pixel counts")]
 fn puppet_seconds(frames: u64, size: [u32; 2]) -> f32 {
     let share = (size[0] as f32 * size[1] as f32) / (1080.0 * 1920.0);
-    frames as f32 * (PUPPET_FRAME_S * share + FRAME_OVERHEAD_S)
+    frames as f32 * (PUPPET_FRAME_S * share + PUPPET_OVERHEAD_S)
 }
 
 impl Op for RenderShort {
@@ -531,7 +577,8 @@ impl Op for RenderShort {
         }
         let voice = voice(&def, &fs, Synthesis::Estimate)?;
         let timeline = Timeline::new(&def, &voice)?;
-        let frames = frame_count(timeline.duration, def.fps);
+        let span = self.frames(&timeline, def.fps)?;
+        let frames = span.end - span.start;
         if def.puppet.is_some() {
             return Ok(Plan {
                 cost: Some(CostHint { seconds: Some(puppet_seconds(frames, def.size)), ..CostHint::default() }),
@@ -565,8 +612,10 @@ impl Op for RenderShort {
         let timeline = Timeline::new(&def, &voice)?;
         if let Some(path) = &def.puppet {
             let puppet = load_puppet(path, &fs)?;
+            let frames = self.frames(&timeline, def.fps)?;
             return self.finish(job, started, &def, &out, &timeline, &voice, |writer, progress| {
-                render_puppet_short(puppet, &def, &timeline, &voice, writer, progress)
+                let mut only = SpanSink { inner: writer, frames };
+                render_puppet_short(puppet, &def, &timeline, &voice, &mut only, progress)
             });
         }
         let (scene, member) = job.read(|doc| scene_def(doc, &def))?;
@@ -611,6 +660,7 @@ impl Op for RenderShort {
             landmarks,
             quality: self.quality.quality(),
             pose: Some(pose),
+            frames: Some(self.frames(&timeline, def.fps)?),
         };
         let renderer = job.service::<Mutex<Box<dyn Renderer>>>()?;
         self.finish(job, started, &def, &out, &timeline, &voice, |writer, progress| {
@@ -635,7 +685,7 @@ impl RenderShort {
         timeline: &Timeline,
         voice: &VoiceTrack,
         render: impl FnOnce(
-            &mut ShortWriter,
+            &mut dyn FrameSink,
             &mut dyn FnMut(f32) -> Result<(), ShortError>,
         ) -> Result<crate::render::LoopReport, ShortError>,
     ) -> Result<Value, OpError> {
@@ -651,14 +701,17 @@ impl RenderShort {
         let file =
             replacement.file().try_clone().map_err(|e| OpError::internal(format!("the video file's handle: {e}")))?;
         let has_voice = matches!(def.voice, VoiceDef::File { .. } | VoiceDef::Speech { .. });
+        let span = self.frames(timeline, def.fps)?;
+        let pcm = span_pcm(&voice.pcm, &span, def.fps);
         let mut writer = ShortWriter::create(
             file,
             std::path::Path::new(out),
             def.size,
             def.fps,
-            has_voice.then_some(voice.pcm.as_slice()),
+            has_voice.then_some(pcm),
+            self.lossless,
         )?;
-        let frames = frame_count(timeline.duration, def.fps);
+        let frames = span.end - span.start;
         let mut stopped: Option<OpError> = None;
         let mut done = 0u64;
         let mut progress = |share: f32| {
@@ -671,7 +724,11 @@ impl RenderShort {
                 ShortError::Render("stopped".into())
             })
         };
-        let outcome = render(&mut writer, &mut progress);
+        let mut faces = self.face_points.then(Vec::new);
+        let outcome = match &mut faces {
+            Some(points) => render(&mut FaceSink { inner: &mut writer, points }, &mut progress),
+            None => render(&mut writer, &mut progress),
+        };
         if let Some(e) = stopped {
             return Err(e);
         }
@@ -679,14 +736,28 @@ impl RenderShort {
         job.checkpoint("finishing", 0.97)?;
         let written = writer.finish()?;
         replacement.commit()?;
+        let face_points = match faces {
+            Some(points) => {
+                let path = out
+                    .strip_suffix(".webm")
+                    .map_or_else(|| format!("{out}.points.json"), |s| format!("{s}.points.json"));
+                let bytes = serde_json::to_vec(&points)
+                    .map_err(|e| OpError::internal(format!("serialising the face points: {e}")))?;
+                write_file(job, &path, &bytes)?;
+                Some(path)
+            }
+            None => None,
+        };
         let mut voice_wav = None;
         if has_voice && !written.audio_in_video {
             let wav = out.strip_suffix(".webm").map_or_else(|| format!("{out}.wav"), |stem| format!("{stem}.wav"));
-            write_file(job, &wav, &wav_bytes(&voice.pcm)?)?;
+            write_file(job, &wav, &wav_bytes(pcm)?)?;
             voice_wav = Some(wav);
         }
         let measures = timeline.measures();
         let elapsed = started.elapsed().as_secs_f32();
+        #[allow(clippy::cast_precision_loss, reason = "frame counts far below 2^24")]
+        let seconds = frames as f32 / def.fps.max(1) as f32;
         tracing::info!(
             frames = report.frames,
             render_s = report.render_s,
@@ -697,12 +768,14 @@ impl RenderShort {
             path: out.to_owned(),
             bytes: written.bytes,
             frames,
+            first_frame: span.start,
             fps: def.fps,
             size: def.size,
             duration_s: timeline.duration,
             audio: written.audio_in_video,
             voice_wav,
-            realtime_factor: elapsed / timeline.duration.max(0.001),
+            face_points,
+            realtime_factor: elapsed / seconds.max(0.001),
             bar: bar_checks(&measures),
             measures,
         };
@@ -712,3 +785,128 @@ impl RenderShort {
 }
 
 register_op!(RenderShort);
+
+/// The voice under `frames` of a short at `fps`.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "sample offsets of a short of at most 600 s"
+)]
+fn span_pcm<'a>(pcm: &'a [f32], frames: &std::ops::Range<u64>, fps: u32) -> &'a [f32] {
+    let at =
+        |frame: u64| ((frame as f64 * f64::from(crate::voice::RATE) / f64::from(fps.max(1))) as usize).min(pcm.len());
+    &pcm[at(frames.start)..at(frames.end).max(at(frames.start))]
+}
+
+/// Passes on the frames of a span, renumbered from 0, and drops the rest.
+struct SpanSink<'a> {
+    inner: &'a mut dyn FrameSink,
+    frames: std::ops::Range<u64>,
+}
+
+impl FrameSink for SpanSink<'_> {
+    fn frame(&mut self, index: u64, rgba: &[u8]) -> Result<(), ShortError> {
+        if self.frames.contains(&index) { self.inner.frame(index - self.frames.start, rgba) } else { Ok(()) }
+    }
+
+    fn wants_faces(&self) -> bool {
+        self.inner.wants_faces()
+    }
+
+    fn face(&mut self, index: u64, face: Option<&FacePoints>) -> Result<(), ShortError> {
+        if self.frames.contains(&index) { self.inner.face(index - self.frames.start, face) } else { Ok(()) }
+    }
+}
+
+/// Passes the frames on and keeps where the face landed in each, as `parity.loop` reads points: one map per frame,
+/// empty where no face is in the picture.
+struct FaceSink<'a> {
+    inner: &'a mut dyn FrameSink,
+    points: &'a mut Vec<BTreeMap<&'static str, [f32; 2]>>,
+}
+
+impl FrameSink for FaceSink<'_> {
+    fn frame(&mut self, index: u64, rgba: &[u8]) -> Result<(), ShortError> {
+        self.inner.frame(index, rgba)
+    }
+
+    fn wants_faces(&self) -> bool {
+        true
+    }
+
+    fn face(&mut self, _index: u64, face: Option<&FacePoints>) -> Result<(), ShortError> {
+        self.points.push(face.map_or_else(BTreeMap::new, |f| {
+            BTreeMap::from([
+                ("eye_right", f.eye_right.to_array()),
+                ("eye_left", f.eye_left.to_array()),
+                ("mouth", f.mouth.to_array()),
+                ("chin", f.chin.to_array()),
+            ])
+        }));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use omuzaki_core::glam::Vec2;
+
+    use super::*;
+
+    /// Keeps the frame numbers it is given.
+    #[derive(Default)]
+    struct Frames(Vec<u64>);
+
+    impl FrameSink for Frames {
+        fn frame(&mut self, index: u64, _rgba: &[u8]) -> Result<(), ShortError> {
+            self.0.push(index);
+            Ok(())
+        }
+    }
+
+    fn face(x: f32) -> FacePoints {
+        FacePoints::new(
+            Vec2::new(x, 10.0),
+            Vec2::new(x + 20.0, 10.0),
+            Vec2::new(x + 10.0, 30.0),
+            Vec2::new(x + 10.0, 40.0),
+        )
+    }
+
+    #[test]
+    fn face_points_keep_one_map_per_drawn_frame_and_an_empty_one_where_no_face_shows() {
+        let mut frames = Frames::default();
+        let mut points = Vec::new();
+        let mut sink = FaceSink { inner: &mut frames, points: &mut points };
+        assert!(sink.wants_faces());
+        for (index, shown) in [(0, Some(face(5.0))), (1, None), (2, Some(face(7.0)))] {
+            sink.face(index, shown.as_ref()).unwrap();
+            sink.frame(index, &[]).unwrap();
+        }
+        assert_eq!(frames.0, [0, 1, 2]);
+        assert_eq!(points.len(), 3);
+        assert_eq!(points[0]["eye_right"], [5.0, 10.0]);
+        assert_eq!(points[0]["chin"], [15.0, 40.0]);
+        assert!(points[1].is_empty(), "no face, no points");
+        let json = serde_json::to_value(&points).unwrap();
+        assert_eq!(json[2]["eye_left"], json!([27.0, 10.0]), "as parity.loop reads points");
+    }
+
+    #[test]
+    fn a_span_passes_its_faces_on_renumbered_and_drops_the_rest() {
+        let mut frames = Frames::default();
+        let mut points = Vec::new();
+        let mut faces = FaceSink { inner: &mut frames, points: &mut points };
+        let mut span = SpanSink { inner: &mut faces, frames: 2..4 };
+        assert!(span.wants_faces());
+        for index in 0..6 {
+            #[allow(clippy::cast_precision_loss, reason = "small frame numbers")]
+            span.face(index, Some(&face(index as f32))).unwrap();
+            span.frame(index, &[]).unwrap();
+        }
+        assert_eq!(frames.0, [0, 1]);
+        assert_eq!(points.iter().map(|p| p["eye_right"][0]).collect::<Vec<_>>(), [2.0, 3.0]);
+        assert!(!SpanSink { inner: &mut Frames::default(), frames: 0..1 }.wants_faces());
+    }
+}
