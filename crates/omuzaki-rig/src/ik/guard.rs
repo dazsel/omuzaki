@@ -545,10 +545,10 @@ fn hull(
     };
     // A part that hardly bends is one frustum: half the tests a frame for the same fit. It goes by the upper part's
     // name (a straight torso is the torso, not the waist).
-    let bent = [(0.0, bend, r_from, r_bend), (bend, 1.0, r_bend, r_to)];
-    let straight = [(0.0, 1.0, r_from, r_to)];
-    let (spans, names): (&[(f32, f32, f32, f32)], &[BodyPart]) =
-        if off_line((bend, r_bend)) < STRAIGHT { (&straight, &parts[1..]) } else { (&bent, &parts) };
+    let two: [Span; 2] = [(0.0, bend, r_from, r_bend), (bend, 1.0, r_bend, r_to)];
+    let one: [Span; 1] = [(0.0, 1.0, r_from, r_to)];
+    let (spans, names): (&[Span], &[BodyPart]) =
+        if off_line((bend, r_bend)) < STRAIGHT { (&one, &parts[1..]) } else { (&two, &parts) };
     let mut out = Vec::with_capacity(2);
     for (&part, &(t0, t1, r0, r1)) in names.iter().zip(spans) {
         let mut over: Vec<f32> = profile
@@ -574,6 +574,9 @@ pub const LOOSE: f32 = 0.25;
 const MIN_SKIRT_POINTS: usize = 16;
 /// The rings tried along a [`hull`] for its bend, end to end.
 const HULL_RINGS: usize = 8;
+/// One frustum of a [`hull`]: where it starts and ends along the hull (0 to 1) and its radius at each end.
+type Span = (f32, f32, f32, f32);
+
 /// How far a [`hull`]'s bend may stand off the straight line between its ends, metres, and the hull still be one
 /// frustum.
 const STRAIGHT: f32 = 0.004;
