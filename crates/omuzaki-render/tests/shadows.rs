@@ -734,3 +734,49 @@ fn write_the_evidence_pictures_when_asked() {
         image::save_buffer(path, &image.rgba8, 512, 512, image::ExtendedColorType::Rgba8).unwrap();
     }
 }
+
+// ---- soft shadows (#2666) ----
+
+/// How many pixels along the ground row z = 0, from x = 0.45 to 0.85 (across the cube shadow's far edge at x = 0.6),
+/// sit between the shadow and the light: the penumbra's width.
+fn penumbra_pixels(shadowed: &Image, unlit: &Image, open: &Image) -> usize {
+    let (x0, y) = pixel(0.45, 0.0);
+    let (x1, _) = pixel(0.85, 0.0);
+    (x0..x1)
+        .filter(|&x| {
+            let (s, u, o) = (rgb_at(shadowed, x, y)[0], rgb_at(unlit, x, y)[0], rgb_at(open, x, y)[0]);
+            s > u.saturating_add(6) && s.saturating_add(6) < o
+        })
+        .count()
+}
+
+/// A scene's `shadow_softness` widens the shadow's edge into a penumbra and leaves its core dark; 0 keeps today's edge.
+#[test]
+fn shadow_softness_widens_the_edge_and_keeps_the_core() {
+    let _gpu = serial();
+    let mut w = World::new();
+    let q = quality(ShadowQuality::High);
+    let unlit = w.image(&w.cube_scene(top_down(), FROM_LEFT, false, Vec3::ZERO), &q);
+    let open = w.image(&w.cube_scene(top_down(), FROM_LEFT, true, Vec3::ZERO), &quality(ShadowQuality::Off));
+    let mut scene = w.cube_scene(top_down(), FROM_LEFT, true, Vec3::ZERO);
+    let hard = w.image(&scene, &q);
+    scene.shadow_softness = 1.0;
+    let soft = w.image(&scene, &q);
+    if let Some(dir) = std::env::var_os("OMUZAKI_SOFT_SHADOW_DUMP") {
+        let dir = PathBuf::from(dir);
+        for (name, image) in [("hard", &hard), ("soft", &soft)] {
+            image::save_buffer(dir.join(format!("{name}.png")), &image.rgba8, SIZE.x, SIZE.y, image::ColorType::Rgba8)
+                .unwrap();
+        }
+    }
+    let (hard_edge, soft_edge) = (penumbra_pixels(&hard, &unlit, &open), penumbra_pixels(&soft, &unlit, &open));
+    assert!(hard_edge <= 3, "the hard edge spans {hard_edge} px");
+    assert!(soft_edge >= hard_edge + 4, "softness 1 widens the edge only from {hard_edge} to {soft_edge} px");
+    let (px, py) = pixel(0.4, 0.0);
+    assert!(close(rgb_at(&soft, px, py), rgb_at(&unlit, px, py), 12), "the soft shadow's core stays dark");
+    // Back to 0 on the same renderer: the maps keep their drawing, the edge goes hard again.
+    scene.shadow_softness = 0.0;
+    assert_eq!(differing(&w.image(&scene, &q), &hard, 0), 0, "softness 0 renders as before");
+    scene.shadow_softness = 1.5;
+    assert!(w.r.render_image(SIZE, AlphaEncoding::Straight, &scene, &q).is_err(), "softness above 1 is refused");
+}
