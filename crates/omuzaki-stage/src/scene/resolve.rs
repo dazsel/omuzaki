@@ -287,6 +287,16 @@ impl ResolvedScene {
         }
     }
 
+    /// Lets go of the pixels of an HDRI or a backdrop picture the scene no longer uses, here, off the render thread.
+    fn release_unused(&mut self) {
+        if self.hdri.as_ref().map(HdriPixels::asset) != self.environment.as_ref().and_then(ResolvedEnvironment::hdri) {
+            self.hdri = None;
+        }
+        if self.image.as_ref().map(ImagePixels::asset) != self.backdrop_image.map(|i| i.asset) {
+            self.image = None;
+        }
+    }
+
     /// Resolves `def` for a target of `aspect` into `self` and says what changed. `figures` holds the visible members
     /// by id. The subject is `scene.subject`, else the first member by id.
     ///
@@ -396,13 +406,7 @@ impl ResolvedScene {
             ..Changes::default()
         };
         changes.backdrop |= replace(&mut self.backdrop_image, backdrop_image);
-        // Pixels of an HDRI the scene no longer uses are let go here, off the render thread.
-        if self.hdri.as_ref().map(HdriPixels::asset) != self.environment.as_ref().and_then(ResolvedEnvironment::hdri) {
-            self.hdri = None;
-        }
-        if self.image.as_ref().map(ImagePixels::asset) != self.backdrop_image.map(|i| i.asset) {
-            self.image = None;
-        }
+        self.release_unused();
         if lights != self.lights {
             self.lights = lights;
             changes.lights = true;

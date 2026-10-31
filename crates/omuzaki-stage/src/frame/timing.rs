@@ -98,8 +98,8 @@ mod tests {
 
     use super::*;
 
-    fn tick(i: u64) -> Tick {
-        Tick { index: i, time: Seconds(i as f64 / 60.0), dt: 1.0 / 60.0 }
+    fn tick(i: u32) -> Tick {
+        Tick { index: u64::from(i), time: Seconds(f64::from(i) / 60.0), dt: 1.0 / 60.0 }
     }
 
     #[test]
@@ -115,7 +115,7 @@ mod tests {
         let mut holds = Holds::default();
         holds.set(Timing { body_hz: 12.0, face_hz: 0.0, hold_secondary: true });
         let frames: Vec<HoldFrame> = (0..60).map(|i| holds.frame(tick(i))).collect();
-        let moved: Vec<u64> = (0..60).filter(|&i| frames[i as usize].body).collect();
+        let moved: Vec<usize> = (0..60).filter(|&i| frames[i].body).collect();
         assert_eq!(moved, vec![0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55], "a new pose every 5 frames at 60 Hz");
         assert!(frames.iter().all(|f| f.face), "the face moves every frame");
         assert_eq!(frames[1].secondary_dt, None, "hair holds with the body");

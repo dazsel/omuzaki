@@ -32,7 +32,8 @@ fn panels(r: &mut dyn Renderer, rects: &[([u32; 4], u32)], background: Backgroun
     let half = (SIZE / 2) as f32;
     for (i, &([left, top, right, bottom], colour)) in rects.iter().enumerate() {
         let px = |v: u32| v as f32;
-        let centre = Vec2::new(0.5 * (px(left) + px(right)) - half, half - 0.5 * (px(top) + px(bottom))) / half;
+        let centre =
+            Vec2::new(f32::midpoint(px(left), px(right)) - half, half - f32::midpoint(px(top), px(bottom))) / half;
         let extent = Vec2::new(px(right - left), px(bottom - top)) / (2.0 * half);
         let mesh = r.create_mesh(&shapes::quad(extent)).unwrap();
         let material = r.create_material(&Material::unlit(Colour::hex(colour))).unwrap();
@@ -117,11 +118,7 @@ fn hatching_falls_only_in_the_dark_tones_and_crosses_in_the_darkest() {
     // Three bands: light (0.8), dark (0.25), darkest (0.08) display luma.
     let mut scene = panels(
         &mut r,
-        &[
-            ([0, 0, 86, SIZE], 0x00cc_cccc),
-            ([86, 0, 172, SIZE], 0x0040_4040),
-            ([172, 0, SIZE, SIZE], 0x0014_1414),
-        ],
+        &[([0, 0, 86, SIZE], 0x00cc_cccc), ([86, 0, 172, SIZE], 0x0040_4040), ([172, 0, SIZE, SIZE], 0x0014_1414)],
         Background::Solid { colour: Colour::BLACK },
     );
     scene.post.stylize.hatching = Some(Hatching {
