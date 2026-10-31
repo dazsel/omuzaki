@@ -543,8 +543,14 @@ fn hull(
         let (bone, world) = carrier(at);
         (Anchor { bone, offset: point(inverse(world), at) }, world.rotation.inverse() * front)
     };
+    // A part that hardly bends is one frustum: half the tests a frame for the same fit. It goes by the upper part's
+    // name (a straight torso is the torso, not the waist).
+    let bent = [(0.0, bend, r_from, r_bend), (bend, 1.0, r_bend, r_to)];
+    let straight = [(0.0, 1.0, r_from, r_to)];
+    let (spans, names): (&[(f32, f32, f32, f32)], &[BodyPart]) =
+        if off_line((bend, r_bend)) < STRAIGHT { (&straight, &parts[1..]) } else { (&bent, &parts) };
     let mut out = Vec::with_capacity(2);
-    for (part, (t0, t1, r0, r1)) in parts.into_iter().zip([(0.0, bend, r_from, r_bend), (bend, 1.0, r_bend, r_to)]) {
+    for (&part, &(t0, t1, r0, r1)) in names.iter().zip(spans) {
         let mut over: Vec<f32> = profile
             .iter()
             .filter(|(t, _)| (t0..=t1).contains(t))
@@ -568,6 +574,9 @@ pub const LOOSE: f32 = 0.25;
 const MIN_SKIRT_POINTS: usize = 16;
 /// The rings tried along a [`hull`] for its bend, end to end.
 const HULL_RINGS: usize = 8;
+/// How far a [`hull`]'s bend may stand off the straight line between its ends, metres, and the hull still be one
+/// frustum.
+const STRAIGHT: f32 = 0.004;
 /// The half length of the band of points a [`hull`]'s ring is measured from, as a share of its length.
 const HULL_BAND: f32 = 0.125;
 
@@ -716,8 +725,10 @@ struct Contact {
 
 /// The rounds of re-solving one arm takes at most.
 const ROUNDS: usize = 6;
-/// The halvings that take back a push larger than the arm needs: the last leaves it within 1/32 of the push.
-const SETTLE_STEPS: usize = 5;
+/// The halvings that take back a push larger than the arm needs: the last leaves it within 1/16 of the push.
+const SETTLE_STEPS: usize = 4;
+/// The gap a push may leave, metres, before it is taken back: less is not seen.
+const SETTLE_OVER: f32 = 0.004;
 /// A contact this close to the elbow pushes the wrist as if it were here: the wrist cannot move the elbow.
 const MIN_ALONG: f32 = 0.35;
 /// A push shorter than this is dropped, metres: the last half millimetre of letting go is not worth a solve.
@@ -864,7 +875,7 @@ impl ArmGuard {
             // The rounds push along each contact's normal in turn, and two contacts (a forearm on the hip, the hand on
             // the thigh) add up past what either needs: take back the share of the push that isn't needed, so the arm
             // rests on the body, not a few centimetres off it (#2688).
-            if need != Vec3::ZERO && contact.gap > 2.0 * self.config.margin {
+            if need != Vec3::ZERO && contact.gap > SETTLE_OVER {
                 let (mut lo, mut hi) = (0.0_f32, 1.0_f32);
                 for _ in 0..SETTLE_STEPS {
                     let mid = f32::midpoint(lo, hi);
