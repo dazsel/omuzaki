@@ -1,4 +1,4 @@
-//! `measure.arm_room` (#2683) on the kit character `character.create` makes, through the registry as an agent calls
+//! `measure.arm_room` (#2688) on the kit character `character.create` makes, through the registry as an agent calls
 //! it: the body's parts as the arm guard measured them (its flared skirt a hull of its own), how close its arms hang,
 //! and how far its body moves the arms of a take imported with `motion.import`: a take that hangs the arms straight is
 //! moved onto the skirt, and less without the skirt.

@@ -206,7 +206,7 @@ fn the_body_is_measured_from_its_mesh() {
     let skeleton = skeleton();
     let proxy = BodyProxy::fit(&skeleton, &skeleton.rest_pose(), &mesh(&skeleton)).unwrap();
     let radius = |part: BodyPart| proxy.body.iter().find(|p| p.part == part).unwrap().radius;
-    // The pelvis is an ellipse on the body's up axis (#2683), so its width is the hips' own, not the capsule's radius:
+    // The pelvis is an ellipse on the body's up axis (#2688), so its width is the hips' own, not the capsule's radius:
     // it is checked by what it holds, below.
     for (part, want) in
         [(BodyPart::Torso, TORSO), (BodyPart::LeftThigh, THIGH), (BodyPart::RightThigh, THIGH), (BodyPart::Head, HEAD)]

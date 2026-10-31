@@ -133,7 +133,7 @@ impl RigFrame {
     pub(crate) fn for_character(built: &BuiltCharacter) -> Result<Self, StageError> {
         let mut frame = Self::new(&built.rig)?;
         let inverse_bind = built.rig.inverse_bind();
-        // Garments are measured as clothes, the rest as the body (#2683).
+        // Garments are measured as clothes, the rest as the body (#2688).
         let garment = |m: &BuiltMesh| {
             let kind = built.def.parts.get(&m.part).and_then(|p| omuzaki_char_api::find_kind(p.kind.as_str()));
             kind.is_some_and(|k| (k.meta)().category == PartCategory::Garment)
@@ -307,7 +307,7 @@ fn bone_of(skeleton: &Skeleton, joint: &JointRef) -> Option<BoneId> {
 
 /// The arm guard for a body with these skinned `meshes` (#2353), or `None` if it cannot be measured. Each mesh comes
 /// with its own inverse bind matrices by joint, if it has them (otherwise `by_bone` gives the inverse bind of a bone),
-/// and whether it is a garment, which is measured as clothes (#2683: a skirt is a hull, not wider thighs). The body is
+/// and whether it is a garment, which is measured as clothes (#2688: a skirt is a hull, not wider thighs). The body is
 /// then made clear of the arms in `bind`, the pose the character rests in. Cold.
 fn arm_guard<'a>(
     skeleton: &Skeleton,
@@ -379,7 +379,7 @@ mod tests {
         (angle, report.before)
     }
 
-    /// #2683: the kit's default character wears a flared skirt. Fitted as part of each thigh, the skirt made each
+    /// #2688: the kit's default character wears a flared skirt. Fitted as part of each thigh, the skirt made each
     /// thigh a cylinder as wide as the hem and held arms that were asked to hang 29 degrees out; measured as clothes,
     /// it is a hull of its own, the thighs are as thick as the legs, and a hanging hand rests on the skirt, nothing
     /// inside the body or the skirt. Without the skirt, the arm hangs closer still, by the hips.

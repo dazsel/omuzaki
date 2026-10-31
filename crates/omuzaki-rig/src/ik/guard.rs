@@ -11,7 +11,7 @@
 //! is deep, so its cross-section is an ellipse: a half width and a half depth, measured the same way, facing the way
 //! the body faces (#2414: a round torso as wide as the shoulders held a hand on the chest a hand's breadth off it).
 //!
-//! Clothes are measured as what they are (#2683). [`BodyProxy::fit_dressed`] fits the body from its skin and the
+//! Clothes are measured as what they are (#2688). [`BodyProxy::fit_dressed`] fits the body from its skin and the
 //! garments that hug it (tights, a fitted top), and a loose garment around the hips (a skirt, a dress, a coat's tails)
 //! becomes its own part: a [`BodyPart::Skirt`] hull hung from the hips in two frustums, waist to its widest and on to
 //! the hem, each widening by its [`flare`](Proxy::flare). Fitted as a thigh, a flared skirt made each thigh a
@@ -267,7 +267,7 @@ impl BodyProxy {
         let top = joint(B::Neck).or_else(|| joint(B::Head))?;
         let spine = [map.get(B::Spine), map.get(B::Chest), map.get(B::UpperChest)];
         // The torso tapers: hips, a waist, a chest and shoulders. One ellipse as wide as the widest held an elbow at the
-        // waist out by the shoulders' width (#2683), so it is two frustums bent where the body is narrowest or widest.
+        // waist out by the shoulders' width (#2688), so it is two frustums bent where the body is narrowest or widest.
         // Each ring rides on the last bone of the spine at or below it, so the torso bends with the spine.
         let chain: Vec<(BoneId, Transform)> = std::iter::once(hips)
             .chain([B::Spine, B::Chest, B::UpperChest].into_iter().filter_map(joint))
@@ -377,7 +377,7 @@ impl BodyProxy {
     }
 
     /// [`fit`](Self::fit) for a dressed body: `skin` are the body's own vertices (and anything else that is part of
-    /// it: the head, hair, boots), `garments` the clothes' (#2683). A garment vertex on the hips or a thigh that stands
+    /// it: the head, hair, boots), `garments` the clothes' (#2688). A garment vertex on the hips or a thigh that stands
     /// off the bare body by more than [`LOOSE`] of the part's radius is loose (a skirt, a dress); the rest hug the body
     /// and are fitted with it (tights, a fitted top, the waistband). The loose ones become a [`BodyPart::Skirt`] hull in
     /// two frustums ([`Self::skirt`]) instead of widening the thighs. `None` as [`fit`](Self::fit) is for `skin`.
@@ -834,7 +834,7 @@ impl ArmGuard {
             let bend = Self::pole(skeleton, pose, ids);
             let shoulder = bone_world(skeleton, pose, ids[0]).translation;
             // How far a point `along` the forearm moves for the wrist's move, the arm turning about the shoulder: a
-            // push divided by it puts that point, not the wrist, out by the push (#2683: dividing by `along` itself
+            // push divided by it puts that point, not the wrist, out by the push (#2688: dividing by `along` itself
             // pushed a forearm contact a fifth too far, and a hanging arm stood off the hip by two centimetres).
             let upper = shoulder.distance(bone_world(skeleton, pose, ids[1]).translation);
             let reach = upper + bone_world(skeleton, pose, ids[1]).translation.distance(animated.translation);
@@ -863,7 +863,7 @@ impl ArmGuard {
             }
             // The rounds push along each contact's normal in turn, and two contacts (a forearm on the hip, the hand on
             // the thigh) add up past what either needs: take back the share of the push that isn't needed, so the arm
-            // rests on the body, not a few centimetres off it (#2683).
+            // rests on the body, not a few centimetres off it (#2688).
             if need != Vec3::ZERO && contact.gap > 2.0 * self.config.margin {
                 let (mut lo, mut hi) = (0.0_f32, 1.0_f32);
                 for _ in 0..SETTLE_STEPS {

@@ -1,4 +1,4 @@
-//! `measure.arm_room` (#2683): how much room a character's body leaves its arms. The arm guard keeps the forearms and
+//! `measure.arm_room` (#2688): how much room a character's body leaves its arms. The arm guard keeps the forearms and
 //! hands out of the body, measured from the character's own meshes; this says what it measured (each part's size, a
 //! skirt as its own flared hull), how close the arms come down when asked to hang straight, and, for a clip or an
 //! imported take, how far the body moves the arms off what the clip asks, frame by frame.
