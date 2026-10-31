@@ -1,10 +1,12 @@
 //! Props on the stage (design D7, D10; ST-03): the kinds this crate registers, the solids they are made of, and the
 //! props of a scene resolved, uploaded and drawn.
 //!
-//! - [`shape`]: boxes, frustums, vessels, ellipsoids, tubes and leaves, closed and painted, appended into one mesh.
+//! - [`shape`]: boxes, frustums, vessels, ellipsoids, tubes, lathe-turned solids, sheets and leaves, closed and
+//!   painted, appended into one mesh.
 //! - The interior kinds (#1166): [`room`] (`room`, `rug`), [`furniture`] (`desk`, `chair`, `cafe-table`, `bed`),
-//!   [`shelf`], [`lighting`] (`lamp`, `window`), [`small`] (`cup`, `plant`) and [`decor`] (`gramophone`, `picture`,
-//!   `urn`, `chest`, `armchair`). Each is procedural, in metres, toon with vertex colours, and registers itself.
+//!   [`shelf`], [`lighting`] (`lamp`, `window`), [`small`] (`cup`, `plant`), [`decor`] (`gramophone`, `picture`,
+//!   `urn`, `chest`, `armchair`) and [`stairs`] (`staircase`). Each is procedural, in metres, toon with vertex
+//!   colours, and registers itself.
 //! - [`staged`]: a scene's props resolved (builds kept while their params are), uploaded once per build and drawn
 //!   every frame, attached ones under their bones.
 
@@ -23,6 +25,8 @@ pub mod shelf;
 #[allow(clippy::many_single_char_names, reason = "w, d, h and x, y, z are the extents and axes of what a kind builds")]
 pub mod small;
 pub mod staged;
+#[allow(clippy::many_single_char_names, reason = "w, d, h and x, y, z are the extents and axes of what a kind builds")]
+pub mod stairs;
 
 use omuzaki_render_api::Material;
 use omuzaki_stage_api::{PropOutput, PropPart};

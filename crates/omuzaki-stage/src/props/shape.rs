@@ -211,6 +211,17 @@ impl Shape {
         self
     }
 
+    /// A solid turned on a lathe about `at`'s +Y: `profile` holds `(radius, y)` from the bottom up (at least two),
+    /// `segments` around, capped flat where an end's radius is above 0: a baluster, a newel post, a candlestick.
+    pub fn lathe(&mut self, at: At, profile: &[Vec2], segments: u32, colour: Colour) -> &mut Self {
+        if profile.len() < 2 {
+            return self;
+        }
+        let (positions, normals, uvs, indices) = lathe(profile, segments.max(3));
+        self.append(at, colour, &positions, &normals, &uvs, &indices);
+        self
+    }
+
     /// A thin leaf: a lens-shaped blade of `length` and `width` along `at`'s +Y, bent forward by `curl` metres at its
     /// tip, with two sides so it reads from behind.
     pub fn leaf(&mut self, at: At, length: f32, width: f32, curl: f32, colour: Colour) -> &mut Self {
@@ -341,6 +352,53 @@ fn frustum(bottom: f32, top: f32, height: f32, segments: u32, caps: (bool, bool)
         solid.2.push(Vec2::splat(0.5));
         for (_, dir) in ring(segments) {
             solid.0.push(Vec3::new(dir.x * radius, y, dir.y * radius));
+            solid.1.push(normal);
+            solid.2.push(Vec2::new(0.5 + dir.x * 0.5, 0.5 - dir.y * 0.5));
+        }
+        for i in 0..segments {
+            solid.3.extend([centre, centre + 1 + i, centre + 2 + i]);
+        }
+    }
+    fix_winding(&mut solid);
+    solid
+}
+
+/// A turned solid: rings at each `(radius, y)` of `profile`, smooth along it, with flat caps on the ends.
+fn lathe(profile: &[Vec2], segments: u32) -> Solid {
+    let mut solid: Solid = Default::default();
+    let n = profile.len();
+    let rows = u32::try_from(n).unwrap_or(u32::MAX);
+    // A row's normal is the profile's tangent turned outward: (dy, -dr) for a tangent (dr, dy).
+    let bend: Vec<Vec2> = (0..n)
+        .map(|j| {
+            let t = profile[(j + 1).min(n - 1)] - profile[j.saturating_sub(1)];
+            Vec2::new(t.y, -t.x).normalize_or(Vec2::X)
+        })
+        .collect();
+    for (u, dir) in ring(segments) {
+        for (j, (p, b)) in profile.iter().zip(&bend).enumerate() {
+            solid.0.push(Vec3::new(dir.x * p.x, p.y, dir.y * p.x));
+            solid.1.push(Vec3::new(dir.x * b.x, b.y, dir.y * b.x).normalize_or(Vec3::Y));
+            #[allow(clippy::cast_precision_loss)] // a profile has a few dozen points
+            solid.2.push(Vec2::new(u, 1.0 - j as f32 / n_minus_one(n)));
+        }
+    }
+    for i in 0..segments {
+        for j in 0..rows - 1 {
+            let (a, b) = (i * rows + j, (i + 1) * rows + j);
+            solid.3.extend([a, b, b + 1, a, b + 1, a + 1]);
+        }
+    }
+    for (p, normal) in [(profile[0], Vec3::NEG_Y), (profile[n - 1], Vec3::Y)] {
+        if p.x <= 0.0 {
+            continue;
+        }
+        let centre = u32::try_from(solid.0.len()).unwrap_or(0);
+        solid.0.push(Vec3::new(0.0, p.y, 0.0));
+        solid.1.push(normal);
+        solid.2.push(Vec2::splat(0.5));
+        for (_, dir) in ring(segments) {
+            solid.0.push(Vec3::new(dir.x * p.x, p.y, dir.y * p.x));
             solid.1.push(normal);
             solid.2.push(Vec2::new(0.5 + dir.x * 0.5, 0.5 - dir.y * 0.5));
         }
@@ -636,6 +694,13 @@ pub(crate) mod tests {
         assert_solid(&s.clone().into_mesh(), true);
         let mut s = Shape::new();
         s.tube(&[Vec3::ZERO, Vec3::new(0.0, 0.2, 0.0), Vec3::new(0.1, 0.3, 0.0), Vec3::new(0.2, 0.3, 0.05)], 0.01, 8, c);
+        assert_solid(&s.clone().into_mesh(), true);
+        let mut s = Shape::new();
+        let baluster = [Vec2::new(0.03, 0.0), Vec2::new(0.03, 0.05), Vec2::new(0.015, 0.1), Vec2::new(0.035, 0.3), Vec2::new(0.012, 0.6), Vec2::new(0.03, 0.65), Vec2::new(0.03, 0.7)];
+        s.lathe(At::xyz(0.0, 0.0, 0.0).roll(10.0), &baluster, 12, c);
+        assert_solid(&s.clone().into_mesh(), true);
+        let mut s = Shape::new();
+        s.lathe(At::xyz(0.0, 0.0, 0.0), &[Vec2::new(0.1, 0.0), Vec2::new(0.06, 0.2), Vec2::new(0.0, 0.3)], 12, c);
         assert_solid(&s.clone().into_mesh(), true);
         let mut s = Shape::new();
         s.leaf(At::xyz(0.0, 0.0, 0.0).roll(20.0), 0.2, 0.05, 0.04, c);
