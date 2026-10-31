@@ -306,9 +306,10 @@ fn marks_are_added_to_a_face_without_a_list_and_to_a_character_without_a_face() 
     assert_eq!(plan.patch.changes[0].path, path("characters/mira/face/marks"));
     assert_eq!(
         plan.patch.changes[0].after,
-        Some(
-            json!([{ "kind": "paint", "at": [0.0, 0.0], "size": 0.003, "colour": "#7a4a40", "opacity": 0.8, "count": 12, "seed": 1 }])
-        )
+        Some(json!([{
+            "kind": "paint", "at": [0.0, 0.0], "size": 0.003, "colour": "#7a4a40", "opacity": 0.8, "count": 12,
+            "seed": 1, "points": [], "width": 0.0012, "pads": 0.0
+        }]))
     );
 
     let no_face = MemDoc::from_value(json!({ "characters": { "mira": { "name": "Mira" } } }));

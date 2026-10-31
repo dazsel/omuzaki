@@ -64,6 +64,46 @@ fn the_mock_character_has_a_head_and_a_body() {
 }
 
 #[test]
+fn a_character_stands_on_its_soles_and_a_higher_heel_raises_it() {
+    let bare = Landmarks::measure(&templates::build("standard")).unwrap();
+    assert!(bare.lift < 0.002, "the bare body stands on the floor line: lifted {} m", bare.lift);
+    let shod = |heel: f64| {
+        let built = templates::build_dressed(
+            "standard",
+            &["body", "head"],
+            &[("boots", serde_json::json!({"heel": {"height": heel}}))],
+        );
+        let l = Landmarks::measure(&built).unwrap();
+        assert!(l.bottom().abs() < 1e-6, "the lowest point is on the floor: {}", l.bottom());
+        assert!((l.lift - omuzaki_stage::frame::stand_lift(&built)).abs() < 1e-6, "framing and the stage agree");
+        l
+    };
+    let (low, high) = (shod(0.02), shod(0.06));
+    eprintln!("lift: bare {:.4}, 20 mm heel {:.4}, 60 mm heel {:.4}", bare.lift, low.lift, high.lift);
+    assert!(low.lift > 0.02, "a boot's sole and heel raise the character: {}", low.lift);
+    assert!(((high.lift - low.lift) - 0.04).abs() < 0.002, "40 mm more heel: {} m higher", high.lift - low.lift);
+    let (eyes_low, eyes_high) = (low.eyes.unwrap(), high.eyes.unwrap());
+    assert!(((eyes_high - eyes_low) - (high.lift - low.lift)).abs() < 1e-5, "the eyes rise with the heel");
+    assert!(((eyes_low - bare.eyes.unwrap()) - low.lift).abs() < 1e-4, "the boots move nothing else");
+}
+
+#[test]
+fn measure_reads_the_templates_as_their_charts_say() {
+    for (id, heads) in [("standard", 6.0), ("tall", 7.5)] {
+        let built = templates::build(id);
+        let body = omuzaki_stage::body::Body::Kit(Box::new(built));
+        let m = omuzaki_stage::ops::measure::measure(&CharId::new(id).unwrap(), &body).unwrap();
+        let l = &m.lengths;
+        eprintln!("{id}: {:.3} m, {:.2} heads, {l:?}", m.height, m.heads_tall.unwrap());
+        assert!((m.heads_tall.unwrap() - heads).abs() < 0.3, "{id}: {} heads", m.heads_tall.unwrap());
+        assert!(m.joints["hips"][1] > m.joints["leftLowerLeg"][1] && m.joints["head"][1] > m.joints["neck"][1]);
+        let (shoulders, hips) = (l.shoulder_width.unwrap(), l.hip_width.unwrap());
+        assert!(shoulders > hips && l.leg.unwrap() > l.arm.unwrap() && l.torso.unwrap() > l.neck.unwrap(), "{id}");
+        assert!((m.eyes.unwrap() - m.joints["leftEye"][1]).abs() < 0.002, "{id}: the eye line is the eye joints'");
+    }
+}
+
+#[test]
 fn a_character_without_a_head_part_has_no_head() {
     let built = templates::build_parts("standard", &["body"]);
     let l = Landmarks::measure(&built).unwrap();

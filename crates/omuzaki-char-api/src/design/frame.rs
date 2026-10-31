@@ -515,9 +515,10 @@ impl PartialEq for HeadFrame {
 }
 
 impl HeadFrame {
-    /// The frame of `surface`, with the landmarks of `layout` (head-local units, `scale` metres each: the stature's
-    /// factor, since the head's layout is authored at the template's size).
-    pub fn of(surface: Arc<dyn HeadSurface>, layout: &FaceLayout, scale: f32) -> Self {
+    /// The frame of `surface`, with the landmarks of `layout` (head-local units, [`HeadSurface::layout_scale`] metres
+    /// each: the stature's factor times the head's own size, since the head's layout is authored at the template's).
+    pub fn of(surface: Arc<dyn HeadSurface>, layout: &FaceLayout) -> Self {
+        let scale = surface.layout_scale();
         let centre = surface.centre();
         let r = |d: Vec3| surface.radius(d);
         let radii = [r(Vec3::X), r(-Vec3::X), r(Vec3::Y), r(-Vec3::Y), r(Vec3::Z), r(-Vec3::Z)];

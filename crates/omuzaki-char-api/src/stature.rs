@@ -25,8 +25,8 @@ use omuzaki_core::glam::Vec3;
 use crate::error::BuildError;
 use crate::ids::{JointRef, PartId};
 use crate::kind::{
-    Anchor, AnchorsFact, BodyFit, BodyRegion, CollidersFact, FitFact, HeadFact, HeadSurface, PartOutput, Publishes,
-    RegionEnd, Section,
+    AnchorsFact, BodyFit, BodyRegion, CollidersFact, FitFact, HeadFact, HeadSurface, PartOutput, Publishes, RegionEnd,
+    Section,
 };
 use crate::rig::RigContribution;
 
@@ -65,6 +65,17 @@ impl Stature {
 /// rescaled afterwards without changing how it behaves. A part that simulates must be built in metres, which parts
 /// after the body are; the body and the head must not simulate.
 pub fn scale_output(part: &PartId, output: &mut PartOutput, s: f32) -> Result<(), BuildError> {
+    scale_output_about(part, output, s, Vec3::ZERO)
+}
+
+/// [`scale_output`] about `about` instead of the origin: every position `p` goes to `about + (p - about) * s`, every
+/// length is multiplied by `s`. What a head's own size uses ([`HeadParams::size`](crate::HeadParams::size)): the head
+/// grows or shrinks about its joint, so everything it carries (the painted face's windows, its eyes and jaw, its
+/// anchors) keeps its place on it. Bones keep their parent-relative layout scaled; a part's root bone sits at `about`.
+///
+/// # Errors
+/// As [`scale_output`].
+pub fn scale_output_about(part: &PartId, output: &mut PartOutput, s: f32, about: Vec3) -> Result<(), BuildError> {
     #[allow(clippy::float_cmp)] // exactly 1 means "no scale", and must leave the output bit for bit
     let unscaled = s == 1.0;
     if unscaled {
@@ -78,36 +89,34 @@ pub fn scale_output(part: &PartId, output: &mut PartOutput, s: f32) -> Result<()
                 .to_owned(),
         });
     }
+    let at = |p: Vec3| about + (p - about) * s;
     for mesh in &mut output.meshes {
-        mesh.geometry.positions.iter_mut().for_each(|p| *p *= s);
+        mesh.geometry.positions.iter_mut().for_each(|p| *p = at(*p));
     }
     for (_, material) in &mut output.materials {
         for overlay in &mut material.overlays {
             let w = &mut overlay.window;
-            (w.min, w.max) = (w.min * s, w.max * s);
-            (w.fade_from, w.fade_to) = (w.fade_from * s, w.fade_to * s);
+            let (lo, hi) = (at(w.min.extend(about.z)), at(w.max.extend(about.z)));
+            (w.min, w.max) = (lo.truncate(), hi.truncate());
+            (w.fade_from, w.fade_to) = (about.z + (w.fade_from - about.z) * s, about.z + (w.fade_to - about.z) * s);
         }
     }
-    scale_publishes(&mut output.publishes, s);
+    scale_publishes(&mut output.publishes, s, about);
     scale_rig(&mut output.rig, s);
     Ok(())
 }
 
-fn scale_publishes(p: &mut Publishes, s: f32) {
+fn scale_publishes(p: &mut Publishes, s: f32, about: Vec3) {
     for head in p.values_mut::<HeadFact>() {
-        *head = Arc::new(ScaledHead { inner: head.clone(), scale: s });
+        *head = Arc::new(ScaledHead { inner: head.clone(), scale: s, about });
     }
     for fit in p.values_mut::<FitFact>() {
-        *fit = Arc::new(ScaledFit { inner: fit.clone(), scale: s });
+        *fit = Arc::new(ScaledFit { inner: fit.clone(), scale: s, about });
     }
     for (_, anchor) in p.values_mut::<AnchorsFact>() {
-        scale_anchor(anchor, s);
+        anchor.position = about + (anchor.position - about) * s;
     }
     p.values_mut::<CollidersFact>().for_each(|g| scale_group(g, s));
-}
-
-fn scale_anchor(anchor: &mut Anchor, s: f32) {
-    anchor.position *= s;
 }
 
 fn scale_rig(rig: &mut RigContribution, s: f32) {
@@ -147,27 +156,36 @@ fn scale_group(group: &mut ColliderGroup, s: f32) {
 struct ScaledFit {
     inner: Arc<dyn BodyFit>,
     scale: f32,
+    /// The point the fit is scaled about.
+    about: Vec3,
+}
+
+impl ScaledFit {
+    fn at(&self, p: Vec3) -> Vec3 {
+        self.about + (p - self.about) * self.scale
+    }
 }
 
 impl BodyFit for ScaledFit {
     fn section(&self, region: BodyRegion, t: f32) -> Option<Section> {
         self.inner.section(region, t).map(|sec| Section {
-            centre: sec.centre * self.scale,
+            centre: self.at(sec.centre),
             axis: sec.axis,
             radii: sec.radii * self.scale,
         })
     }
 
     fn cap(&self, region: BodyRegion, end: RegionEnd, height: f32) -> Option<Section> {
-        self.inner.cap(region, end, height / self.scale).map(|sec| Section {
-            centre: sec.centre * self.scale,
+        let authored = self.about.y + (height - self.about.y) / self.scale;
+        self.inner.cap(region, end, authored).map(|sec| Section {
+            centre: self.at(sec.centre),
             axis: sec.axis,
             radii: sec.radii * self.scale,
         })
     }
 
     fn joint(&self, joint: &JointRef) -> Option<Vec3> {
-        self.inner.joint(joint).map(|p| p * self.scale)
+        self.inner.joint(joint).map(|p| self.at(p))
     }
 
     fn envelope(&self) -> bool {
@@ -187,15 +205,20 @@ impl BodyFit for ScaledFit {
 struct ScaledHead {
     inner: Arc<dyn HeadSurface>,
     scale: f32,
+    about: Vec3,
 }
 
 impl HeadSurface for ScaledHead {
     fn centre(&self) -> Vec3 {
-        self.inner.centre() * self.scale
+        self.about + (self.inner.centre() - self.about) * self.scale
     }
 
     fn radius(&self, dir: Vec3) -> f32 {
         self.inner.radius(dir) * self.scale
+    }
+
+    fn layout_scale(&self) -> f32 {
+        self.inner.layout_scale() * self.scale
     }
 }
 

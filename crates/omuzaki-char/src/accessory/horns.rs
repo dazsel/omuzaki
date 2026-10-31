@@ -84,6 +84,9 @@ pub struct HornsParams {
     pub ridges: u32,
     /// How round the tip is, `0` (a point) to `1` (a ball).
     pub tip_round: f64,
+    /// How thick the horn is across its curve over how deep along it, `0.1..=1`: `1` is round, less a flat blade
+    /// (the fins of a mecha or a fish, a cat-ear headset's shells), thin from side to side.
+    pub flat: f64,
     /// A pair, or (off) one horn in the centre.
     pub mirror: bool,
     /// Where on the skull the root sits: a direction from the head centre (x is the character's left, y up, z forward).
@@ -113,6 +116,7 @@ impl Default for HornsParams {
             spread_deg: 0.0,
             ridges: 0,
             tip_round: 0.3,
+            flat: 1.0,
             mirror: true,
             direction: [0.5, 0.82, 0.12],
             spacing: 0.12,
@@ -133,6 +137,7 @@ impl Validate for HornsParams {
         c.range("tilt_deg", self.tilt_deg, -45.0, 45.0);
         c.range("spread_deg", self.spread_deg, -30.0, 60.0);
         c.range("tip_round", self.tip_round, 0.0, 1.0);
+        c.range("flat", self.flat, 0.1, 1.0);
         c.range("spacing", self.spacing, 0.0, 0.4);
         c.range("glow", self.glow, 0.0, 1.0);
         if self.ridges > 24 {
@@ -263,7 +268,7 @@ struct Horn {
 fn build_horn(p: &HornsParams, detail: Detail, s: f64, path: &[DVec3]) -> Result<Horn, KitError> {
     let rows = path.len() - 1;
     let seg = detail.lathe * 3 / 4;
-    let body = closed_tube(path, |t| (radius(p, t), radius(p, t)), seg, DVec3::Z)?;
+    let body = closed_tube(path, |t| (radius(p, t), radius(p, t) * p.flat), seg, DVec3::Z)?;
     // The tip sleeve: the same path from three quarters of the way, a hair wider, closing quickly at its lower end.
     let from = rows * 3 / 4;
     let tail = &path[from..];
@@ -273,7 +278,7 @@ fn build_horn(p: &HornsParams, detail: Detail, s: f64, path: &[DVec3]) -> Result
         let band = clamp(u / 0.15, 0.0, 1.0);
         (radius(p, t) + SLEEVE) * (1.0 - (1.0 - band) * (1.0 - band)).sqrt()
     };
-    let sleeve = closed_tube(tail, |u| (sleeve_radius(u), sleeve_radius(u)), seg, DVec3::Z)?;
+    let sleeve = closed_tube(tail, |u| (sleeve_radius(u), sleeve_radius(u) * p.flat), seg, DVec3::Z)?;
     let mut cracks = Vec::new();
     if p.glow > 0.0 {
         let fr = frames(path, DVec3::Z)?;
@@ -287,7 +292,7 @@ fn build_horn(p: &HornsParams, detail: Detail, s: f64, path: &[DVec3]) -> Result
                     let t = fraction(k, rows);
                     let phi = handed * (phase + 0.55 * (usize_f(k) * 1.9 + usize_f(c)).sin());
                     let frame = fr[k];
-                    frame.p + (frame.n * phi.cos() + frame.b * phi.sin()) * radius(p, t)
+                    frame.p + (frame.n * phi.cos() + frame.b * (phi.sin() * p.flat)) * radius(p, t)
                 })
                 .collect();
             if points.len() >= 2 {

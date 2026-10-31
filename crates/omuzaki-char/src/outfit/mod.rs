@@ -29,6 +29,7 @@
 //! which builds it on every template and body shape.
 
 pub mod apron;
+pub mod arm_warmers;
 pub mod blazer;
 pub mod bodysuit;
 pub mod boots;
@@ -47,6 +48,7 @@ pub mod robe;
 pub mod shirt;
 pub mod shoes;
 pub mod skirt;
+pub mod straps;
 pub mod trim;
 pub mod trousers;
 pub mod vest;

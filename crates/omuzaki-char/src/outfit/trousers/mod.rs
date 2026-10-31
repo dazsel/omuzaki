@@ -33,9 +33,10 @@ pub const TROUSERS_EASE: f64 = 0.004;
 pub const LENGTH: f64 = 0.92;
 /// The longest hem: under it the cloth is clear of the foot region on every template.
 pub const MAX_LENGTH: f64 = 0.95;
-/// The shortest hem, as a fraction of the leg region: the leg parts a little over half way down the thigh on every body,
-/// and a hem needs some leg under it ([`MIN_LEG`]).
-pub const MIN_LENGTH: f64 = 0.55;
+/// The shortest hem the parameters take, as a fraction of the leg region: hot pants. Where the legs part depends on the
+/// body, so the build refuses a hem above the crotch and its gusset on the body it is fitted to, naming the shortest
+/// that body takes (a hem needs some leg under it, [`MIN_LEG`]).
+pub const MIN_LENGTH: f64 = 0.1;
 /// The least leg under the gusset, as a fraction of the leg region.
 pub const MIN_LEG: f64 = 0.03;
 /// Rows down the leg between the gusset and the hem, besides the cuff's.

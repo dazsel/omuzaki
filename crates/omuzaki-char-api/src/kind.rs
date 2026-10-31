@@ -312,6 +312,13 @@ pub trait HeadSurface: Debug + Send + Sync {
     fn point(&self, dir: Vec3, offset: f32) -> Vec3 {
         self.centre() + dir * (self.radius(dir) + offset)
     }
+
+    /// Metres per unit of the face layout on this head: the layout is authored in the template head's units, so this is
+    /// the stature's scale times the head's own size ([`HeadParams::size`](crate::HeadParams::size)). 1 for a surface
+    /// built in the layout's own units.
+    fn layout_scale(&self) -> f32 {
+        1.0
+    }
 }
 
 /// A region of the body that garments wrap.

@@ -46,6 +46,10 @@ pub use section::{COLUMNS, LegTop, MIDPLANE_GAP, PROTOTYPE_LEG_LENGTH, rows_of_l
 pub const LAYER_LEGWEAR: i32 = LAYER_UNDERWEAR + 2;
 /// The most the cloth may be thick, metres: it only moves the layer above outward.
 pub const MAX_THICKNESS: f64 = 0.01;
+/// The highest and lowest a bottom may end, as a fraction of the way from the waist edge to the knee.
+pub const MIN_BOTTOM: f64 = 0.05;
+/// See [`MIN_BOTTOM`]: past the knee to the ankle, where the legwear ends anyway.
+pub const MAX_BOTTOM: f64 = 3.0;
 /// The most sheen a legwear may have, as a multiple of the prototype's nylon sheen.
 pub const MAX_SHEEN: f64 = 2.0;
 /// The ease of new legwear, metres: tighter than the common default, as nylon is.
@@ -112,6 +116,10 @@ pub struct LegwearParams {
     /// Where it ends at the top; `None` for the style's own.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top: Option<LegTop>,
+    /// Where it ends at the bottom, as a fraction of the way from the waist edge to the knee (0.2 hot pants or the
+    /// bottom of a leotard, 0.8 bike shorts, past 1 on toward the ankle); `None` above the foot, as tights do.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bottom: Option<f64>,
     /// How thick the cloth is, metres: the layer above sits this much farther out.
     pub thickness: f64,
     /// The cloth's colour (the prototype's `0x3b2b27`).
@@ -128,6 +136,7 @@ impl Default for LegwearParams {
             common: GarmentCommon { ease: DEFAULT_EASE, ..GarmentCommon::default() },
             style: LegwearStyle::default(),
             top: None,
+            bottom: None,
             thickness: DEFAULT_THICKNESS,
             colour: ColourRef::rgb(0x3b, 0x2b, 0x27),
             line: ColourRef::rgb(0x1a, 0x12, 0x10),
@@ -141,6 +150,9 @@ impl Validate for LegwearParams {
         c.nested("common", &self.common);
         if !matches!(self.common.fabric, FabricStyle::Plain { .. }) {
             c.fail("common/fabric", "legwear is coloured by its `colour`: leave the fabric plain");
+        }
+        if let Some(bottom) = self.bottom {
+            c.range("bottom", bottom, MIN_BOTTOM, MAX_BOTTOM);
         }
         c.range("thickness", self.thickness, 0.0, MAX_THICKNESS);
         c.range("sheen", self.sheen, 0.0, MAX_SHEEN);
@@ -183,7 +195,7 @@ impl PartKind for Legwear {
         let fail_kit = |e: KitError| ctx.fail(e.to_string());
         let mut builder = MeshBuilder::with_colours();
         for side in Side::BOTH {
-            let legs = LegSections::new(&fit, side.region(), p.common.ease, p.top()).map_err(fail)?;
+            let legs = LegSections::new(&fit, side.region(), p.common.ease, p.top(), p.bottom).map_err(fail)?;
             let weights = LegSkin::new(fit.as_ref(), side).map_err(fail)?;
             let grid = legs.grid().map_err(fail_kit)?;
             // The row of a vertex: its band is known by row, and rows are `COLUMNS` wide.
