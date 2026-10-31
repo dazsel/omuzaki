@@ -6,8 +6,9 @@
 use std::f32::consts::{PI, TAU};
 
 use omuzaki_core::glam::Vec3;
-use omuzaki_render_api::Colour;
-use omuzaki_stage_api::{PropKind, PropOutput, register_prop_kind};
+use omuzaki_render_api::{BackdropFit, Colour};
+use omuzaki_stage_api::{PartImage, PropKind, PropOutput, PropPart, register_prop_kind};
+use omuzaki_store_api::ContentHash;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -162,6 +163,13 @@ pub struct PictureParams {
     /// An oval medallion on the canvas (a portrait's ground, an emblem), none when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub medallion: Option<Colour>,
+    /// An image from the asset store shown on the canvas, by its content hash (a PNG or JPEG): a painting, a photo, a
+    /// poster. Until it loads, or if the store lacks it, the painted canvas shows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<ContentHash>,
+    /// How an image of another shape meets the canvas: `cover` crops it to fill the canvas, `contain` shows all of it
+    /// on the canvas's ground.
+    pub fit: BackdropFit,
 }
 
 impl Default for PictureParams {
@@ -175,6 +183,8 @@ impl Default for PictureParams {
             mat: Colour::hex(0x00e8_dcc4),
             canvas: Colour::hex(0x0041_4a5a),
             medallion: None,
+            image: None,
+            fit: BackdropFit::Cover,
         }
     }
 }
@@ -183,7 +193,8 @@ impl PropKind for Picture {
     type Params = PictureParams;
     const ID: &'static str = "picture";
     const SUMMARY: &'static str = "A framed picture to hang on a wall: its bottom edge at y = 0, its face toward +Z, \
-                                   2 cm deep. Size, the moulding, a mat, the canvas and an oval medallion on it.";
+                                   2 cm deep. Size, the moulding, a mat, the canvas and an oval medallion on it, or an \
+                                   image from the asset store shown on the canvas, cropped to fill it or fitted.";
 
     fn validate(p: &PictureParams) -> Result<(), String> {
         between("width", p.width, 0.15, 3.0)?;
@@ -233,7 +244,17 @@ impl PropKind for Picture {
             let (rx, ry) = (cw * 0.62, (c1 - c0) * 0.3);
             face.ellipsoid(At::xyz(0.0, f32::midpoint(c0, c1) + (c1 - c0) * 0.08, depth * 0.5), Vec3::new(rx, ry, 0.002), 6, 48, medallion);
         }
-        Ok(output(vec![(frame, painted(darker(p.frame, 0.6))), (face, painted_plain())]))
+        let mut out = output(vec![(frame, painted(darker(p.frame, 0.6))), (face, painted_plain())]);
+        if let Some(asset) = p.image {
+            // The image lies just over the painted canvas, which shows round it with `contain` and in its stead until
+            // it loads.
+            let mut sheet = Shape::new();
+            let z = depth * 0.5 + 0.001;
+            sheet.sheet(Vec3::new(-cw, c0, z), Vec3::new(2.0 * cw, 0.0, 0.0), Vec3::new(0.0, c1 - c0, 0.0), (1, 1), |_, _| Colour::WHITE);
+            let aspect = 2.0 * cw / (c1 - c0);
+            out.parts.push(PropPart::new(sheet.into_mesh(), painted_plain()).with_image(PartImage::new(asset, aspect, p.fit)));
+        }
+        Ok(out)
     }
 }
 

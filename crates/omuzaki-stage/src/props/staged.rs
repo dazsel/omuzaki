@@ -18,12 +18,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use omuzaki_anim_api::HumanoidBone;
-use omuzaki_core::glam::{Mat4, Vec3};
-use omuzaki_render_api::{Instance, Light, MaterialId, MeshId, Renderer, Scene};
+use omuzaki_core::glam::{Mat4, Vec2, Vec3};
+use omuzaki_render_api::{
+    BackdropFit, Instance, Light, Material, MaterialId, MeshId, Renderer, Scene, TextureDesc, TextureId, UvTransform,
+};
 use omuzaki_stage_api::resolve::LightBuf;
-use omuzaki_stage_api::{Anchor, MemberId, PropDef, PropId, PropKindId, PropOutput, SceneDef, find_prop_kind};
+use omuzaki_stage_api::{
+    Anchor, MemberId, PartImage, PropDef, PropId, PropKindId, PropOutput, PropPart, SceneDef, find_prop_kind,
+};
+use omuzaki_store_api::{ContentHash, Store};
 
 use crate::error::StageError;
+use crate::scene::backdrop::ImagePixels;
 use crate::scene::resolve::Figure;
 
 /// Numbers every set of builds, so a stage can tell which one the renderer has. 0 is the empty set a stage starts with.
@@ -53,6 +59,9 @@ pub struct PropBuilds {
     pub props: Vec<PropBuild>,
     /// The members other than the subject that props are attached to, for [`AttachTo::Member`].
     pub members: Vec<MemberId>,
+    /// The pixels of the images the builds show ([`PartImage`]), once loaded ([`ResolvedProps::load_images`]); a
+    /// rebuild keeps those still shown.
+    pub images: BTreeMap<ContentHash, ImagePixels>,
 }
 
 /// Whose bone an attached prop follows.
@@ -165,6 +174,50 @@ impl ResolvedProps {
     }
 }
 
+impl ResolvedProps {
+    /// Loads from `store` the pixels of every image the builds show and don't have yet. Cold, off the render thread: it
+    /// reads and decodes files. An image the store lacks or can't decode is logged and left out, and its piece is drawn
+    /// without it: a picture keeps its painted canvas.
+    pub fn load_images(&mut self, store: &dyn Store) {
+        let mut wanted: Vec<ContentHash> = parts(&self.builds.props).filter_map(|p| p.image.map(|i| i.asset)).collect();
+        wanted.sort_unstable();
+        wanted.dedup();
+        wanted.retain(|asset| !self.builds.images.contains_key(asset));
+        let mut loaded = Vec::new();
+        for asset in wanted {
+            let pixels = store
+                .get(&asset)
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| ImagePixels::decode_for("props.params.image", asset, &bytes).map_err(|e| e.to_string()));
+            match pixels {
+                Ok(pixels) => loaded.push((asset, pixels)),
+                Err(error) => tracing::warn!(%asset, %error, "a prop's image can't be loaded; its piece is drawn without it"),
+            }
+        }
+        if !loaded.is_empty() {
+            let builds = Arc::make_mut(&mut self.builds);
+            builds.images.extend(loaded);
+            // New pixels are a new set: the stage uploads the props that show them again.
+            builds.generation = GENERATION.fetch_add(1, Ordering::Relaxed);
+            for b in &mut builds.props {
+                if b.output.as_ref().is_some_and(|o| o.parts.iter().any(|p| p.image.is_some())) {
+                    b.output = b.output.as_deref().cloned().map(Arc::new);
+                }
+            }
+        }
+    }
+}
+
+/// Every part of every build.
+fn parts(props: &[PropBuild]) -> impl Iterator<Item = &PropPart> {
+    props.iter().filter_map(|b| b.output.as_deref()).flat_map(|o| o.parts.iter())
+}
+
+/// Whether any build shows `asset`.
+fn shows(props: &[PropBuild], asset: &ContentHash) -> bool {
+    parts(props).any(|p| p.image.is_some_and(|i| i.asset == *asset))
+}
+
 /// Whether `builds` was built from exactly `def`'s props (ids, kinds and params) and attach members. Allocation-free.
 fn same_builds(builds: &PropBuilds, def: &SceneDef, subject: Option<&MemberId>) -> bool {
     builds.props.len() == def.props.len()
@@ -181,7 +234,7 @@ fn other_member<'a>(prop: &'a PropDef, subject: Option<&MemberId>) -> Option<&'a
 
 /// Builds `def`'s props, keeping every build of `old` whose kind and params are the same. Cold.
 fn rebuild(old: &PropBuilds, def: &SceneDef, subject: Option<&MemberId>) -> PropBuilds {
-    let props = def
+    let props: Vec<PropBuild> = def
         .props
         .iter()
         .map(|(id, prop)| {
@@ -198,7 +251,8 @@ fn rebuild(old: &PropBuilds, def: &SceneDef, subject: Option<&MemberId>) -> Prop
     members.sort();
     members.dedup();
     members.truncate(usize::from(u8::MAX));
-    PropBuilds { generation: GENERATION.fetch_add(1, Ordering::Relaxed), props, members }
+    let images = old.images.iter().filter(|(asset, _)| shows(&props, asset)).map(|(a, p)| (*a, p.clone())).collect();
+    PropBuilds { generation: GENERATION.fetch_add(1, Ordering::Relaxed), props, members, images }
 }
 
 /// One prop's build, or `None` (logged) for a kind nothing registered or params it refuses.
@@ -289,6 +343,8 @@ struct Uploaded {
     build: Arc<PropOutput>,
     /// Each part's mesh, material and whether it casts a shadow.
     parts: Vec<(MeshId, MaterialId, bool)>,
+    /// The textures of the images its parts show.
+    textures: Vec<TextureId>,
 }
 
 /// The props of a scene on a renderer: what the stage drew from, and what it draws each frame. Both stages hold one.
@@ -341,7 +397,7 @@ impl StageProps {
             if self.uploaded.iter().any(|u| Arc::ptr_eq(&u.build, build)) {
                 continue;
             }
-            match upload(renderer, b.id.clone(), build) {
+            match upload(renderer, b.id.clone(), build, &builds.images) {
                 Ok(up) => fresh.push(up),
                 Err(error) => {
                     for up in fresh {
@@ -429,24 +485,31 @@ impl StageProps {
                     first = Err(StageError::render("a prop", source));
                 }
             }
+            for texture in up.textures {
+                if let (Ok(()), Err(source)) = (&first, renderer.release(texture.into())) {
+                    first = Err(StageError::render("a prop's image", source));
+                }
+            }
         }
         first
     }
 }
 
-/// Uploads every part of one build; on an error the parts made so far are released.
-fn upload(renderer: &mut dyn Renderer, id: PropId, build: &Arc<PropOutput>) -> Result<Uploaded, StageError> {
-    let mut up = Uploaded { id, build: Arc::clone(build), parts: Vec::with_capacity(build.parts.len()) };
+/// Uploads every part of one build, a part that shows an image with its texture (when `images` has its pixels); on an
+/// error the parts made so far are released.
+fn upload(
+    renderer: &mut dyn Renderer,
+    id: PropId,
+    build: &Arc<PropOutput>,
+    images: &BTreeMap<ContentHash, ImagePixels>,
+) -> Result<Uploaded, StageError> {
+    let mut up = Uploaded { id, build: Arc::clone(build), parts: Vec::with_capacity(build.parts.len()), textures: Vec::new() };
     for part in &build.parts {
-        let made = renderer.create_mesh(&part.mesh).and_then(|mesh| match renderer.create_material(&part.material) {
-            Ok(material) => Ok((mesh, material)),
-            Err(error) => {
-                if let Err(cleanup) = renderer.release(mesh.into()) {
-                    tracing::warn!(%cleanup, "releasing a prop mesh whose material failed failed too");
-                }
-                Err(error)
-            }
-        });
+        let shown = part.image.and_then(|image| images.get(&image.asset).map(|pixels| (image, pixels)));
+        let made = match shown {
+            Some((image, pixels)) => upload_shown(renderer, part, image, pixels, &mut up.textures),
+            None => upload_part(renderer, &part.mesh, &part.material),
+        };
         match made {
             Ok((mesh, material)) => up.parts.push((mesh, material, part.casts_shadow)),
             Err(source) => {
@@ -458,11 +521,81 @@ fn upload(renderer: &mut dyn Renderer, id: PropId, build: &Arc<PropOutput>) -> R
     Ok(up)
 }
 
+/// Uploads one mesh and its material; on an error the mesh is released.
+fn upload_part(
+    renderer: &mut dyn Renderer,
+    mesh: &omuzaki_core::mesh::MeshData,
+    material: &Material,
+) -> Result<(MeshId, MaterialId), omuzaki_render_api::RenderError> {
+    let mesh = renderer.create_mesh(mesh)?;
+    match renderer.create_material(material) {
+        Ok(material) => Ok((mesh, material)),
+        Err(error) => {
+            if let Err(cleanup) = renderer.release(mesh.into()) {
+                tracing::warn!(%cleanup, "releasing a prop mesh whose material failed failed too");
+            }
+            Err(error)
+        }
+    }
+}
+
+/// Uploads a part that shows `image`: its texture (kept in `textures` for the release), its material reading it, and
+/// its mesh, cropped to fill the piece (`cover`) or shrunk round its centre to the image's shape (`contain`).
+fn upload_shown(
+    renderer: &mut dyn Renderer,
+    part: &PropPart,
+    image: PartImage,
+    pixels: &ImagePixels,
+    textures: &mut Vec<TextureId>,
+) -> Result<(MeshId, MaterialId), omuzaki_render_api::RenderError> {
+    let texture = renderer.create_texture(&TextureDesc::colour(pixels.size()), Some(pixels.rgba()))?;
+    textures.push(texture);
+    let mut material = part.material.clone();
+    material.base_texture = Some(texture);
+    let (uv, shrink) = fit_image(image.fit, image.aspect, pixels.aspect());
+    material.uv_transform = uv;
+    if shrink == Vec2::ONE {
+        return upload_part(renderer, &part.mesh, &material);
+    }
+    let mut mesh = part.mesh.clone();
+    let (lo, hi) = mesh.positions.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+    let centre = (lo + hi) * 0.5;
+    for p in &mut mesh.positions {
+        p.x = centre.x + (p.x - centre.x) * shrink.x;
+        p.y = centre.y + (p.y - centre.y) * shrink.y;
+    }
+    upload_part(renderer, &mesh, &material)
+}
+
+/// How an image of aspect `texture` meets a piece of aspect `piece` (both width over height): the UV transform that
+/// crops it for `cover`, or how much the piece shrinks across and up for `contain`.
+fn fit_image(fit: BackdropFit, piece: f32, texture: f32) -> (UvTransform, Vec2) {
+    if !(piece > 0.0 && texture > 0.0 && piece.is_finite() && texture.is_finite()) {
+        return (UvTransform::IDENTITY, Vec2::ONE);
+    }
+    let wider = texture > piece;
+    match fit {
+        BackdropFit::Cover => {
+            let scale = if wider { Vec2::new(piece / texture, 1.0) } else { Vec2::new(1.0, texture / piece) };
+            (UvTransform { scale, offset: (Vec2::ONE - scale) * 0.5 }, Vec2::ONE)
+        }
+        BackdropFit::Contain => {
+            let shrink = if wider { Vec2::new(1.0, piece / texture) } else { Vec2::new(texture / piece, 1.0) };
+            (UvTransform::IDENTITY, shrink)
+        }
+    }
+}
+
 /// Releases one prop's parts, logging what the renderer refuses (a cleanup path).
 fn release_one(renderer: &mut dyn Renderer, up: Uploaded) {
     for (mesh, material, _) in up.parts {
         if let Err(error) = renderer.release(mesh.into()).and(renderer.release(material.into())) {
             tracing::warn!(%error, prop = %up.id, "releasing a prop failed");
+        }
+    }
+    for texture in up.textures {
+        if let Err(error) = renderer.release(texture.into()) {
+            tracing::warn!(%error, prop = %up.id, "releasing a prop's image failed");
         }
     }
 }

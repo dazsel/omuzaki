@@ -342,6 +342,7 @@ impl Op for Preview {
                     .hint("an image backdrop names a PNG or JPEG in the asset store")
             })?;
         }
+        staged.resolved.props.load_images(job.service::<dyn Store>()?);
         if preset.is_some_and(|p| p.post == PresetPost::Off) {
             staged.resolved.post =
                 Post { bloom: None, depth_of_field: None, grain: None, grade: None, ..staged.resolved.post };

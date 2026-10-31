@@ -707,3 +707,127 @@ fn on_the_gpu_gradient_and_image_backdrops_at_two_aspects() {
         std::fs::write(std::path::Path::new(&dir).join("scene-backdrops-sheet.png"), png).unwrap();
     }
 }
+
+/// A 4:3 checkerboard of four colours, one to a quarter (red top left, green top right, blue bottom left, yellow bottom
+/// right), so a render shows whether a picture's image is upright and unmirrored.
+#[cfg(feature = "wgpu")]
+fn quarters() -> Vec<u8> {
+    let (w, h) = (64u32, 48u32);
+    let image = image::RgbaImage::from_fn(w, h, |x, y| match (x < w / 2, y < h / 2) {
+        (true, true) => image::Rgba([230, 30, 30, 255]),
+        (false, true) => image::Rgba([30, 200, 40, 255]),
+        (true, false) => image::Rgba([40, 60, 230, 255]),
+        (false, false) => image::Rgba([235, 215, 30, 255]),
+    });
+    let mut bytes = Vec::new();
+    image.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png).unwrap();
+    bytes
+}
+
+/// A scene `wall` with a framed picture showing `asset` 3 m to the subject's right, and a camera `art` square on to it.
+fn picture_scene(doc: &mut MemDoc, asset: &str, fit: &str) {
+    use omuzaki_stage::ops::scene::camera::{AddCamera, SetActiveCamera};
+    use omuzaki_stage::ops::scene::create::CreateScene;
+    use omuzaki_stage::ops::scene::prop::AddProp;
+
+    apply::<CreateScene>(doc, json!({ "id": "wall", "cast": [] }));
+    apply::<AddProp>(
+        doc,
+        json!({ "scene": "wall", "id": "art", "kind": "picture", "position": [3.0, 1.0, -1.0],
+                "params": { "width": 1.2, "height": 0.9, "image": asset, "fit": fit, "canvas": "#202020" } }),
+    );
+    apply::<AddCamera>(
+        doc,
+        json!({ "scene": "wall", "id": "art", "framing": "free", "position": [3.0, 1.45, 1.0], "target": [3.0, 1.45, -1.0], "fov": 35.0 }),
+    );
+    apply::<SetActiveCamera>(doc, json!({ "scene": "wall", "camera": "art" }));
+}
+
+/// #2667: a picture whose image the store lacks still renders, with its painted canvas: a warning, not an error.
+#[test]
+fn a_picture_whose_image_is_missing_shows_its_painted_canvas() {
+    let TestDoc(mut doc) = mock_doc();
+    let missing = omuzaki_store_api::ContentHash::of(b"not in the store").to_string();
+    picture_scene(&mut doc, &missing, "cover");
+    let harness = Harness::new(TestDoc(doc));
+    let shot = run(&harness, json!({ "character": "mock", "scene": "wall", "size": [64, 48] }));
+    assert!(shot.is_ok(), "a missing image falls back to the canvas: {shot:?}");
+}
+
+/// On lavapipe (#2667): a picture showing a four-colour checkerboard from the asset store, cropped to fill its canvas and
+/// fitted inside it. Each quarter lands where it is in the image (red top left, green top right, blue bottom left,
+/// yellow bottom right), so the image is upright and unmirrored; `contain` leaves the dark canvas showing at the sides
+/// of a 4:3 image on a wider canvas. Set `OMUZAKI_EVIDENCE_DIR` to keep the renders.
+#[cfg(feature = "wgpu")]
+#[test]
+#[allow(clippy::disallowed_methods, reason = "the evidence image is written beside the test, not by an op")]
+fn on_the_gpu_a_picture_shows_its_image_upright_and_unmirrored() {
+    use omuzaki_char::ops::character::create::CharacterCreate;
+    use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
+    use omuzaki_store_api::{Commercial, ContentHash, Provenance, Source, Store};
+
+    let board = quarters();
+    let asset = ContentHash::of(&board);
+    let mut harnesses = Vec::new();
+    for fit in ["cover", "contain"] {
+        let mut doc = MemDoc::from_value(json!({}));
+        apply::<CharacterCreate>(
+            &mut doc,
+            json!({ "id": "soft_sd", "name": "soft-sd", "template": "soft-sd", "seed": 7 }),
+        );
+        picture_scene(&mut doc, &asset.to_string(), fit);
+        let renderer =
+            WgpuRenderer::headless(&HeadlessOptions { adapter: AdapterPreference::Software }).expect("lavapipe opens");
+        let harness = Harness::on(TestDoc(doc), Box::new(renderer));
+        let provenance = Provenance {
+            source: Source::Authored,
+            author: None,
+            licence: "CC0-1.0".into(),
+            attribution: None,
+            commercial: Commercial::Ok,
+            consent: None,
+            private_test: false,
+        };
+        assert_eq!(harness.store.put(&board, provenance).unwrap(), asset);
+        harnesses.push((fit, harness));
+    }
+    for (fit, harness) in &harnesses {
+        let shot =
+            run(harness, json!({ "character": "soft_sd", "scene": "wall", "size": [320, 240], "quality": "offline" }))
+                .unwrap_or_else(|e| panic!("{fit}: {e:?}"));
+        let png = harness.store.get(&shot.hash.parse().unwrap()).unwrap();
+        if let Some(dir) = std::env::var_os("OMUZAKI_EVIDENCE_DIR") {
+            std::fs::write(std::path::Path::new(&dir).join(format!("picture-image-{fit}.png")), &png).unwrap();
+        }
+        let got = image::load_from_memory(&png).unwrap().to_rgba8();
+        // Each colour's centroid, by hue: red near 0 (or 360), yellow near 55, green near 125, blue near 230.
+        let mut sums = [(0.0_f64, 0.0_f64, 0_u32); 4];
+        for (x, y, p) in got.enumerate_pixels() {
+            let Some(hue) = saturated_hue(p.0) else { continue };
+            let k = match hue {
+                h if !(20.0..340.0).contains(&h) => 0,
+                h if (40.0..80.0).contains(&h) => 3,
+                h if (100.0..160.0).contains(&h) => 1,
+                h if (200.0..260.0).contains(&h) => 2,
+                _ => continue,
+            };
+            sums[k].0 += f64::from(x);
+            sums[k].1 += f64::from(y);
+            sums[k].2 += 1;
+        }
+        for (name, (_, _, n)) in ["red", "green", "blue", "yellow"].iter().zip(sums) {
+            assert!(n > 400, "{fit}: the {name} quarter shows ({n} pixels)");
+        }
+        let [red, green, blue, yellow] = sums.map(|(x, y, n)| (x / f64::from(n), y / f64::from(n)));
+        assert!(red.0 < green.0 && blue.0 < yellow.0, "{fit}: left stays left: {red:?} {green:?} {blue:?} {yellow:?}");
+        assert!(red.1 < blue.1 && green.1 < yellow.1, "{fit}: up stays up: {red:?} {green:?} {blue:?} {yellow:?}");
+        let width = |a: (f64, f64), b: (f64, f64)| (b.0 - a.0).abs();
+        let height = |a: (f64, f64), b: (f64, f64)| (b.1 - a.1).abs();
+        // The quarters' centres are half the image apart: across over up is the shown image's aspect.
+        let shown = (width(red, green) + width(blue, yellow)) / (height(red, blue) + height(green, yellow));
+        assert!(
+            (shown - 4.0 / 3.0).abs() < 0.12 || *fit == "cover",
+            "{fit}: the image keeps its 4:3 shape ({shown:.3})"
+        );
+    }
+}

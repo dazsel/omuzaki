@@ -13,7 +13,8 @@ use omuzaki_core::glam::{EulerRot, Mat4, Quat, Vec3};
 use omuzaki_core::mesh::MeshData;
 use omuzaki_core::slug_id;
 use omuzaki_doc_api::Value;
-use omuzaki_render_api::{Light, Material};
+use omuzaki_render_api::{BackdropFit, Light, Material};
+use omuzaki_store_api::ContentHash;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -139,6 +140,28 @@ pub fn local_transform(position: [f32; 3], rotation: [f32; 3], scale: f32) -> Ma
     )
 }
 
+/// An image from the asset store shown on a flat piece of a prop: the piece's UVs span `0..1` across it, `v` down, and
+/// the image is cropped to fill it or fitted inside it.
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct PartImage {
+    /// The image's content hash in the asset store: a PNG or a JPEG.
+    pub asset: ContentHash,
+    /// The piece's width over its height.
+    pub aspect: f32,
+    /// How an image of another shape meets the piece: `cover` crops what overflows, `contain` shrinks the piece to the
+    /// whole image, centred, so what lies behind it shows round it.
+    pub fit: BackdropFit,
+}
+
+impl PartImage {
+    /// `asset` on a piece of aspect `aspect`, fitted by `fit`.
+    #[must_use]
+    pub fn new(asset: ContentHash, aspect: f32, fit: BackdropFit) -> Self {
+        Self { asset, aspect, fit }
+    }
+}
+
 /// One mesh of a built prop, in the prop's own frame (metres, +Y up, its front toward +Z).
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -149,13 +172,23 @@ pub struct PropPart {
     pub material: Material,
     /// Whether this piece casts a shadow when the prop does (a window's glass doesn't).
     pub casts_shadow: bool,
+    /// An image from the asset store laid over this piece's UVs as its base texture (a picture's canvas). A stage that
+    /// can't load it draws the piece without it.
+    pub image: Option<PartImage>,
 }
 
 impl PropPart {
     /// A piece that casts shadows.
     #[must_use]
     pub fn new(mesh: MeshData, material: Material) -> Self {
-        Self { mesh, material, casts_shadow: true }
+        Self { mesh, material, casts_shadow: true, image: None }
+    }
+
+    /// The same piece, showing `image` over its UVs.
+    #[must_use]
+    pub fn with_image(mut self, image: PartImage) -> Self {
+        self.image = Some(image);
+        self
     }
 
     /// The same piece, casting no shadow.
