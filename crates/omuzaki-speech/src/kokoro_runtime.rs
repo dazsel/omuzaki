@@ -11,7 +11,9 @@
 //! - one `<voice>.bin` per voice: 510 style rows of 256 `f32`s, the row picked by the number of phonemes.
 //!
 //! Text longer than Kokoro's 510 phonemes is cut at the last sentence or clause break that fits (a space if none)
-//! and the pieces' audio joined. `speed` is honoured; `expressiveness` is not (the model has no such control).
+//! and the pieces' audio joined. `speed` is honoured by the model. It has no `expressiveness` control, so the runtime
+//! makes one: away from 0.5 the intonation range is scaled after synthesis by [`crate::prosody`] (TD-PSOLA, formants
+//! kept), half as wide at 0 and twice as wide at 1.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -22,7 +24,11 @@ use omuzaki_ai_api::{
 };
 
 use crate::g2p::Lexicon;
-use crate::slots::tts::tts_signature;
+use crate::prosody::{Shape, reshape};
+use crate::slots::tts::{TTS_RATE, tts_signature};
+
+/// The expressiveness at which the voice is left as the model made it.
+const NEUTRAL: f32 = 0.5;
 
 /// The runtime's id.
 pub const KOKORO: &str = "kokoro";
@@ -315,6 +321,16 @@ impl Session for KokoroSession {
         let (text, voice) = (utf8(text, "text")?, utf8(voice, "voice")?);
         let mut pcm = Vec::new();
         self.speak(text, voice, speed.first().copied().unwrap_or(1.0), &mut pcm)?;
+        // The model has no expressiveness control of its own: 0.5 is its voice as it is, and anything else widens or
+        // narrows its intonation after synthesis, formants kept.
+        let expressiveness = match inputs[3].data {
+            TensorData::F32(e) => e.first().copied().filter(|e| e.is_finite()).unwrap_or(NEUTRAL),
+            _ => NEUTRAL,
+        };
+        if (expressiveness - NEUTRAL).abs() > f32::EPSILON {
+            let range = Shape::range_for_expressiveness(expressiveness);
+            pcm = reshape(&pcm, TTS_RATE, &Shape { range, ..Shape::IDENTITY });
+        }
         let problem = |problem| RunError::Mismatch { port: omuzaki_ai_api::Port::Output, index: 0, problem };
         if let TensorDataMut::F32(out) = outputs[0].resize(&[pcm.len()]).map_err(problem)? {
             out.copy_from_slice(&pcm);

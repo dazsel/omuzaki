@@ -69,7 +69,7 @@ fn kokoro_installs_after_its_round_trip_and_speaks_in_every_voice() {
     let voices: Vec<&str> = manifest.voices.iter().map(|v| v.id.as_str()).collect();
     assert_eq!(voices, ["af_heart", "af_bella", "am_michael", "bf_emma"]);
     assert!(manifest.voices.iter().all(|v| !v.needs_consent()), "Kokoro's voices are its own");
-    assert!(manifest.tts.as_ref().is_some_and(|t| t.honours("speed") && !t.honours("expressiveness")));
+    assert!(manifest.tts.as_ref().is_some_and(|t| t.honours("speed") && t.honours("expressiveness")));
 
     let mut tts = registry.open(&tts_slot(), Some(&kokoro)).unwrap();
     let mut asr = registry.open(&asr_slot(), None).unwrap();
