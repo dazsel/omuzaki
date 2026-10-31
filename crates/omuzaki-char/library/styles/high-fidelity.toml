@@ -15,6 +15,9 @@ look = "cinematic"
 shading = 0.0
 
 [face.layout]
+eye_y = -0.03
+nose_y = -0.095
+mouth_y = -0.135
 eye_width = 0.039
 eye_spacing = 0.084
 brow_gap = 0.056
@@ -78,11 +81,11 @@ tint = 0.6
 [face.nose]
 kind = "none"
 size = 1.7
-shadow = 1.0
-highlight = 0.7
+shadow = 0.2
+highlight = 0.3
 
 [face.cheeks]
-contour = 0.25
+contour = 0.1
 
 [face.brows]
 thickness = 0.0028
@@ -95,5 +98,19 @@ hands = "five_finger"
 neck_length = 1.2
 
 # A rounder face plane: the painted features sit on a modelled face, not a flattened anime one.
+[face.ear3d]
+style = 0.0
+protrusion = 20.0
+
 [head.cranium]
 face_flatten = 0.0
+
+[head.sculpt]
+brow = 0.012
+sockets = 0.012
+cheekbones = 0.006
+temples = 0.008
+nose = 0.032
+mouth = 0.007
+chin = 0.01
+jaw = 0.012

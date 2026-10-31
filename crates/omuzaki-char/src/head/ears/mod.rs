@@ -23,6 +23,7 @@ pub mod animal;
 pub mod elf;
 pub mod fact;
 pub mod human;
+pub mod sculpted;
 
 use omuzaki_char_api::{Anchor, EarKind, Ears, HeadSurface, JointRef};
 use omuzaki_core::glam::{DVec3, Mat3, Quat, Vec3};

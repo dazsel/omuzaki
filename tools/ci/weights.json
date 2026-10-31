@@ -1,6 +1,7 @@
 {
   "default": 33,
-  "parts": { "omuzaki-char": 4, "omuzaki-ui": 1 },
+  "parts": { "omuzaki-char": 4, "omuzaki-stage": 1,
+    "omuzaki-ui": 1 },
   "part_weights": { "omuzaki-char@1/4": 465, "omuzaki-char@2/4": 340, "omuzaki-char@3/4": 245, "omuzaki-char@4/4": 415 },
   "isolated": { "omuzaki-char": { "palette_independence": 546 } },
   "crates": {

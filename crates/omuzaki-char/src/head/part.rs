@@ -17,13 +17,16 @@
 use std::sync::Arc;
 
 use omuzaki_anim_api::{HumanoidBone, SpringChain, SpringParams, Transform};
+use omuzaki_char_api::design::layer::SKIN_INFO;
 use omuzaki_char_api::{
     Anchor, AnchorId, AnchorsFact, BoneName, BuildCtx, BuildError, Cranium, EarKind, ExtraBone, FaceFact, FitFact,
     HeadFact, HeadParams, HeadSurface, JointFit, JointRef, KindProvenance, MaterialSpec, PartCategory, PartKind,
-    PartMesh, PartMeta, PartOutput, Publishes, RecolourCtx, Recoloured, RigContribution,
+    PartMesh, PartMeta, PartOutput, Publishes, Quality, RecolourCtx, Recoloured, RigContribution,
+    linked_feature_mesher,
 };
 use omuzaki_core::glam::{Mat3, Quat, Vec3};
-use omuzaki_core::mesh::MeshData;
+use omuzaki_core::id::Slug;
+use omuzaki_core::mesh::{ExtraAttribute, MeshData};
 use omuzaki_face_api::narrow;
 
 use super::ears::fact::EarCoverFact;
@@ -32,6 +35,7 @@ use super::material;
 use super::mesh::{self, Resolution};
 use super::neck;
 use super::outline;
+use super::sculpt::{self, Landmarks};
 use crate::template::soft_sd;
 
 /// The head-local height below which the head mesh blends into the neck bone when the face has no stretched chin
@@ -43,6 +47,9 @@ const CHIN_MARGIN: f64 = 0.001;
 const HEAD_SHARE: f32 = 0.8;
 /// ...and the neck bone this much.
 const NECK_SHARE: f32 = 0.2;
+/// The cell a sculpted ear is meshed at, real metres: fine enough for the helix's roll live, finer offline.
+const SCULPTED_EAR_CELL_LIVE: f32 = 0.0011;
+const SCULPTED_EAR_CELL_OFFLINE: f32 = 0.0007;
 /// The eye bones sit this far inside the painted face's surface, about an eyeball's radius.
 const EYE_INSET: f32 = 0.03;
 
@@ -78,7 +85,10 @@ impl PartKind for Head {
         let centre = Vec3::from_array(placed.cranium.centre().map(narrow));
         let drop = Vec3::Y * narrow(params.neck.drop);
 
-        let built = mesh::build_head(&placed, Resolution::of(ctx.quality), None)
+        // The face's forms are sculpted under the painted features, so they are placed from the face's layout.
+        let landmarks =
+            Landmarks::new(&ctx.face.layout, &outline::plausible(&placed.outline, &placed.cranium), &placed.ears);
+        let built = mesh::build_sculpted(&placed, Some(landmarks), Resolution::of(ctx.quality), None)
             .map_err(|e| ctx.fail(format!("head mesh: {e}")))?;
         let (mut head_mesh, surface) = (built.mesh, built.surface);
         // The face window follows the outline the mesh is built from, so they agree outside the plausible space too (#693).
@@ -86,6 +96,14 @@ impl PartKind for Head {
         let projection = framed.face_projection();
 
         weigh_head(&mut head_mesh, centre.y, below_chin_line(params));
+        // A sculpted head feeds the `skin` program its folds, flush and curvature, so it shades like skin at the
+        // physical end of the style axis rather than like a smooth shell.
+        if !placed.sculpt.is_flat()
+            && let Ok(name) = Slug::new(SKIN_INFO)
+        {
+            let data = sculpt::skin_info(&head_mesh, centre, &landmarks, &ctx.face.layout, ctx.published.scale());
+            head_mesh.extra.push(ExtraAttribute { name, components: 4, data });
+        }
         let mut meshes = vec![part_mesh(ctx, "head", head_mesh, vec![JointRef::HEAD, JointRef::NECK], "skin-head")?];
 
         // The neck stays on the template's neck top, tucked behind the chin; the head moves, the neck does not.
@@ -201,17 +219,26 @@ fn ears(
     joint: Vec3,
 ) -> Result<EarParts, BuildError> {
     let left_root = ears::root(&placed.ears, surface);
+    // A human ear with a sculpted design (`face/ear3d`) is the face's sculpted ear, when the binary links its mesher.
+    let sculpted = if placed.ears.kind == EarKind::Human { linked_feature_mesher() } else { None };
     let (mut meshes, mut anchors, mut covers) = (vec![], vec![], vec![]);
     for side in Side::BOTH {
         let root = match side {
             Side::Left => left_root,
             Side::Right => Vec3::new(2.0 * surface.centre().x - left_root.x, left_root.y, left_root.z),
         };
-        let Some(mut geometry) =
-            ears::build(&placed.ears, side, root, surface).map_err(|e| ctx.fail(format!("ear: {e}")))?
-        else {
-            continue;
+        let geometry = match (sculpted, &ctx.face.ear3d) {
+            (Some(feature), Some(design)) => {
+                let cell = match ctx.quality {
+                    Quality::Live => SCULPTED_EAR_CELL_LIVE,
+                    Quality::Offline => SCULPTED_EAR_CELL_OFFLINE,
+                };
+                let on = ears::sculpted::OnHead { root, surface, scale: ctx.published.scale(), cell };
+                ears::sculpted::build(feature, design, &placed.ears, side, &on)
+            }
+            _ => ears::build(&placed.ears, side, root, surface).map_err(|e| ctx.fail(format!("ear: {e}")))?,
         };
+        let Some(mut geometry) = geometry else { continue };
         // Rigid on the head bone: an ear does not follow the neck.
         geometry.joints = vec![[0; 4]; geometry.positions.len()];
         geometry.weights = vec![[1.0, 0.0, 0.0, 0.0]; geometry.positions.len()];

@@ -16,6 +16,9 @@ look = "semi-real"
 shading = 0.4
 
 [face.layout]
+eye_y = -0.05
+nose_y = -0.105
+mouth_y = -0.14
 eye_width = 0.043
 eye_spacing = 0.085
 brow_gap = 0.06
@@ -74,13 +77,13 @@ strength = 0.75
 tint = 0.5
 
 [face.nose]
-kind = "tick"
+kind = "none"
 size = 1.6
-shadow = 0.8
-highlight = 0.6
+shadow = 0.25
+highlight = 0.3
 
 [face.cheeks]
-contour = 0.4
+contour = 0.15
 
 [face.brows]
 thickness = 0.0026
@@ -93,5 +96,19 @@ hands = "five_finger"
 neck_length = 1.2
 
 # A rounder face plane: the painted features sit on a modelled face, not a flattened anime one.
+[face.ear3d]
+style = 0.3
+protrusion = 20.0
+
 [head.cranium]
 face_flatten = 0.01
+
+[head.sculpt]
+brow = 0.008
+sockets = 0.01
+cheekbones = 0.005
+temples = 0.005
+nose = 0.024
+mouth = 0.005
+chin = 0.008
+jaw = 0.008

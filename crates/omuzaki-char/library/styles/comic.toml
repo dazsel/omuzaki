@@ -92,3 +92,17 @@ shoulder_width = 1.12
 height = 0.7
 musculature = 0.55
 shoulder_hip = 0.45
+
+[face.ear3d]
+style = 0.5
+protrusion = 20.0
+
+[head.sculpt]
+brow = 0.014
+sockets = 0.01
+cheekbones = 0.009
+temples = 0.006
+nose = 0.026
+mouth = 0.006
+chin = 0.013
+jaw = 0.016

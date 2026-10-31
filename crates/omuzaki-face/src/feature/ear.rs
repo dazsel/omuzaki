@@ -11,16 +11,26 @@
 //! the origin.
 
 use omuzaki_core::glam::{Mat3, Vec3};
+use omuzaki_core::mesh::MeshData;
 pub use omuzaki_face_api::sculpt::EarDesign;
 
 use super::sdf::{capsule, carve, ellipsoid, resample, smin, smoothstep, tube};
+use super::{Paint, skin_mesh};
 
 const MM: f32 = 0.001;
 
 /// The ear's field, the patch of head it stands on included.
 pub fn field(d: &EarDesign) -> impl Fn(Vec3) -> f32 + '_ {
     let shape = Shape::new(d);
-    move |p| shape.distance(p)
+    move |p| shape.distance(p, Shape::head(p))
+}
+
+/// The ear's field grown out of a given head instead of the patch's broad dome: `head` is the head's signed distance
+/// in the ear's frame, so the root and the conchal cup blend into that head's own side. The character's head builds
+/// its ear this way (`omuzaki-char`, through [`omuzaki_char_api::FeatureMesherRegistration`]).
+pub fn field_on<'a>(d: &EarDesign, head: impl Fn(Vec3) -> f32 + 'a) -> impl Fn(Vec3) -> f32 + 'a {
+    let shape = Shape::new(d);
+    move |p| shape.distance(p, head(p))
 }
 
 /// The box the ear and its patch of head fill.
@@ -28,6 +38,21 @@ pub fn bounds(d: &EarDesign) -> (Vec3, Vec3) {
     let (h, w) = (0.5 * d.height + 0.006, 0.5 * d.width + 0.012);
     (Vec3::new(-w - 0.004, -h, -0.012), Vec3::new(w + 0.004, h, 0.006 + 0.6 * d.width))
 }
+
+/// The ear of `d` grown out of the head `head` (its signed distance in the ear's frame) and meshed at `cell` metres for
+/// the `skin` program: its `skin-info` carries the cavity in the folds and the warm rim, and it has no vertex colours,
+/// so it takes the head's skin. The character's head builds its sculpted ear with this.
+fn mesh_on_head(d: &EarDesign, head: &dyn Fn(Vec3) -> f32, cell: f32) -> MeshData {
+    let field = field_on(d, head);
+    let (min, max) = bounds(d);
+    let flush = |p: Vec3| redness(d, p);
+    let paint = Paint { colour: &|_| Vec3::ONE, wet: &|_| 0.0, flush: &flush };
+    let mut mesh = skin_mesh(&field, min, max, cell, &paint);
+    mesh.colours.clear();
+    mesh
+}
+
+omuzaki_char_api::register_feature_mesher!(omuzaki_char_api::FeatureMesherRegistration { ear: mesh_on_head });
 
 /// How much redder the skin is at `p`: the ear's thin rim and lobe let the light through warm.
 pub fn redness(d: &EarDesign, p: Vec3) -> f32 {
@@ -116,7 +141,7 @@ impl Shape {
         self.turn.transpose() * (p - self.pivot) + self.pivot
     }
 
-    /// The side of the head: a broad dome.
+    /// The side of the head: a broad dome, standing in for a head when none is given.
     fn head(p: Vec3) -> f32 {
         ellipsoid(p, Vec3::new(0.0, 0.0, -0.075), Vec3::new(0.095, 0.12, 0.075))
     }
@@ -125,7 +150,7 @@ impl Shape {
         tube(q, &self.helix, &self.helix_r, 0.0)
     }
 
-    fn real(&self, p: Vec3) -> f32 {
+    fn real(&self, p: Vec3, head: f32) -> f32 {
         let q = self.local(p);
         let plate = ellipsoid(q, self.plate.0, self.plate.1);
         let mut ear = smin(plate, self.helix_distance(q), 2.2 * MM);
@@ -141,13 +166,13 @@ impl Shape {
         ear = carve(ear, ellipsoid(q, self.concha.0, self.concha.1), 2.0 * MM);
         // The root joins the ear to the head at the front; the tragus stands at the bowl's front edge.
         let root = ellipsoid(p, self.root.0, self.root.1);
-        let mut d = smin(Self::head(p), root, 4.0 * MM);
+        let mut d = smin(head, root, 4.0 * MM);
         d = smin(d, ear, 2.5 * MM);
         d = smin(d, ellipsoid(p, self.tragus.0, self.tragus.1), 1.5 * MM);
         carve(d, capsule(p, self.canal.0, self.canal.1, 2.2 * MM), 1.5 * MM)
     }
 
-    fn anime(&self, p: Vec3) -> f32 {
+    fn anime(&self, p: Vec3, head: f32) -> f32 {
         let q = self.local(p);
         let plate = ellipsoid(q, self.plate.0, self.plate.1);
         let mut ear = smin(plate, self.helix_distance(q), 2.5 * MM);
@@ -158,18 +183,20 @@ impl Shape {
             ellipsoid(q, self.concha.0 + Vec3::new(0.0, 6.0 * MM, 1.5 * MM), self.concha.1 * Vec3::new(1.1, 1.7, 0.6));
         ear = carve(ear, bowl, 3.0 * MM);
         let root = ellipsoid(p, self.root.0, self.root.1);
-        let d = smin(smin(Self::head(p), root, 5.0 * MM), ear, 3.0 * MM);
+        let d = smin(smin(head, root, 5.0 * MM), ear, 3.0 * MM);
         // The bowl's foot closed in front of the lobe, so the drawn ear has no hole there.
         smin(d, ellipsoid(p, self.foot.0, self.foot.1), 3.0 * MM)
     }
 
-    fn distance(&self, p: Vec3) -> f32 {
+    /// The distance at `p`, on a head whose own distance there is `head`.
+    fn distance(&self, p: Vec3, head: f32) -> f32 {
         if self.style <= 0.0 {
-            return self.real(p);
+            return self.real(p, head);
         }
         if self.style >= 1.0 {
-            return self.anime(p);
+            return self.anime(p, head);
         }
-        self.real(p) + (self.anime(p) - self.real(p)) * self.style
+        let real = self.real(p, head);
+        real + (self.anime(p, head) - real) * self.style
     }
 }
