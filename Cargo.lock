@@ -4834,6 +4834,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-brief"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-char",
+ "omuzaki-char-api",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-face",
+ "omuzaki-link-build",
+ "omuzaki-ops-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "omuzaki-budget"
 version = "0.0.0"
 dependencies = [
@@ -4933,6 +4951,7 @@ dependencies = [
  "omuzaki-audio-engine",
  "omuzaki-audio-fx",
  "omuzaki-audio-mock",
+ "omuzaki-brief",
  "omuzaki-char",
  "omuzaki-char-api",
  "omuzaki-core",
@@ -6849,6 +6868,7 @@ dependencies = [
  "omuzaki-audio-api",
  "omuzaki-audio-engine",
  "omuzaki-audio-fx",
+ "omuzaki-brief",
  "omuzaki-camera-mf",
  "omuzaki-char",
  "omuzaki-char-api",

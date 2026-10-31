@@ -1,0 +1,85 @@
+# The 20 descriptions #2578 is judged on: written the way people describe a character they want, from a one-liner to
+# a paragraph, across builds, outfits, hair, faces and accessories. `expect` lists choices the reading must make
+# (`facet = "option"`, or a list for a facet that takes several; a colour target names its colour id); the test
+# checks each, builds every one on three seeds, and the self-check must hold. The renders of all 20 are the evidence
+# raters judge (the ≥ 70% "that's her" bar is a hand check).
+
+[[case]]
+description = "a sleepy librarian with silver twin tails and round glasses"
+expect = { eyes = "sleepy", outfit = "blazer", hair_style = "twintails", accessories = ["round-glasses"], hair_colour = "silver" }
+
+[[case]]
+description = "a cheerful idol with pink hair fading to blonde, sparkly eyes and a red dress"
+expect = { expression = "happy", makeup = "idol", eyes = "sparkle", outfit = "dress", outfit_colour = "red", hair_colour = "pink to blonde" }
+
+[[case]]
+description = "tall elegant witch with long black hair, a purple robe and a witch hat"
+expect = { build = "tall", age = "mature", outfit = "robe", outfit_colour = "purple", hair_length = "long", hair_colour = "black", accessories = ["witch-hat"] }
+
+[[case]]
+description = "a chibi fox girl with orange hair, a fluffy tail and a hoodie"
+expect = { build = "chibi", ears = "animal", hair_colour = "orange", accessories = ["fox-tail"], outfit = "hoodie" }
+
+[[case]]
+description = "a shy elf mage with long green hair in a braid and a white cloak"
+expect = { expression = "shy", ears = "elf", outfit = "cloak", outfit_colour = "white", hair_length = "long", hair_colour = "green", hair_style = "braid" }
+
+[[case]]
+description = "a cyberpunk hacker with short teal hair, cat ear headphones and a black bodysuit"
+expect = { outfit = "bodysuit", outfit_colour = "black", hair_length = "short", hair_colour = "teal", accessories = ["cat-headphones"] }
+
+[[case]]
+description = "a demon queen with red eyes, ram horns, bat wings and a long maroon dress"
+expect = { age = "mature", eye_colour = "red", accessories = ["ram-horns", "bat-wings"], outfit = "dress", outfit_colour = "maroon" }
+
+[[case]]
+description = "a petite maid with a brown bob, blunt bangs and doll eyes"
+expect = { build = "petite", outfit = "maid", hair_length = "bob", hair_colour = "brown", bangs = "blunt", eyes = "doll" }
+
+[[case]]
+description = "an athletic tanned girl with a blonde ponytail, a cap, a red hoodie and sneakers"
+expect = { body_shape = "athletic", skin = "tan", hair_style = "ponytail", hair_colour = "blonde", accessories = ["cap"], outfit = "hoodie", outfit_colour = "red", footwear = "sneakers" }
+
+[[case]]
+description = "a calm shrine maiden in a white kimono with very long black hair and a flower hairpin"
+expect = { expression = "relaxed", outfit = "kimono", outfit_colour = "white", hair_length = "very-long", hair_colour = "black", accessories = ["flower-hairpin"] }
+
+[[case]]
+description = "a smug detective in a navy blazer with sharp eyes, a beret and ginger hair"
+expect = { expression = "smug", outfit = "blazer", outfit_colour = "navy", eyes = "tsurime", accessories = ["beret"], hair_colour = "ginger" }
+
+[[case]]
+description = "a gothic vampire girl with pale skin, black twin tails, red eyes and a choker"
+expect = { makeup = "gothic", skin = "fair", hair_style = "twintails", hair_colour = "black", eye_colour = "red", accessories = ["choker"] }
+
+[[case]]
+description = "an angel with a halo, white feathered wings, gentle eyes and pastel blue hair"
+expect = { accessories = ["halo", "angel-wings"], eyes = "tareme" }
+
+[[case]]
+description = "a dragon girl named Ember with oni horns, a dragon tail, cat eyes and short red hair"
+expect = { accessories = ["oni-horns", "dragon-tail"], eyes = "cat", hair_length = "short", hair_colour = "red" }
+
+[[case]]
+description = "a streamer with purple hair in twin buns, headphones, a hoodie and stockings"
+expect = { hair_colour = "purple", hair_style = "twin-buns", accessories = ["headphones"], outfit = "hoodie", legwear = "stockings" }
+
+[[case]]
+description = "a curvy woman with dark skin, curtain bangs, long wavy brown hair, gold hoop earrings and a green dress"
+expect = { body_shape = "curvy", age = "mature", skin = "dark", bangs = "curtain", hair_length = "long", hair_texture = "wavy", hair_colour = "brown", accessories = ["hoop-earrings"], outfit = "dress", outfit_colour = "green" }
+
+[[case]]
+description = "a knight with silver hair, a red cape, boots and a determined look"
+expect = { outfit = "cloak", outfit_colour = "red", hair_colour = "silver", footwear = "boots", expression = "determined" }
+
+[[case]]
+description = "a bubbly schoolgirl with side swept bangs, a high ponytail, an ahoge and a school uniform"
+expect = { expression = "happy", outfit = "uniform", bangs = "side-swept", hair_style = "ponytail", hair_extra = ["ahoge"] }
+
+[[case]]
+description = "a fairy with fairy wings, lilac hair, a flower and bare legs"
+expect = { accessories = ["fairy-wings", "flower-hairpin"], hair_colour = "purple", legwear = "bare" }
+
+[[case]]
+description = "a quiet bartender with slicked back navy hair, a black vest, trousers and loafers"
+expect = { expression = "shy", outfit = "vest", outfit_colour = "black", bangs = "none", hair_colour = "navy", bottoms = "trousers", footwear = "loafers" }
