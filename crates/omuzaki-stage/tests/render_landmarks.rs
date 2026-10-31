@@ -11,6 +11,7 @@
 mod support;
 
 use omuzaki_char::ops::character::create::CharacterCreate;
+use omuzaki_char::ops::part::set_param::PartSetParam;
 use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_api::DocWrite;
 use omuzaki_doc_mock::MemDoc;
@@ -106,6 +107,24 @@ fn a_face_turned_away_from_the_camera_reports_no_landmarks() {
     assert_eq!(shot(180.0).face_landmarks, Vec::new(), "the back of the head has no face to report");
     let turned = shot(30.0);
     assert_eq!(turned.face_landmarks.len(), 1, "a three-quarter view still shows the face");
+}
+
+#[test]
+fn a_tall_long_necked_character_still_reports_its_chin() {
+    let clock = FakeClock::new(Seconds(0.0));
+    let actor = Actor::Person { name: "test".to_owned() };
+    let mut doc = kit_doc();
+    for (path, value) in [("proportions/neck_length", json!(1.35)), ("shape/height", json!(0.6))] {
+        let op: PartSetParam =
+            serde_json::from_value(json!({ "character": "standard", "part": "body", "path": path, "value": value }))
+                .unwrap();
+        let plan = op.plan(&OpCtx::new(&doc, &actor, &clock)).unwrap();
+        doc.apply(&plan.patch).unwrap();
+    }
+    let harness = Harness::new(TestDoc(doc));
+    let shot = run(&harness, json!({ "character": "standard", "framing": "face", "size": [256, 256] })).unwrap();
+    let face = front_face(&shot, "standard");
+    assert!(face.chin[1] > face.mouth[1], "the chin is found below the mouth: {face:?}");
 }
 
 /// The head-shape profiles blended from `round-u` toward `egg-oval` in five steps (outline and layout together, as

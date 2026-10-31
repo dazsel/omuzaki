@@ -19,6 +19,8 @@ omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-face-api = { path = "../omuzaki-face-api" }
+# Inserts (drawn cutaway cards) are drawn by the face painter's CPU rasteriser.
+omuzaki-face = { path = "../omuzaki-face" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 # Voice ids and the speed range of a spoken short.
 omuzaki-performer-api = { path = "../omuzaki-performer-api" }
