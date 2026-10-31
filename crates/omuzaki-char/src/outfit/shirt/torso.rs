@@ -68,6 +68,31 @@ pub struct TorsoSpec {
     pub rise: f64,
     /// How far the hips end is pulled in, as a fraction of its radius.
     pub tuck: f64,
+    /// The front of the neck opening cut down, or `None` for an opening that follows the neck all round.
+    pub cut: Option<Cut>,
+}
+
+/// A neckline cut into the front of the opening: a V or a scoop.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Cut {
+    /// How far below the top of the torso the cut reaches at the front centre, metres.
+    pub depth: f64,
+    /// How far round the neck the cut spans, as a share of the whole way round.
+    pub width: f64,
+    /// A V (straight sides to a point) rather than a scoop (a rounded curve).
+    pub v: bool,
+}
+
+impl Cut {
+    /// How much of the cut's depth the edge drops at angle `phi` (0 is the front centre): 1 there, 0 at the cut's
+    /// sides and beyond.
+    fn profile(&self, phi: f64) -> f64 {
+        let half = (self.width * TAU / 2.0).max(1e-6);
+        // The angle's distance from the front (phi = 0), folded into 0..pi.
+        let from_front = TAU / 2.0 - (phi.rem_euclid(TAU) - TAU / 2.0).abs();
+        let u = (from_front / half).clamp(0.0, 1.0);
+        if self.v { 1.0 - u } else { (1.0 - u * u).sqrt() }
+    }
 }
 
 /// The body of the shirt.
@@ -132,6 +157,51 @@ fn builder_of(rows: &[Row], tile: Option<f64>) -> Result<MeshBuilder, GarmentErr
     Ok(builder)
 }
 
+/// The shirt's body with its neckline cut: each column's rows are drawn down so that column's top lands on the cut's
+/// edge, from a height a little under the cut's bottom (below it the shirt is as it would be uncut). The rows stay
+/// in order, so the grid keeps its shape and its seams.
+fn cut_builder(
+    column: &Column,
+    weights: &RegionWeights,
+    spec: &TorsoSpec,
+    cut: &Cut,
+    ys: &[f64],
+    tile: Option<f64>,
+) -> Result<MeshBuilder, GarmentError> {
+    let (hem, top) = (ys.first().copied().unwrap_or_default(), ys.last().copied().unwrap_or_default());
+    let depth = cut.depth.min(top - hem - 0.02).max(0.0);
+    let floor = (top - spec.rise - depth - 0.03).max(hem + 0.01);
+    let cols = SEGMENTS + 1;
+    let mut points = Vec::with_capacity(ys.len() * cols);
+    let mut skins = Vec::with_capacity(ys.len() * cols);
+    for &y in ys {
+        for j in 0..cols {
+            let phi = if j == SEGMENTS { 0.0 } else { TAU * fraction(j, SEGMENTS) };
+            let edge = top - (spec.rise + depth) * cut.profile(phi);
+            let y = if y > floor && top > floor { floor + (y - floor) * (edge - floor) / (top - floor) } else { y };
+            let ring = column.ring(y, spec.ease)?;
+            let keep = 1.0 - tuck_at(column, spec.tuck, y);
+            points.push(ring.centre + (ring.point(phi) - ring.centre) * keep);
+            skins.push((ring.centre, skin_at(column, weights, y)));
+        }
+    }
+    let grid = Grid::from_fn(ys.len(), cols, |i, j| points[i * cols + j])?;
+    let uvs = tile_uvs(&grid, tile, true);
+    let uv = |i: usize, j: usize| uvs.as_ref().map_or(DVec2::ZERO, |u| u[i * grid.cols() + j]);
+    let inside = |i: usize, j: usize| skins[i * cols + j].0;
+    let skin = |_: DVec3, i: usize, j: usize| skins[i * cols + j].1.clone();
+    let options = GridOptions {
+        wrap_j: true,
+        inside: Some(&inside),
+        uv: uvs.is_some().then_some(&uv as &dyn Fn(usize, usize) -> DVec2),
+        skin: Skin::Per(&skin),
+        ..GridOptions::default()
+    };
+    let mut builder = MeshBuilder::with_colours();
+    builder.add_grid(&grid, &options)?;
+    Ok(builder)
+}
+
 /// Builds the shirt's body and, for a tuck, its lining.
 ///
 /// # Errors
@@ -161,7 +231,10 @@ pub fn build(
     };
     let rows = ys.iter().map(|&y| row(y, spec.ease, 1.0)).collect::<Result<Vec<_>, _>>()?;
     let opening = rows.last().map(|r| r.ring).ok_or_else(|| GarmentError::invalid("shirt", "no rows".to_owned()))?;
-    let shirt = builder_of(&rows, tile)?;
+    let shirt = match spec.cut.filter(|c| c.depth > 0.0) {
+        None => builder_of(&rows, tile)?,
+        Some(cut) => cut_builder(column, weights, spec, &cut, &ys, tile)?,
+    };
     let lining = if spec.tuck > 0.0 {
         let mut rows: Vec<Row> =
             LINING_POLE.iter().map(|&keep| row(bottom, spec.ease, keep)).collect::<Result<_, _>>()?;

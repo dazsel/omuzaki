@@ -43,6 +43,7 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     shape::record_outline(ctx);
     if runs(MouthPiece::Gloss) {
         lips::paint_tint(ctx);
+        lips::paint_full(ctx);
         lips::paint_gloss(ctx);
     }
     if runs(MouthPiece::Shape) {

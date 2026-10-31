@@ -1,0 +1,87 @@
+# Western toon: an adult drawn the way Western TV animation and semi-real toon art draw one.
+#
+# Where the anime styles read a face through big eyes and a tiny mouth, this one reads it through structure: almond eyes
+# with a heavy inked upper lid and a smaller iris, strong arched brows, a nose that is a hard cel shadow with a nostril
+# hook, full outlined lips on a wide mouth, and face lines (cheekbones, smile lines, a chin mark and a cel jaw shadow).
+# The long face-shape preset lengthens the jaw; the body gets a long neck and slightly broader shoulders, so the head
+# reads small on the figure.
+id = "western-toon"
+name = "Western toon"
+summary = "An adult in Western toon style: almond eyes, strong brows, a shadow-wedge nose, full lips on a wide mouth and face lines."
+origin = "Design target: the model-sheet conventions of Western TV animation and semi-real toon art for adult characters (structure lines, cel-shadow noses, full lips, an adult neck), tuned by eye on the kit's own renders; no traced likeness."
+templates = ["standard", "tall"]
+profile = "long"
+
+[face.layout]
+eye_width = 0.036
+eye_spacing = 0.074
+brow_gap = 0.058
+
+[face.eyes]
+lid_shadow = 0.8
+
+[face.eyes.aperture]
+roundness = 0.18
+upper_height = 0.5
+lower_depth = 0.3
+tilt = 0.05
+inner_sharpness = 0.9
+outer_bluntness = 0.3
+
+[face.eyes.lash]
+thickness = 0.0024
+flick = 0.35
+lower = 0.45
+colour = "#1a1010"
+
+[face.eyes.iris]
+width = 0.46
+height = 0.9
+
+[face.eyes.crease]
+strength = 0.85
+lift = 0.6
+colour = "#6a3a34"
+
+[face.eyes.highlights]
+size = 0.14
+
+[face.mouth]
+half_width = 0.022
+line_width = 0.0018
+
+[face.mouth.lips]
+full = 0.9
+fullness = 1.0
+colour = "#c0363e"
+
+[face.nose]
+kind = "wedge"
+size = 1.8
+length = 1.9
+colour = "#5e302a"
+
+[face.brows]
+thickness = 0.0034
+arch = 0.009
+colour = "#2a1c1c"
+
+[face.cheeks]
+wash = 0.12
+strength = 0.5
+
+[face.cheeks.lines]
+colour = "#6a3a34"
+width = 0.0014
+cheekbone = 0.55
+smile = 0.45
+under_eye = 0.3
+chin = 0.5
+jaw_shade = 0.7
+
+[body.proportions]
+neck_length = 1.55
+shoulder_width = 1.08
+
+[body.shape]
+height = 0.65

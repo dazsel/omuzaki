@@ -77,6 +77,8 @@ omuzaki-script = { path = "../omuzaki-script" }
 omuzaki-settings = { path = "../omuzaki-settings" }
 omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 omuzaki-setup = { path = "../omuzaki-setup" }
+# The `sequence.*` ops: keyframed shots, toon volumes and motion graphics to a video.
+omuzaki-sequence = { path = "../omuzaki-sequence" }
 # The `parity.*` ops: the viewport's reference overlay and difference count call them.
 omuzaki-parity = { path = "../omuzaki-parity" }
 # The `short.*` ops (#2394).
@@ -84,6 +86,8 @@ omuzaki-paint-ops = { path = "../omuzaki-paint-ops" }
 omuzaki-short = { path = "../omuzaki-short" }
 omuzaki-stage = { path = "../omuzaki-stage" }
 omuzaki-theatre = { path = "../omuzaki-theatre" }
+# The branch menu, compare and merge views read branches and points (`shell::branches`).
+omuzaki-history-api = { path = "../omuzaki-history-api" }
 omuzaki-store = { path = "../omuzaki-store" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }

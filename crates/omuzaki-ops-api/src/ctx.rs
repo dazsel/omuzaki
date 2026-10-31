@@ -135,6 +135,11 @@ impl<'a> OpCtx<'a> {
         self.services.get::<S>().ok_or_else(|| OpError::unavailable(type_name::<S>()))
     }
 
+    /// Every service the op runs with, for a helper that `plan` and a job's `work` share (`JobCtx::services`).
+    pub fn services(&self) -> &'a Services {
+        self.services
+    }
+
     /// The person who confirmed this run, if the executor ran it after an approval (design §7).
     pub fn confirmed_by(&self) -> Option<&'a Actor> {
         self.confirmed_by
