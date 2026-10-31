@@ -319,6 +319,13 @@ pub trait HeadSurface: Debug + Send + Sync {
     fn layout_scale(&self) -> f32 {
         1.0
     }
+
+    /// The head's own size ([`HeadParams::size`](crate::HeadParams::size)) and the point, bind space, it was sized
+    /// about: what is worn on the head (hair) builds against the head at the template's size and is sized the same way,
+    /// so it keeps its proportions to the head. `(1, centre)` for a head at the template's size.
+    fn own_size(&self) -> (f32, Vec3) {
+        (1.0, self.centre())
+    }
 }
 
 /// A region of the body that garments wrap.
