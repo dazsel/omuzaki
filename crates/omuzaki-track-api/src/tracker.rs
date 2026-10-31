@@ -2,6 +2,7 @@
 //!
 //! [`TrackFrame`]: omuzaki_anim_api::TrackFrame
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -182,6 +183,18 @@ pub trait Tracker: Send {
     fn track_body(&mut self, config: BodyConfig, board: &Arc<BodyBoard>) -> Result<BodyConfig, TrackError> {
         let _ = (config, board);
         Err(TrackError::Unsupported("body tracking".to_owned()))
+    }
+
+    /// Adds the video file at `path` to [`devices`](Self::devices) as a camera that plays the file at its own rate
+    /// (#2585), and returns it: starting on its id tracks the file as a webcam. Adding a file again returns the same
+    /// camera. Cold: it reads the file's header.
+    ///
+    /// # Errors
+    /// [`TrackError::Unsupported`] for a tracker that reads no files (the default); whatever
+    /// [`Camera::add_file`](crate::camera::Camera::add_file) returns otherwise.
+    fn add_video(&mut self, path: &Path) -> Result<CameraInfo, TrackError> {
+        let _ = path;
+        Err(TrackError::Unsupported("this tracker reads no video files".into()))
     }
 
     /// How body tracking is doing; [`BodyStatus::default`] (off) for a tracker without it. Cheap.
