@@ -508,9 +508,20 @@ pub struct HeadParams {
     /// The preset the outline was last derived from; informational (the numbers above are what builds).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub preset: Option<ProfileId>,
+    /// The head's size against the body, `0.6..=1.6`; `None` (the default) is 1, the template's head. The whole head
+    /// grows or shrinks about its joint, with its painted face, eyes, ears and everything worn on it; the neck stays
+    /// the body's. The one number a figure's head-to-body proportion turns on, as a model sheet's "heads tall".
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub size: Option<f64>,
 }
 
 impl HeadParams {
+    /// [`size`](Self::size), 1 when unset.
+    #[must_use]
+    pub fn size(&self) -> f64 {
+        self.size.unwrap_or(1.0)
+    }
+
     /// Where the painted face layers land, head-local, for the outline as written. The face painter's layers cover
     /// exactly this rectangle. Follows the chin, so a variant with a longer chin gets a taller window. The head part
     /// builds from the outline clamped into its plausible space and publishes the projection of that outline, so the
@@ -545,6 +556,9 @@ impl Validate for HeadParams {
             }
         }
         c.range("ears/size", self.ears.size, 0.2, 3.0);
+        if let Some(size) = self.size {
+            c.range("size", size, 0.6, 1.6);
+        }
         if let Some(length) = self.ears.tip_length {
             c.range("ears/tip_length", length, 0.04, 0.14);
         }

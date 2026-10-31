@@ -158,6 +158,19 @@ pub struct Prepared {
     pub(crate) uploads: u32,
 }
 
+/// How far `built` is raised so it stands on its lowest point: boots' soles and heels reach below the template's floor
+/// line (the bare sole), and a character stands on what it wears, as a modelled character does. 0 for a character
+/// nothing of which reaches below the floor. The same number [`Landmarks`](crate::scene::landmarks::Landmarks) frames
+/// with.
+pub fn stand_lift(built: &BuiltCharacter) -> f32 {
+    crate::scene::landmarks::lift_for(built.meshes.iter().flat_map(|m| m.mesh.geometry.positions.iter().copied()))
+}
+
+/// [`stand_lift`] as the translation the frame's root ends with.
+pub(crate) fn stand_matrix(built: &BuiltCharacter) -> Mat4 {
+    Mat4::from_translation(Vec3::new(0.0, stand_lift(built), 0.0))
+}
+
 /// What [`Stage::pin_time`] took from the stage, to give back with [`Stage::unpin_time`]: the state of the last frame.
 #[derive(Clone, Debug)]
 pub struct TimePin {
@@ -187,6 +200,8 @@ pub struct Stage {
     input_root: Mat4,
     /// The scene's transform of the subject member, applied above every frame's root ([`set_scene`](Stage::set_scene)).
     subject_root: Mat4,
+    /// Raises the character onto its lowest point ([`stand_lift`]): soles and heels stand on the floor, not in it.
+    stand: Mat4,
     /// What the scene has committed for the renderer and still owes it ([`commit_scene`](Stage::commit_scene)).
     link: SceneLink,
     /// The scene's ground disc on the renderer.
@@ -244,6 +259,7 @@ impl Stage {
             Ok((rig, dynamic, plan)) => Ok(Self {
                 input_root: Mat4::IDENTITY,
                 subject_root: Mat4::IDENTITY,
+                stand: stand_matrix(&built),
                 link: SceneLink::new(),
                 ground: StageGround::default(),
                 environment: StageEnvironment::default(),
@@ -327,7 +343,7 @@ impl Stage {
             self.rig.set_reaches(&input.reach);
             self.rig.solve_with_channels(tick, &input.pose, &input.goals, &input.channels);
         }
-        self.root = self.subject_root * self.input_root;
+        self.root = self.subject_root * self.input_root * self.stand;
         self.tick = tick;
         if hold.body && self.pinned.is_none() {
             let hips = kit_bone_world(&self.built, &self.rig, self.root, omuzaki_anim_api::HumanoidBone::Hips);
@@ -540,7 +556,7 @@ impl Stage {
         if subject_root != self.subject_root {
             self.subject_root = subject_root;
             // A paused stage redraws from `root`, so it moves with the subject at once.
-            self.root = subject_root * self.input_root;
+            self.root = subject_root * self.input_root * self.stand;
         }
     }
 
@@ -552,6 +568,11 @@ impl Stage {
     /// The scene's transform of this member ([`set_subject_root`](Self::set_subject_root)).
     pub(crate) fn subject_root_now(&self) -> Mat4 {
         self.subject_root
+    }
+
+    /// The lift that stands the body on its lowest point, the last factor of its frame's root.
+    pub(crate) fn stand_now(&self) -> Mat4 {
+        self.stand
     }
 
     /// Keeps the arms out of another member's `parts` (world space) from the next frame, this member standing at
@@ -721,6 +742,22 @@ impl Stage {
     /// [`StageError::Render`] if the renderer refuses a material.
     pub(crate) fn set_skin_floor(&mut self, renderer: &mut dyn Renderer, floor: Option<f32>) -> Result<(), StageError> {
         self.character.set_skin_floor(renderer, &self.built, floor).map(drop)
+    }
+
+    /// Runs the surface fx `fx` (a burn, a dissolve, turning to stone) over every material of the character whose name
+    /// contains none of `spare` (`["eye"]` keeps the eyes clear), or takes it off with `None`. It stays on through
+    /// look edits and variant swaps. Cold: updates every material; a sequence calls it once a frame while the front
+    /// moves.
+    ///
+    /// # Errors
+    /// [`StageError::Render`] if the renderer refuses a material; the materials are as they were.
+    pub fn set_surface_fx(
+        &mut self,
+        renderer: &mut dyn Renderer,
+        fx: Option<omuzaki_render_api::SurfaceFx>,
+        spare: &[String],
+    ) -> Result<(), StageError> {
+        self.character.set_surface_fx(renderer, &self.built, fx, spare).map(drop)
     }
 
     /// Does the renderer work the last [`set_scene`](Self::set_scene) owes and records it as done: the ground (a new

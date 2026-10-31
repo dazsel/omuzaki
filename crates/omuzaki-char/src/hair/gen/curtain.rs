@@ -21,6 +21,10 @@
 //! strip ends round the pole that showed from behind. A bob or a nape
 //! layer is a short draped curtain whose `envelope` holds it close to the head.
 //!
+//! **The hem.** With [`CurtainGen::hem`] set, each guide's length is solved (a few rounds, each stepping the length by
+//! how far the lowest point misses) so the lowest point sits on the hem's height, blended from the sides to the back as
+//! the lengths are: a blunt cut, level or tilted, whatever the root heights and the curl do on the way down.
+//!
 //! **Randomness.** Six draws per guide, in this order and nothing else between guides: length jitter, wave amplitude,
 //! wave frequency, wave phase, curl size, curl sign.
 //!
@@ -278,7 +282,14 @@ fn envelope_at(table: &[[f64; 2]], y: f64, fallback: f64) -> f64 {
     if span.abs() < f64::EPSILON { a[1] } else { lerp(a[1], b[1], (y - a[0]) / span) }
 }
 
-/// One guide's rest shape: the hand-built path, resampled evenly by arc length.
+/// Rounds of the hem's solve ([`CurtainGen::hem`]): each moves the length by the lowest point's miss.
+const HEM_ROUNDS: usize = 6;
+/// The hem's solve stops once the lowest point is this close to it, metres.
+const HEM_TOLERANCE: f64 = 0.0005;
+/// The shortest and longest a guide is made to reach its hem, metres.
+const HEM_LENGTH: (f64, f64) = (0.02, 2.5);
+
+/// One guide's rest shape: the hand-built path, resampled evenly by arc length, cut to the hem when there is one.
 fn guide(
     params: &CurtainGen,
     ctx: &HairGenCtx<'_>,
@@ -288,11 +299,46 @@ fn guide(
     draws: &Draws,
 ) -> Vec<Vec3> {
     let phi = angle_of(params, u);
+    let backness = phi.cos().abs();
+    let mut length =
+        lerp(params.length_front, params.length_back, backness) * (0.95 + 0.05 * (u * 23.0).sin() + draws.length);
+    let Some([side, back]) = params.hem else {
+        return guide_of_length(params, ctx, keep_out, centre, u, draws, length);
+    };
+    // The fall is near vertical, so the lowest point moves about as far as the length does: step by the miss.
+    let hem = f64::from(centre.y) + lerp(side, back, backness);
+    let mut best = None;
+    for _ in 0..HEM_ROUNDS {
+        let path = guide_of_length(params, ctx, keep_out, centre, u, draws, length);
+        let lowest = path.iter().map(|p| f64::from(p.y)).fold(f64::INFINITY, f64::min);
+        let miss = lowest - hem;
+        if !miss.is_finite() {
+            return path;
+        }
+        let done = miss.abs() < HEM_TOLERANCE;
+        best = Some(path);
+        if done {
+            break;
+        }
+        length = (length + miss).clamp(HEM_LENGTH.0, HEM_LENGTH.1);
+    }
+    best.unwrap_or_else(|| guide_of_length(params, ctx, keep_out, centre, u, draws, length))
+}
+
+/// [`guide`] at a given `length`.
+fn guide_of_length(
+    params: &CurtainGen,
+    ctx: &HairGenCtx<'_>,
+    keep_out: Option<&BodyKeepOut>,
+    centre: Vec3,
+    u: f64,
+    draws: &Draws,
+    length: f64,
+) -> Vec<Vec3> {
+    let phi = angle_of(params, u);
     let (root, root_theta) = root_point(params, ctx.head, phi);
     let root = root.as_dvec3();
     let backness = phi.cos().abs();
-    let length =
-        lerp(params.length_front, params.length_back, backness) * (0.95 + 0.05 * (u * 23.0).sin() + draws.length);
     let axis = DVec3::new(f64::from(centre.x), 0.0, BODY_AXIS_Z);
     let (sin, cos) = phi.sin_cos();
     let root_reach = (root.x - axis.x).hypot(root.z);

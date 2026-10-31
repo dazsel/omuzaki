@@ -71,6 +71,9 @@ pub struct Landmarks {
     pub hands: Option<Bounds>,
     /// `BuiltCharacter::stature`'s `height_m`, else `body.height()`.
     pub height_m: f32,
+    /// How far the character was raised to stand on its lowest point ([`lift_for`]); every height above already
+    /// includes it, as the stage draws the character raised.
+    pub lift: f32,
 }
 
 impl Landmarks {
@@ -269,7 +272,26 @@ fn measure_meshes<'a>(
             "the height {height_m} m, from the stature or else the body's extent, is not usable: give a finite number above zero"
         )));
     }
-    Ok(Landmarks { body, head, eyes, chest, bust, hands, height_m })
+    // Stand the character on its lowest point, as the stage draws it (`frame::stand_lift`).
+    let lift = (-body.min.y).max(0.0);
+    let up = Vec3::new(0.0, lift, 0.0);
+    let raise = |b: Bounds| Bounds { min: b.min + up, max: b.max + up };
+    Ok(Landmarks {
+        body: raise(body),
+        head: head.map(raise),
+        eyes: eyes.map(|y| y + lift),
+        chest: chest.map(|y| y + lift),
+        bust: bust.map(raise),
+        hands: hands.map(raise),
+        height_m,
+        lift,
+    })
+}
+
+/// How far a character whose vertices are `positions` is raised to stand on its lowest point: how far the lowest
+/// reaches below the floor (`y = 0`), else 0. A boot's sole and heel go under the template's floor line, the bare sole.
+pub fn lift_for(positions: impl Iterator<Item = Vec3>) -> f32 {
+    positions.filter(|p| p.is_finite()).fold(0.0_f32, |lift, p| lift.max(-p.y))
 }
 
 /// `mesh` (the head mesh's bounds) grown by every vertex above its chin whose X and Z lie within [`HEAD_REACH`] of

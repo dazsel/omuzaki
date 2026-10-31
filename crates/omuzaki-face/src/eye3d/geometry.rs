@@ -19,7 +19,7 @@ use omuzaki_core::glam::{Vec2, Vec3};
 use omuzaki_core::id::Slug;
 use omuzaki_core::mesh::{ExtraAttribute, MeshData};
 
-use super::design::{Aperture, Ball, EyeDesign, LashClump, Lashes};
+use super::design::{Aperture, Ball, Caruncle, EyeDesign, LashClump, Lashes};
 use super::noise::{Pcg, smoothstep};
 use super::textures::SCLERA_REACH;
 
@@ -201,6 +201,8 @@ struct Lids {
     thickness: f32,
     crease: f32,
     crease_depth: f32,
+    corner_shadow: f32,
+    caruncle: Caruncle,
     /// How far toward anime the eye is drawn (0 photoreal, 1 anime): the hood and the crease flatten, as an anime
     /// face draws them as lines.
     style: f32,
@@ -229,6 +231,8 @@ impl Lids {
             thickness: design.skin.lid_thickness * (1.0 - 0.35 * design.style),
             crease: design.skin.crease,
             crease_depth: design.skin.crease_depth * (1.0 - 0.7 * design.style),
+            corner_shadow: design.skin.corner_shadow,
+            caruncle: design.skin.caruncle.clone(),
             style: design.style,
             edge,
             centre,
@@ -379,6 +383,12 @@ impl Lids {
         if d < 0.0 {
             cavity = 0.85 - (0.1 + 0.2 * smoothstep(0.6, 1.0, u)) * smoothstep(0.0, 1.2 * MM, -d);
         }
+        // Under the upper lid's overhang at the inner corner, the margin and the pocket fall into shadow as deep as the
+        // design asks, fading out along the lid toward the eye's middle and out onto the lid's front.
+        if upper {
+            let under = smoothstep(0.55, 0.95, u) * (1.0 - smoothstep(0.3 * MM, 1.2 * MM, d));
+            cavity *= 1.0 - 0.9 * self.corner_shadow * under;
+        }
         // The inner corner and the lid margins are flushed: the margin itself, the thin moist rim between the lashes
         // and the eye, is a deeper red than the skin, more so on the upper lid, whose margin the eye looks up into.
         let inner = smoothstep(0.75, 1.0, u) * (1.0 - smoothstep(0.0, 6.0 * MM, d));
@@ -473,11 +483,11 @@ impl Lids {
 
     /// The caruncle: a small wet mound in the inner corner.
     fn caruncle(&self, mesh: &mut MeshData, info: &mut Vec<f32>) {
-        let a = &self.aperture;
-        let at = Vec2::new(a.inner_x - 1.3 * MM, a.inner_y + 0.3 * MM);
-        let centre = Vec3::new(at.x, at.y, self.proxy(at.x, at.y, -1.5 * MM));
+        let (a, c) = (&self.aperture, &self.caruncle);
+        let at = Vec2::new(a.inner_x - c.inset, a.inner_y + 0.3 * MM);
+        let centre = Vec3::new(at.x, at.y, self.proxy(at.x, at.y, -c.depth));
         // Low and flattened against the corner's floor: a wet fold, not a bead.
-        let radii = Vec3::new(1.5 * MM, 1.0 * MM, 0.45 * MM);
+        let radii = Vec3::new(0.5 * c.width, 0.5 * c.height, c.rise);
         let first = u32::try_from(mesh.positions.len()).unwrap_or(0);
         let (rings, segments) = (12u32, 20u32);
         for i in 0..=rings {
@@ -492,7 +502,7 @@ impl Lids {
                 let p = centre + n * radii * lump;
                 mesh.positions.push(p);
                 mesh.uvs.push(skin_uv(p));
-                info.extend_from_slice(&[0.85, 0.8, 1.0, 0.0]);
+                info.extend_from_slice(&[0.85, 0.8, c.flush, 0.0]);
             }
         }
         let idx = |i: u32, j: u32| first + i * segments + j % segments;
@@ -595,7 +605,7 @@ impl Lids {
         let curl = lashes.curl * rng.range(0.7, 1.2);
         // A few strays point their own way.
         let wander = if rng.unit() < 0.05 { 0.35 } else { 0.1 };
-        self.grow(upper, u, row, length, (curl, sweep * 0.7), wander, rng)
+        self.grow(upper, u, row, length, (None, curl, sweep * 0.7), wander, rng)
     }
 
     /// The hairs of a clump placed by hand: rooted side by side across its spread, gathered to one tip.
@@ -611,15 +621,16 @@ impl Lids {
                 let row = rng.range(0.55, 0.85) * MM;
                 let length = clump.length * rng.range(0.85, 1.05);
                 let curl = clump.curl * rng.range(0.9, 1.1);
-                self.grow(clump.upper, u, row, length, (curl, sweep), 0.04, rng)
+                self.grow(clump.upper, u, row, length, (clump.lift, curl, sweep), 0.04, rng)
             })
             .collect();
-        gather(&mut hairs, 1.0);
+        gather(&mut hairs, clump.gather);
         hairs
     }
 
-    /// A lash's centre line rooted at `u` along a lid, `row` behind the margin's edge: `length` long, curling by
-    /// `bend.0` (1 as grown lashes do) and swept along the lid by `bend.1`, its direction jittered by `wander`.
+    /// A lash's centre line rooted at `u` along a lid, `row` behind the margin's edge: `length` long, standing `bend.0`
+    /// degrees off the lid's skin at its root (the grown lashes' start when `None`), curling by `bend.1` (1 as grown
+    /// lashes do) and swept along the lid by `bend.2`, its direction jittered by `wander`.
     #[allow(clippy::too_many_arguments, reason = "one hair's shape, each argument a different property of it")]
     fn grow(
         &self,
@@ -627,11 +638,11 @@ impl Lids {
         u: f32,
         row: f32,
         length: f32,
-        bend: (f32, Vec3),
+        bend: (Option<f32>, f32, Vec3),
         wander: f32,
         rng: &mut Pcg,
     ) -> Vec<Vec3> {
-        let (curl, sweep) = bend;
+        let (lift, curl, sweep) = bend;
         // The outline sample at `u` on this lid, and its neighbour toward the outer corner.
         let half = AROUND / 2;
         // In range: u in 0..1.
@@ -646,7 +657,15 @@ impl Lids {
         let out = (ahead - root).normalize_or_zero();
         let normal = root.normalize_or_zero();
         let up = if upper { Vec3::Y } else { -Vec3::Y };
-        let start = (normal * 0.9 + out * 0.1 - up * 0.22 + sweep).normalize_or_zero();
+        let start = match lift {
+            Some(degrees) => {
+                // Between along the skin, away from the opening, and straight out of the eye.
+                let off = (normal - out * normal.dot(out)).normalize_or(normal);
+                let (sin, cos) = degrees.clamp(0.0, 90.0).to_radians().sin_cos();
+                (off * sin + out * cos + sweep).normalize_or_zero()
+            }
+            None => (normal * 0.9 + out * 0.1 - up * 0.22 + sweep).normalize_or_zero(),
+        };
         let curl = (up * 1.2 - normal * 0.35).normalize_or_zero() * curl * if upper { 1.0 } else { 0.5 };
         let jitter = Vec3::new(rng.normal(), rng.normal(), rng.normal()) * wander;
         (0..=10)

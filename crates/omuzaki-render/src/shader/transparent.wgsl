@@ -16,7 +16,7 @@
 // The lit, fogged colour and the alpha of a blended surface, straight.
 fn blended(in: VsOut, front: bool) -> vec4<f32> {
     let uv = mtoon_uv(in.uv);
-    let albedo = surface_albedo(uv, in.colour, in.local);
+    var albedo = surface_albedo(uv, in.colour, in.local);
     let program = ProgramIn(
         array<vec4<f32>, 4>(in.extra0, in.extra1, in.extra2, in.extra3),
         front,
@@ -35,6 +35,11 @@ fn blended(in: VsOut, front: bool) -> vec4<f32> {
         }
         alpha = albedo.a / max(material.alpha.x, 1e-3);
     }
+    let fx = fx_at(in.local);
+    if (fx_cut(fx)) {
+        discard;
+    }
+    albedo = vec4<f32>(fx_over(albedo.rgb, fx), albedo.a);
     begin_hair_shadow(in.world_position);
     var colour = albedo.rgb;
     if (mtoon_on()) {
@@ -51,6 +56,7 @@ fn blended(in: VsOut, front: bool) -> vec4<f32> {
             colour += back_light_rim(n, in.world_position);
         }
     }
+    colour += fx_glow(fx);
     // Fog fades the surface colour only; the alpha still decides how much of it covers what is behind.
     return vec4<f32>(apply_fog(colour, in.world_position), program_alpha(program, alpha));
 }

@@ -496,7 +496,11 @@ mod tests {
         let moods = library.0.values().filter(|e| e.kind == ExpressionKind::Emotion).count();
         let accents = library.0.values().filter(|e| e.kind == ExpressionKind::Accent).count();
         assert!(moods >= 18, "{moods} moods");
-        assert_eq!((moods, accents), (27, 8));
+        assert_eq!((moods, accents), (28, 8));
+        // The grin keeps its eyes open where `happy` closes them to arcs, and shows both rows of teeth.
+        let grin = mapping.apply(&library.blend(&ChannelBuf::NEUTRAL, &[(&id("grin"), 1.0)]).unwrap());
+        assert!(grin.left_eye.arc == 0.0 && grin.left_eye.close < 0.2, "{:?}", grin.left_eye);
+        assert!(grin.mouth.smile_left > 0.9 && grin.mouth.teeth_upper > 0.5 && grin.mouth.teeth_lower > 0.5);
         for (name, e) in &library.0 {
             assert!(!e.deltas.0.is_empty(), "{name} moves nothing");
             for (c, v) in &e.deltas.0 {

@@ -83,12 +83,20 @@ pub struct LegSections {
 }
 
 impl LegSections {
-    /// The tube over `region` of `fit`, `offset` metres out, from just above the foot up to `top`.
+    /// The tube over `region` of `fit`, `offset` metres out, from just above the foot up to `top`; or, with a
+    /// `bottom`, ending that fraction of the way from the waist edge to the knee (shorts, the bottom of a leotard), or
+    /// past the knee toward the ankle above 1.
     ///
     /// # Errors
     /// [`GarmentError`] for a fit with no such sections, a leg without a knee, a leg whose lower end is not below the
-    /// torso's lower edge, or a top that is not above the foot.
-    pub fn new(fit: &Arc<dyn BodyFit>, region: BodyRegion, offset: f64, top: LegTop) -> Result<Self, GarmentError> {
+    /// torso's lower edge, a top that is not above the foot, or a bottom that is not below the top.
+    pub fn new(
+        fit: &Arc<dyn BodyFit>,
+        region: BodyRegion,
+        offset: f64,
+        top: LegTop,
+        bottom: Option<f64>,
+    ) -> Result<Self, GarmentError> {
         let section = |t: f64| ring_at(fit.as_ref(), region, t, MIN_EXPONENT, offset);
         let length = {
             let (a, b) = (section(0.0)?, section(1.0)?);
@@ -106,6 +114,19 @@ impl LegSections {
             LegTop::Knee => (knee - KNEE_ABOVE).max(waist),
         };
         let ankle_t = ankle_t(fit, region, knee, &section)?;
+        let ankle_t = match bottom {
+            Some(b) => {
+                let end = (waist + b * (knee - waist)).min(ankle_t);
+                if end <= top_t + 1e-6 {
+                    return Err(GarmentError::invalid(
+                        "bottom",
+                        format!("{region:?}: the bottom ({end:.3}) isn't below the top ({top_t:.3}): end it lower"),
+                    ));
+                }
+                end
+            }
+            None => ankle_t,
+        };
         if ankle_t <= top_t {
             return Err(GarmentError::invalid(
                 "region",

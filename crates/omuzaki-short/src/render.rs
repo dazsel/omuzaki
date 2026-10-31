@@ -95,8 +95,9 @@ pub struct ShortScene<'a> {
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a short is at most 600 s")]
 pub fn span_frames(span: Option<[f32; 2]>, fps: u32, total: u64) -> std::ops::Range<u64> {
     let Some([from, to]) = span else { return 0..total };
-    // A thousandth of a frame of slack, so 0.6 s at 30 fps is frame 18 though 0.6 is a hair over it in f32.
-    let at = |s: f32| ((f64::from(s) * f64::from(fps) - 1e-3).ceil().max(0.0) as u64).min(total);
+    // A hundredth of a frame of slack, so 0.6 s at 30 fps is frame 18 though 0.6 is a hair over it in f32, and a
+    // frame's time written to four decimals (16.6667 s for frame 500) still names that frame.
+    let at = |s: f32| ((f64::from(s) * f64::from(fps) - 1e-2).ceil().max(0.0) as u64).min(total);
     let start = at(from);
     start..at(to).max(start)
 }
@@ -180,7 +181,8 @@ fn run(
         kit.set_face(renderer, FaceRig::standard()).map_err(|e| render_error("the face", e))?;
     }
     let expressions = stage.trigger_expressions();
-    let mut performer = OfflinePerformer::new(scene.timeline, &expressions, ChannelBuf::NEUTRAL, base, def.seed)?;
+    let mut performer =
+        OfflinePerformer::new(scene.timeline, &expressions, ChannelBuf::NEUTRAL, base, def.seed, def.body)?;
     let [w, h] = def.size;
     #[allow(clippy::cast_precision_loss, reason = "sides are at most 4096")]
     let rig = CameraRig {
@@ -259,5 +261,7 @@ mod tests {
         assert_eq!(span_frames(Some([2.5, 9.0]), 30, 90), 75..90, "the end is clamped to the short");
         assert_eq!(span_frames(Some([5.0, 6.0]), 30, 90), 90..90, "past the end draws nothing");
         assert_eq!(span_frames(Some([0.51, 0.6]), 30, 90), 16..18, "the first frame at or after the start");
+        assert_eq!(span_frames(Some([16.6667, 16.7]), 30, 600), 500..501, "a frame's time to four decimals names it");
+        assert_eq!(span_frames(Some([16.67, 16.7]), 30, 600), 501..501, "a start a tenth of a frame late skips it");
     }
 }

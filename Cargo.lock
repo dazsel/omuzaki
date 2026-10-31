@@ -4990,6 +4990,7 @@ dependencies = [
  "omuzaki-script",
  "omuzaki-secrets-api",
  "omuzaki-secrets-mock",
+ "omuzaki-sequence",
  "omuzaki-settings",
  "omuzaki-settings-api",
  "omuzaki-settings-mock",
@@ -6267,6 +6268,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-sequence"
+version = "0.0.0"
+dependencies = [
+ "ab_glyph",
+ "image",
+ "omuzaki-anim",
+ "omuzaki-anim-api",
+ "omuzaki-char",
+ "omuzaki-char-api",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-face-api",
+ "omuzaki-link-build",
+ "omuzaki-ops-api",
+ "omuzaki-render",
+ "omuzaki-render-api",
+ "omuzaki-render-mock",
+ "omuzaki-short",
+ "omuzaki-stage",
+ "omuzaki-stage-api",
+ "omuzaki-store-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tiny-skia",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "omuzaki-settings"
 version = "0.0.0"
 dependencies = [
@@ -6958,6 +6991,7 @@ dependencies = [
  "omuzaki-secrets",
  "omuzaki-secrets-api",
  "omuzaki-secrets-mock",
+ "omuzaki-sequence",
  "omuzaki-settings",
  "omuzaki-settings-api",
  "omuzaki-settings-mock",

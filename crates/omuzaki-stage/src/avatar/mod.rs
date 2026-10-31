@@ -61,6 +61,8 @@ pub struct AvatarStage {
     root: Mat4,
     input_root: Mat4,
     subject_root: Mat4,
+    /// Raises the avatar onto its lowest point, as a kit character is (`frame::stand_lift`).
+    stand: Mat4,
     link: SceneLink,
     ground: StageGround,
     environment: StageEnvironment,
@@ -114,7 +116,11 @@ impl AvatarStage {
         let mut scene = scene;
         reserve(&mut scene);
         plan.reserve(&mut scene);
+        let lift = crate::scene::landmarks::lift_for(
+            avatar.meshes.iter().flat_map(|m| m.mesh.geometry.positions.iter().copied()),
+        );
         Ok(Self {
+            stand: Mat4::from_translation(omuzaki_core::glam::Vec3::new(0.0, lift, 0.0)),
             gaze: EyeGaze::of(&avatar),
             pose: ease::at_ease(&avatar.bind),
             avatar,
@@ -151,6 +157,20 @@ impl AvatarStage {
         ease::at_ease(&self.avatar.bind)
     }
 
+    /// Runs the surface fx `fx` over every material of the avatar whose name contains none of `spare`, or takes it off
+    /// with `None`, as [`Stage::set_surface_fx`](crate::frame::Stage::set_surface_fx) does for a kit character. Cold.
+    ///
+    /// # Errors
+    /// [`StageError::Render`] if the renderer refuses a material; the materials are as they were.
+    pub fn set_surface_fx(
+        &mut self,
+        renderer: &mut dyn Renderer,
+        fx: Option<omuzaki_render_api::SurfaceFx>,
+        spare: &[String],
+    ) -> Result<(), StageError> {
+        self.upload.set_surface_fx(renderer, &self.avatar, fx, spare)
+    }
+
     /// Runs one frame and renders it into the stage's target. Returns the frame, with
     /// [`uploads`](FrameOutput::uploads) counting the materials an expression bind re-sent.
     ///
@@ -181,7 +201,7 @@ impl AvatarStage {
             self.goals = input.goals;
             self.rig.set_reaches(&input.reach);
         }
-        self.root = self.subject_root * self.input_root;
+        self.root = self.subject_root * self.input_root * self.stand;
         // The spring bones solve with the pose: held with it (catching up in one step at each new pose), or, when the
         // secondary motion flows, every frame under the held pose.
         if let Some(dt) = hold.secondary_dt {
@@ -309,7 +329,7 @@ impl AvatarStage {
     pub fn set_subject_root(&mut self, subject_root: Mat4) {
         if subject_root != self.subject_root {
             self.subject_root = subject_root;
-            self.root = subject_root * self.input_root;
+            self.root = subject_root * self.input_root * self.stand;
         }
     }
 
@@ -321,6 +341,11 @@ impl AvatarStage {
     /// The scene's transform of this member ([`set_subject_root`](Self::set_subject_root)).
     pub(crate) fn subject_root_now(&self) -> Mat4 {
         self.subject_root
+    }
+
+    /// The lift that stands the body on its lowest point, the last factor of its frame's root.
+    pub(crate) fn stand_now(&self) -> Mat4 {
+        self.stand
     }
 
     /// Keeps the arms out of another member's `parts` (world space) from the next frame, this member standing at
