@@ -1,15 +1,23 @@
 //! `render.compare`: two stored renders side by side, as their difference, or as a heatmap of where they differ, with
 //! the numbers an agent needs to tell whether an edit changed what it meant to (spec v3 §11). The usual loop is
 //! `render.preview`, an edit, `render.preview` again, then `render.compare` of the two URIs.
+//!
+//! Either side may instead be a state of the project (#400, `docs/design/branches.md` 6.3): `"now"`, a transaction,
+//! a snapshot, a point or another branch. Both states then render through `render.preview` with one `shot` (the same
+//! character, camera, framing, pose, expression, light rig and size), so the only thing that differs between the two
+//! pictures is the state. A character missing on one side renders as an empty frame, and `missing` says which.
 
 use omuzaki_core::glam::UVec2;
-use omuzaki_ops_api::{CostHint, JobCtx, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
+use omuzaki_history_api::state::StateRef;
+use omuzaki_ops_api::{CostHint, ErrorCode, JobCtx, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use omuzaki_render_api::{AlphaEncoding, Image};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::history::state_doc;
 use super::picture::{canvas, load, paste, store, straight};
+use super::preview::{Preview, PreviewResult};
 
 /// The gap between the two pictures of a side-by-side, in pixels.
 pub const GUTTER: u32 = 8;
@@ -39,14 +47,22 @@ pub enum CompareMode {
 #[schemars(extend(
     "examples" = [
         {"a": "omuzaki://render/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.png", "b": "omuzaki://render/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.png"},
-        {"a": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "b": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "mode": "side_by_side"}
-    ]
+        {"a": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "b": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "mode": "side_by_side"},
+        {"a": "now", "b": "now", "shot": {"character": "kit", "framing": "face", "size": [256, 256], "quality": "live"}}
+    ],
+    "x-omuzaki-fixture" = "character"
 ))]
 pub struct Compare {
-    /// The first render: its `omuzaki://render/<hash>.png` URI or its hash.
-    pub a: String,
-    /// The second render, the same size as the first.
-    pub b: String,
+    /// The first side: a stored render (its `omuzaki://render/<hash>.png` URI or its hash), or a state of the project
+    /// (`"now"`, `{"tx": 7}`, `{"snapshot": …}`, `{"point": …}`, `{"branch": "aria/oval-face"}`) rendered with `shot`.
+    pub a: Side,
+    /// The second side, the same size as the first.
+    pub b: Side,
+    /// How a state is rendered: `render.preview`'s arguments (character, camera, framing, yaw, pitch, zoom, pose,
+    /// expression, light rig, size, quality), the same for both sides. Needed when a side is a state; its own `state`
+    /// is replaced by the side's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shot: Option<Preview>,
     /// `heatmap` (the default), `diff` or `side_by_side`.
     #[serde(default)]
     pub mode: CompareMode,
@@ -56,9 +72,38 @@ pub struct Compare {
     pub threshold: u8,
 }
 
+/// One side of a comparison.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum Side {
+    /// A state of the project, rendered with the comparison's `shot`.
+    State(StateRef),
+    /// A stored render: its `omuzaki://render/<hash>.png` URI or its hash.
+    Render(String),
+}
+
+impl From<String> for Side {
+    fn from(reference: String) -> Self {
+        Self::Render(reference)
+    }
+}
+
+impl From<&str> for Side {
+    fn from(reference: &str) -> Self {
+        Self::Render(reference.to_owned())
+    }
+}
+
 /// What a comparison found, and where it is stored.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CompareResult {
+    /// The pictures compared, `[a, b]`: each side's render URI (a state's is the picture it rendered to; a missing
+    /// character's side is empty).
+    #[serde(default)]
+    pub sides: [String; 2],
+    /// The sides (`a`, `b`) whose state has no such character: each rendered as an empty, transparent frame.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<String>,
     /// `omuzaki://render/<hash>.png` of the comparison picture.
     pub uri: String,
     /// Its content hash.
@@ -193,15 +238,56 @@ impl Op for Compare {
         }
     }
 
-    fn plan(&self, _ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
-        super::picture::hash_of("a", &self.a)?;
-        super::picture::hash_of("b", &self.b)?;
-        Ok(Plan { cost: Some(CostHint { seconds: Some(0.2), gpu_mib: Some(0), usd: None }), ..Plan::default() })
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let mut cost = CostHint { seconds: Some(0.2), gpu_mib: Some(0), usd: None };
+        let mut missing = Vec::new();
+        for (field, side) in [("a", &self.a), ("b", &self.b)] {
+            match side {
+                Side::Render(reference) => {
+                    super::picture::hash_of(field, reference)?;
+                }
+                Side::State(state) => {
+                    match self.shot_of(field, state)?.plan(ctx) {
+                        Ok(plan) => {
+                            let render = plan.cost.unwrap_or_default();
+                            cost.seconds = Some(cost.seconds.unwrap_or(0.0) + render.seconds.unwrap_or(0.0));
+                            cost.gpu_mib = cost.gpu_mib.max(render.gpu_mib);
+                        }
+                        Err(e) if e.code == ErrorCode::NotFound && state_doc(ctx.services(), Some(state)).is_ok() => {
+                            missing.push(field);
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+        }
+        if missing.len() == 2 {
+            let character = self.shot.as_ref().map(|s| s.character.to_string()).unwrap_or_default();
+            return Err(OpError::not_found(format!("neither state has a character '{character}'"))
+                .hint("render a character that exists in at least one of them"));
+        }
+        Ok(Plan { cost: Some(cost), ..Plan::default() })
     }
 
     fn work(&self, job: &JobCtx<'_>) -> Result<Value, OpError> {
-        let a = load(job, "a", &self.a)?;
-        let b = load(job, "b", &self.b)?;
+        let (a, a_uri) = self.side(job, "a", &self.a)?;
+        let (b, b_uri) = self.side(job, "b", &self.b)?;
+        let mut missing = Vec::new();
+        let (a, b) = match (a, b) {
+            (Some(a), Some(b)) => (a, b),
+            (None, Some(b)) => {
+                missing.push("a".to_owned());
+                (canvas("a", b.size)?, b)
+            }
+            (Some(a), None) => {
+                missing.push("b".to_owned());
+                let empty = canvas("b", a.size)?;
+                (a, empty)
+            }
+            (None, None) => {
+                return Err(OpError::not_found("neither state has the character").hint("render one that exists"));
+            }
+        };
         if a.size != b.size {
             return Err(OpError::invalid(
                 "b",
@@ -217,6 +303,8 @@ impl Op for Compare {
         #[allow(clippy::cast_precision_loss, reason = "a share of the picture needs no more than f32 holds")]
         let changed = difference.changed as f32 / (a.size.x as f32 * a.size.y as f32).max(1.0);
         let result = CompareResult {
+            sides: [a_uri, b_uri],
+            missing,
             uri: stored.uri,
             hash: stored.hash.to_string(),
             size: [picture.size.x, picture.size.y],
@@ -232,6 +320,38 @@ impl Op for Compare {
 }
 
 register_op!(Compare);
+
+impl Compare {
+    /// The preview that renders `state` for side `field`.
+    fn shot_of(&self, field: &str, state: &StateRef) -> Result<Preview, OpError> {
+        let shot = self.shot.as_ref().ok_or_else(|| {
+            OpError::invalid("shot", format!("{field} is a state, so the comparison needs a shot to render it with"))
+                .hint("give shot render.preview's arguments, at least the character: {\"character\": \"kit\"}")
+        })?;
+        Ok(Preview { state: Some(state.clone()), ..shot.clone() })
+    }
+
+    /// Side `field`'s picture and its URI: a stored render as it is, a state rendered with the shot, or `None` when the
+    /// state has no such character.
+    fn side(&self, job: &JobCtx<'_>, field: &str, side: &Side) -> Result<(Option<Image>, String), OpError> {
+        match side {
+            Side::Render(reference) => Ok((Some(load(job, field, reference)?), reference.clone())),
+            Side::State(state) => {
+                let preview = self.shot_of(field, state)?;
+                let has = state_doc(job.services(), Some(state))?.map_or_else(
+                    || job.read(|doc| doc.get(&omuzaki_char_api::paths::character(&preview.character)).is_some()),
+                    |doc| omuzaki_doc_api::DocRead::get(&doc, &omuzaki_char_api::paths::character(&preview.character)).is_some(),
+                );
+                if !has {
+                    return Ok((None, String::new()));
+                }
+                let rendered: PreviewResult = serde_json::from_value(preview.work(job)?)
+                    .map_err(|e| OpError::internal(format!("reading the render back: {e}")))?;
+                Ok((Some(load(job, field, &rendered.uri)?), rendered.uri))
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

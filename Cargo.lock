@@ -6446,6 +6446,7 @@ dependencies = [
  "omuzaki-face",
  "omuzaki-face-api",
  "omuzaki-face-mock",
+ "omuzaki-history-api",
  "omuzaki-http",
  "omuzaki-io-api",
  "omuzaki-io-fbx",
