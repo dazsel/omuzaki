@@ -414,6 +414,54 @@ impl Default for Neck {
     }
 }
 
+/// The face's bony and fleshy forms sculpted into the head (#2697): each a height in metres on the head as authored
+/// (the head part's frame, 0.38 m from chin to crown), out of the cranium (positive) or into it (negative where noted),
+/// placed from the painted face's layout so the forms sit under the drawn features. All zero (the default) is the kit's
+/// smooth anime cranium; the realistic styles raise them, so a lit head turns like a skull with a face rather than a
+/// ball with one painted on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Sculpt {
+    /// The brow ridge over both eyes and the bridge between them (the glabella), out, `0..=0.03`.
+    pub brow: f64,
+    /// The eye sockets under the brow, in, `0..=0.03`: the lids and eyes sit back in the skull.
+    pub sockets: f64,
+    /// The cheekbones below and outside the eyes, out, `0..=0.03`.
+    pub cheekbones: f64,
+    /// The hollow of each temple beside the brow, in, `0..=0.02`.
+    pub temples: f64,
+    /// The nose: its bridge rising from between the eyes to its tip over the painted nose, its wings and the drop under
+    /// it, out, `0..=0.06`.
+    pub nose: f64,
+    /// The muzzle round the mouth (the teeth's curve under the lips), with the lips' fullness and the furrow from the
+    /// nose's wings to the mouth's corners, out, `0..=0.03`.
+    pub mouth: f64,
+    /// The chin's front, out, `0..=0.03`.
+    pub chin: f64,
+    /// The angle of the jaw below the ears, out, `0..=0.03`: a squarer, more defined lower face.
+    pub jaw: f64,
+}
+
+impl Sculpt {
+    /// True when every form is zero: the smooth cranium, which a saved character leaves out.
+    pub fn is_flat(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+impl Validate for Sculpt {
+    fn check(&self, c: &mut Check) {
+        c.range("brow", self.brow, 0.0, 0.03);
+        c.range("sockets", self.sockets, 0.0, 0.03);
+        c.range("cheekbones", self.cheekbones, 0.0, 0.03);
+        c.range("temples", self.temples, 0.0, 0.02);
+        c.range("nose", self.nose, 0.0, 0.06);
+        c.range("mouth", self.mouth, 0.0, 0.03);
+        c.range("chin", self.chin, 0.0, 0.03);
+        c.range("jaw", self.jaw, 0.0, 0.03);
+    }
+}
+
 /// How the painted face window sits on the head: the rectangle the face layers cover.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -442,6 +490,10 @@ pub struct HeadParams {
     pub cranium: Cranium,
     /// The face-shape outline.
     pub outline: HeadOutline,
+    /// The face's forms sculpted into the head: brow, sockets, cheekbones, nose, mouth, chin and jaw. All zero, the
+    /// default, is the smooth cranium.
+    #[serde(skip_serializing_if = "Sculpt::is_flat")]
+    pub sculpt: Sculpt,
     /// The face window.
     pub window: FaceWindow,
     /// An optional traced radius map.
@@ -482,6 +534,7 @@ impl Validate for HeadParams {
     fn check(&self, c: &mut Check) {
         c.nested("cranium", &self.cranium);
         c.nested("outline", &self.outline);
+        c.nested("sculpt", &self.sculpt);
         c.range("window/half_width", self.window.half_width, 0.05, 0.5);
         c.range("window/top", self.window.top, -0.2, 0.4);
         c.range("window/below_chin", self.window.below_chin, 0.0, 0.1);

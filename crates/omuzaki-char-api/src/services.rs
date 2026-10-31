@@ -22,7 +22,9 @@
 use std::fmt;
 use std::sync::Arc;
 
-use omuzaki_core::glam::UVec2;
+use omuzaki_core::glam::{UVec2, Vec3};
+use omuzaki_core::mesh::MeshData;
+use omuzaki_face_api::sculpt::EarDesign;
 use omuzaki_face_api::{DrawList, FaceLayerId, FaceLayerSpec, FaceRasterizer, FaceRect, Raster};
 use omuzaki_render_api::{AlphaEncoding, ColourSpace, TextureDesc};
 use omuzaki_store_api::ContentHash;
@@ -127,6 +129,38 @@ macro_rules! register_rasterizer {
 /// The rasteriser the binary links, if any.
 pub fn linked_rasterizer() -> Option<fn() -> Box<dyn FaceRasterizer>> {
     inventory::iter::<RasterizerRegistration>.into_iter().next().map(|r| r.make)
+}
+
+/// The sculpted features a crate links into every binary that links it
+/// ([`register_feature_mesher!`](crate::register_feature_mesher)): the head builds a sculpted ear (`face/ear3d`) with
+/// it. `omuzaki-face` sculpts its features as signed-distance fields, which `omuzaki-char` cannot call (an
+/// implementation crate depends only on API crates), so the face crate registers the mesher and the head asks for it;
+/// a binary that links none builds the plain ear.
+pub struct FeatureMesherRegistration {
+    /// The ear of `design` grown out of the head whose signed distance (real metres, in the ear's frame: x toward the
+    /// back of the head, y up, z out of its side, the canal's mouth near the origin) is `head`, meshed at `cell` metres.
+    /// The patch of head it stands on is part of the field; the mesh is in the same frame, real metres.
+    pub ear: fn(design: &EarDesign, head: &dyn Fn(Vec3) -> f32, cell: f32) -> MeshData,
+}
+
+inventory::collect!(FeatureMesherRegistration);
+
+/// Registers `$mesher` (a [`FeatureMesherRegistration`]) as the linked feature mesher, next to the features.
+///
+/// ```ignore
+/// omuzaki_char_api::register_feature_mesher!(omuzaki_char_api::FeatureMesherRegistration { ear: mesh_ear });
+/// ```
+#[macro_export]
+macro_rules! register_feature_mesher {
+    ($mesher:expr) => {
+        $crate::__inventory::submit! { $mesher }
+        $crate::__record_registration!("feature_mesher", $mesher);
+    };
+}
+
+/// The feature mesher the binary links, if any.
+pub fn linked_feature_mesher() -> Option<&'static FeatureMesherRegistration> {
+    inventory::iter::<FeatureMesherRegistration>.into_iter().next()
 }
 
 /// The services as one part reaches them. [`BuildCtx`] and [`RecolourCtx`] both delegate here, so a part's texture is

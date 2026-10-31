@@ -15,6 +15,7 @@ pub mod neck;
 pub mod outline;
 pub mod part;
 pub mod presets;
+pub mod sculpt;
 pub mod trace;
 
 pub use cranium::{TraceSample, surface};

@@ -93,5 +93,19 @@ neck_length = 1.15
 height = 0.2
 
 # A rounder face plane: the painted features sit on a modelled face, not a flattened anime one.
+[face.ear3d]
+style = 0.6
+height = 0.064
+protrusion = 24.0
+
 [head.cranium]
 face_flatten = 0.015
+
+[head.sculpt]
+brow = 0.006
+sockets = 0.008
+cheekbones = 0.006
+nose = 0.02
+mouth = 0.005
+chin = 0.008
+jaw = 0.006

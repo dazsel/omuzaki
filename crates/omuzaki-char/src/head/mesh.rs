@@ -24,6 +24,7 @@ use omuzaki_face_api::{ParamErrors, Validate};
 
 use super::cranium::{Cranial, Trace, TraceSample, radius_traced, unit};
 use super::outline::{LowerFace, plausible, reshape};
+use super::sculpt::{Landmarks, Sculptor, warp};
 use crate::kit::curve::{TAU, fraction};
 
 /// Why a head mesh could not be built.
@@ -95,7 +96,7 @@ pub fn build(
     resolution: Resolution,
     trace: Option<&dyn TraceSample>,
 ) -> Result<MeshData, HeadMeshError> {
-    build_parts(params, resolution, trace).map(|(mesh, _)| mesh)
+    build_parts(params, None, resolution, trace).map(|(mesh, _)| mesh)
 }
 
 /// A head as built: its mesh and the surface of that mesh.
@@ -119,14 +120,31 @@ pub fn build_head(
     resolution: Resolution,
     trace: Option<Arc<dyn TraceSample>>,
 ) -> Result<BuiltHead, HeadMeshError> {
-    let (mesh, face) = build_parts(params, resolution, trace.as_deref())?;
-    let surface = BuiltSurface { cranium: Cranial::new(params, trace), face };
+    build_sculpted(params, None, resolution, trace)
+}
+
+/// [`build_head`] with the face's forms sculpted in ([`HeadParams::sculpt`]) where `landmarks` place them: the head
+/// part passes the painted face's. Without landmarks, or with a flat sculpt, it is exactly [`build_head`].
+///
+/// # Errors
+/// As [`build`].
+pub fn build_sculpted(
+    params: &HeadParams,
+    landmarks: Option<Landmarks>,
+    resolution: Resolution,
+    trace: Option<Arc<dyn TraceSample>>,
+) -> Result<BuiltHead, HeadMeshError> {
+    let sculptor = landmarks.and_then(|at| Sculptor::new(&params.sculpt, at));
+    let (mesh, face) = build_parts(params, sculptor.as_ref(), resolution, trace.as_deref())?;
+    let surface = BuiltSurface { cranium: Cranial::new(params, trace), face, sculptor };
     Ok(BuiltHead { mesh, surface: Arc::new(surface) })
 }
 
-/// The mesh and the lower face's reshaping it was built with (`None` when the outline leaves the cranium alone).
+/// The mesh and the lower face's reshaping it was built with (`None` when the outline leaves the cranium alone), with
+/// the face's forms sculpted in after the reshaping when there is a `sculptor`.
 fn build_parts(
     params: &HeadParams,
+    sculptor: Option<&Sculptor>,
     resolution: Resolution,
     trace: Option<&dyn TraceSample>,
 ) -> Result<(MeshData, Option<LowerFace>), HeadMeshError> {
@@ -136,9 +154,14 @@ fn build_parts(
     }
     let columns = usize::from(resolution.segments) + 1;
     let trace = trace.map(|map| Trace::of(map, params));
-    let mut points = sphere_points(params, resolution, trace);
+    let mut points = sphere_points(params, resolution, trace, sculptor.is_some());
     let radius = |dir: DVec3| radius_traced(&params.cranium, dir, trace);
     let face = reshape(&mut points, &radius, &plausible(&params.outline, &params.cranium));
+    if let Some(sculptor) = sculptor {
+        for p in &mut points {
+            *p = sculptor.apply(*p);
+        }
+    }
 
     let centre = DVec3::from_array(params.cranium.centre());
     // Rounded to f32 once, here, like the prototype's Float32BufferAttribute: the normals come from what the mesh holds.
@@ -169,13 +192,15 @@ const SURFACE_HALVINGS: i32 = 8;
 struct BuiltSurface {
     cranium: Cranial,
     face: Option<LowerFace>,
+    sculptor: Option<Sculptor>,
 }
 
 impl BuiltSurface {
     /// Where the cranium's unit direction `u` lands on the built head, head-local.
     fn image(&self, u: DVec3) -> DVec3 {
         let p = u * self.cranium.radius_at(u);
-        self.face.as_ref().map_or(p, |face| face.apply(p))
+        let p = self.face.as_ref().map_or(p, |face| face.apply(p));
+        self.sculptor.as_ref().map_or(p, |sculptor| sculptor.apply(p))
     }
 
     /// The distance from the centre to the built head along the unit direction `dir`.
@@ -228,12 +253,19 @@ impl HeadSurface for BuiltSurface {
     }
 }
 
-/// The grid of directions pushed out to the cranium, head-local, row by row.
-fn sphere_points(params: &HeadParams, resolution: Resolution, trace: Option<Trace<'_>>) -> Vec<DVec3> {
+/// The grid of directions pushed out to the cranium, head-local, row by row; `crowded` (a sculpted head) crowds the
+/// rows and columns toward the face ([`warp`]).
+fn sphere_points(params: &HeadParams, resolution: Resolution, trace: Option<Trace<'_>>, crowded: bool) -> Vec<DVec3> {
     let (segments, rings) = (usize::from(resolution.segments), usize::from(resolution.rings));
+    let theta = |v: f64| if crowded { warp(0.0, v).1 } else { v };
+    let phi = |u: f64| if crowded { warp(u, 0.0).0 } else { u };
     // sin and cos per ring and per column rather than per vertex: the same values, a tenth of the trigonometry.
-    let rows: Vec<(f64, f64)> = (0..=rings).map(|i| (fraction(i, rings) * PI).sin_cos()).collect();
-    let cols: Vec<(f64, f64)> = (0..=segments).map(|j| (fraction(j, segments) * TAU).sin_cos()).collect();
+    let rows: Vec<(f64, f64)> = (0..=rings).map(|i| theta(fraction(i, rings) * PI).sin_cos()).collect();
+    let mut cols: Vec<(f64, f64)> = (0..=segments).map(|j| phi(fraction(j, segments) * TAU).sin_cos()).collect();
+    // A crowded grid's seam columns are made the same direction to the bit, so the seam stays closed after the warp.
+    if crowded && let Some(&first) = cols.first() {
+        cols[segments] = first;
+    }
     let mut points = Vec::with_capacity((rings + 1) * (segments + 1));
     for &(sin_theta, cos_theta) in &rows {
         for &(sin_phi, cos_phi) in &cols {

@@ -46,7 +46,7 @@ use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 use omuzaki_char_api::{
-    BodyTemplateId, CharacterDef, HairParams, HeadParams, LookDef, LookPresetId, PartId, find_kind,
+    BodyTemplateId, CharacterDef, HairParams, HeadParams, LookDef, LookPresetId, PartId, Sculpt, find_kind,
 };
 use omuzaki_doc_api::Value;
 use omuzaki_face_api::{FaceProfile, Validate};
@@ -220,6 +220,17 @@ pub fn blend(values: &[(&Value, f64)], lead: usize) -> Value {
         return Value::Array(items.collect());
     }
     pick()
+}
+
+/// Writes `default` under `key` in each object of `values` that lacks it, when any of them has it.
+fn spell_out(values: &mut [Value], key: &str, default: &Value) {
+    if values.iter().any(|v| v.get(key).is_some()) {
+        for value in values.iter_mut() {
+            if let Some(object) = value.as_object_mut() {
+                object.entry(key).or_insert_with(|| default.clone());
+            }
+        }
+    }
 }
 
 /// `x` rounded to the nearest whole number, saturating at the range of `i64`.
@@ -487,8 +498,17 @@ pub fn restyle(
     out.face = face;
     for kind in ["head", "body"] {
         let Some(id) = enabled_part(&base, kind) else { continue };
-        let values: Vec<Value> =
+        let mut values: Vec<Value> =
             results.iter().map(|r| r.parts.get(&id).map_or(Value::Null, |p| p.params.clone())).collect();
+        if kind == "head" {
+            // A flat sculpt is left out of saved parameters, but it is zeros, not "whatever the lead has": spelled out,
+            // a sculpted style blends into an unsculpted one form by form.
+            spell_out(
+                &mut values,
+                "sculpt",
+                &serde_json::to_value(Sculpt::default()).map_err(|e| invalid("head", &e))?,
+            );
+        }
         let blended = checked(kind, &blend(&weighted(&values, &entries), lead_index))?;
         if let Some(part) = out.parts.get_mut(&id) {
             part.params = blended;

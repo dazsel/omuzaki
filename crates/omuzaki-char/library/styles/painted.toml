@@ -86,3 +86,9 @@ hands = "five_finger"
 
 [body.proportions]
 neck_length = 1.2
+
+[head.sculpt]
+sockets = 0.004
+nose = 0.01
+mouth = 0.003
+chin = 0.004
