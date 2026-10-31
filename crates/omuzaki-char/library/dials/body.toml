@@ -134,6 +134,23 @@ lobes = { back = 1.0 }
 amount = 0.15
 
 [[dial]]
+id = "arm_girth"
+name = "Arm girth"
+summary = "+1 a thick arm from shoulder to wrist; -1 a slender one (an anime figure's arm is near -1)"
+group = "arms"
+sided = true
+prior = 0.2
+[[dial.effects]]
+frame = "body"
+region = "arm_left"
+t = 0.5
+hold = 0.42
+span = 0.1
+lobes = { all = 1.0 }
+amount = 0.35
+amount_down = 0.45
+
+[[dial]]
 id = "deltoid"
 name = "Shoulder muscle"
 summary = "+1 a rounded, muscular shoulder cap; -1 a slight one"
@@ -192,6 +209,23 @@ t = 0.7
 span = 0.22
 lobes = { all = 1.0 }
 amount = 0.12
+
+[[dial]]
+id = "leg_girth"
+name = "Leg girth"
+summary = "+1 a thick leg from hip to ankle; -1 a slender one"
+group = "legs"
+sided = true
+prior = 0.2
+[[dial.effects]]
+frame = "body"
+region = "leg_left"
+t = 0.5
+hold = 0.38
+span = 0.14
+lobes = { all = 1.0 }
+amount = 0.3
+amount_down = 0.35
 
 [[dial]]
 id = "thigh_size"

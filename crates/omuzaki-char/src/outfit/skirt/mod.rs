@@ -272,8 +272,10 @@ pub struct SkirtParams {
     /// the default is higher, as far up as the body's own thigh goes, so the skirt is never left behind on the hips where
     /// a thigh swings through it.
     pub hip_blend: [f64; 2],
-    /// The plaid; `None` for the cloth of `common.fabric`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The plaid; `None` (stored as `false`) for the cloth of `common.fabric`. Left out, a skirt keeps the default
+    /// plaid.
+    #[serde(with = "plaid_or_off")]
+    #[schemars(with = "plaid_or_off::Stored")]
     pub plaid: Option<Tartan>,
     /// The cloth's shadow side.
     pub shade: ColourRef,
@@ -285,6 +287,47 @@ pub struct SkirtParams {
     pub band: ColourRef,
     /// The band lines' shadow side.
     pub band_shade: ColourRef,
+}
+
+/// The plaid as a document holds it: a tartan, or `false` (or null) for none. A format without a null (a TOML project
+/// file) can then keep a skirt without a plaid, where skipping the field would bring the default plaid back on load.
+mod plaid_or_off {
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::Tartan;
+
+    /// `false` for no plaid (`true` for the default one), or the tartan.
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    #[serde(untagged)]
+    pub(super) enum Stored {
+        /// `false`: the cloth of `common.fabric`; `true`: the default plaid.
+        Off(bool),
+        /// A plaid.
+        On(Tartan),
+    }
+
+    #[derive(Serialize)]
+    #[serde(untagged)]
+    enum Borrowed<'a> {
+        Off(bool),
+        On(&'a Tartan),
+    }
+
+    pub(super) fn serialize<S: Serializer>(plaid: &Option<Tartan>, s: S) -> Result<S::Ok, S::Error> {
+        match plaid {
+            Some(tartan) => Borrowed::On(tartan).serialize(s),
+            None => Borrowed::Off(false).serialize(s),
+        }
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Tartan>, D::Error> {
+        Ok(match Option::<Stored>::deserialize(d)? {
+            None | Some(Stored::Off(false)) => None,
+            Some(Stored::Off(true)) => Some(Tartan::default()),
+            Some(Stored::On(tartan)) => Some(tartan),
+        })
+    }
 }
 
 impl Default for SkirtParams {

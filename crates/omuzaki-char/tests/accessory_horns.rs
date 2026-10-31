@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 /// Triangles one accessory kind may use at live quality.
 const TRIANGLE_BUDGET: usize = 2000;
 
-const SHAPES: [&str; 4] = ["swept_back", "ram", "oni", "antler"];
+const SHAPES: [&str; 5] = ["swept_back", "ram", "oni", "antler", "arch"];
 
 fn cases() -> Vec<Value> {
     let mut all: Vec<Value> = SHAPES.iter().map(|s| json!({ "shape": s })).collect();
@@ -219,7 +219,7 @@ fn only_the_scalp_shell_meets_the_horns_which_is_the_hole_the_hair_cap_will_get(
 
 #[test]
 fn every_documented_preset_is_among_the_styles_the_sweeps_use() {
-    accessory_common::assert_styles_found("horns", &["swept_back", "ram", "oni", "antler"]);
+    accessory_common::assert_styles_found("horns", &["swept_back", "ram", "oni", "antler", "arch"]);
 }
 
 /// The extent of the left horn's vertices along x (across the head) and z (front to back).
@@ -245,4 +245,19 @@ fn a_flat_horn_is_a_blade_thin_from_side_to_side() {
     assert!(flat_z > 2.0 * flat_x, "and deeper than it is thick: {flat_z} against {flat_x}");
     let registration = find_kind("horns").unwrap();
     assert!((registration.check)(&json!({ "flat": 0.05 })).is_err());
+}
+
+#[test]
+fn an_arch_rises_over_and_comes_back_down_behind_its_root() {
+    let arch = json!({ "shape": "arch", "flat": 0.3, "taper": 1.0, "length": 0.14, "direction": [0.8, 0.6, 0.0] });
+    let s = built_scene("standard", "horns", arch, None);
+    assert_closed(&s.built, "an arch");
+    let left: Vec<Vec3> = vertices(&s.built).into_iter().filter(|v| v.x > 0.0).collect();
+    let top = left.iter().map(|v| v.y).fold(f32::MIN, f32::max);
+    let (front, back) = left.iter().fold((f32::MIN, f32::MAX), |(f, b), v| (f.max(v.z), b.min(v.z)));
+    // The far end of the arch sits behind the root and well below its top: the left horn's points at the back.
+    let behind: Vec<&Vec3> = left.iter().filter(|v| v.z < back + 0.15 * (front - back)).collect();
+    let lowest_behind = behind.iter().map(|v| v.y).fold(f32::MAX, f32::min);
+    assert!(front - back > 0.04, "it spans front to back: {}", front - back);
+    assert!(top - lowest_behind > 0.03, "and comes back down behind: {top} against {lowest_behind}");
 }

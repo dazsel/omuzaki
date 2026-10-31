@@ -59,7 +59,16 @@ const SMOOTH_REACH: f32 = 0.35;
 #[derive(Clone, Debug, PartialEq)]
 enum Term {
     /// A radial swelling of a body region.
-    Body { path: Arc<RegionPath>, group: RegionGroup, t: f32, span: f32, lobes: [(Vec3, f32); 6], all: f32, gain: f32 },
+    Body {
+        path: Arc<RegionPath>,
+        group: RegionGroup,
+        t: f32,
+        span: f32,
+        hold: f32,
+        lobes: [(Vec3, f32); 6],
+        all: f32,
+        gain: f32,
+    },
     /// A bump on the head.
     Head { centre: Vec3, aim: Vec3, reach: f32, push: Option<Vec3>, gain: f32 },
 }
@@ -67,13 +76,13 @@ enum Term {
 impl Term {
     fn displace(&self, p: Vec3, m: &Membership) -> Vec3 {
         match self {
-            Self::Body { path, group, t, span, lobes, all, gain } => {
+            Self::Body { path, group, t, span, hold, lobes, all, gain } => {
                 let w = m.of(*group);
                 if w <= 1e-5 {
                     return Vec3::ZERO;
                 }
                 let at = path.locate(p);
-                let b = bump((at.row.t - t) / span);
+                let b = bump(((at.row.t - t).abs() - hold).max(0.0) / span);
                 if b == 0.0 {
                     return Vec3::ZERO;
                 }
@@ -322,7 +331,7 @@ fn place_effect(
 ) -> Option<Term> {
     let amount_at = |amount: f32, down: Option<f32>| v as f32 * if v < 0.0 { down.unwrap_or(amount) } else { amount };
     match effect {
-        DialEffect::Body { region, t, span, lobes, amount, amount_down } => {
+        DialEffect::Body { region, t, span, hold, lobes, amount, amount_down } => {
             let group = if mirror { region.mirrored() } else { *region };
             let path = body?.path(group)?;
             let all = lobes.all;
@@ -331,6 +340,7 @@ fn place_effect(
                 group,
                 t: *t,
                 span: *span,
+                hold: *hold,
                 lobes: lobes.directions(group.side()),
                 all,
                 gain: amount_at(*amount, *amount_down),
