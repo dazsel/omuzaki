@@ -54,7 +54,14 @@ enum Target {
     Panel(&'static str),
     /// Switches to the workspace at this index of the tab bar.
     Workspace(usize),
+    /// Makes a character from the query's words with the describe op at this index, and opens it.
+    Describe(usize),
 }
+
+/// The op that makes a character from words; the palette offers it when the query reads like a description.
+const DESCRIBE_OP: &str = "character.create_from_description";
+/// The fewest words a query needs before the palette offers to make a character from it.
+const DESCRIBE_WORDS: usize = 3;
 
 /// One thing the palette can find.
 #[derive(Clone, Debug)]
@@ -189,6 +196,12 @@ impl Palette {
             };
             entries.push(Entry { key: name.to_lowercase(), name, detail, target });
         }
+        // Found by the query's shape, never by its letters: `rank` puts it first when the query reads like a
+        // description, with the query as its detail.
+        if let Some(op) = self.ops.iter().position(|info| info.name == DESCRIBE_OP) {
+            let name = say(ctx, Word::PaletteDescribe, &[]);
+            entries.push(Entry { name, key: String::new(), detail: String::new(), target: Target::Describe(op) });
+        }
         *self = Self {
             open: true,
             ops: std::mem::take(&mut self.ops),
@@ -244,7 +257,7 @@ impl Palette {
     fn recency(&self, entry: &Entry) -> usize {
         match entry.target {
             Target::Op(_) => self.recents.iter().position(|name| *name == entry.name).unwrap_or(RECENTS),
-            Target::Panel(_) | Target::Workspace(_) => RECENTS,
+            Target::Panel(_) | Target::Workspace(_) | Target::Describe(_) => RECENTS,
         }
     }
 
@@ -321,6 +334,7 @@ impl Palette {
             .entries
             .iter()
             .enumerate()
+            .filter(|(_, e)| !matches!(e.target, Target::Describe(_)))
             .filter(|(_, e)| only.is_none_or(|ops| matches!(e.target, Target::Op(_)) == ops))
             .filter_map(|(i, e)| score(&e.key, &needle).map(|s| (s, i)))
             .collect();
@@ -332,6 +346,13 @@ impl Palette {
                 .then(ea.key.cmp(&eb.key))
         });
         self.shown = scored.into_iter().map(|(_, i)| i).collect();
+        let describing = only.is_none() && text.split_whitespace().count() >= DESCRIBE_WORDS;
+        if let Some(i) =
+            self.entries.iter().position(|e| matches!(e.target, Target::Describe(_))).filter(|_| describing)
+        {
+            text.trim().clone_into(&mut self.entries[i].detail);
+            self.shown.insert(0, i);
+        }
         self.active = (!self.shown.is_empty()).then_some(0);
         self.ranked_for = Some(self.query.clone());
     }
@@ -375,7 +396,7 @@ impl Palette {
         }
         let active_op =
             self.active.and_then(|row| self.shown.get(row)).and_then(|&i| match self.entries.get(i)?.target {
-                Target::Op(op) => Some(op),
+                Target::Op(op) | Target::Describe(op) => Some(op),
                 Target::Panel(_) | Target::Workspace(_) => None,
             });
         if let Some(op) = active_op.filter(|_| (tab || copy) && act(&mut self.acted_in, &ctx)) {
@@ -404,7 +425,39 @@ impl Palette {
                 self.choose_op(&ctx, op, mode, runner, actor, focus);
                 None
             }
+            Target::Describe(op) => {
+                let words = entry.detail.clone();
+                self.describe(&ctx, op, &words, mode, runner, actor, focus);
+                None
+            }
         }
+    }
+
+    /// Makes a character from `words` with the describe op `op`, and, when it is made, opens it in the edit panels.
+    #[allow(clippy::too_many_arguments)] // the palette's run context, as `choose_op` takes it, plus the words
+    fn describe(
+        &mut self,
+        ctx: &Context,
+        op: usize,
+        words: &str,
+        mode: Mode,
+        runner: &dyn Runner,
+        actor: &Actor,
+        focus: Option<&EditFocus>,
+    ) {
+        let Some(info) = self.ops.get(op) else { return };
+        let (said, output) =
+            run_with_output(ctx, runner, actor, info, serde_json::json!({ "description": words }), mode);
+        let character = output.as_ref().and_then(|o| o.get("character")).and_then(Value::as_str);
+        if let (Mode::Apply, Some(focus), Some(id)) =
+            (mode, focus, character.and_then(|c| omuzaki_char_api::CharId::new(c).ok()))
+        {
+            focus.open(Some(id));
+        }
+        if matches!(said, Said::Done { .. }) {
+            self.remember(DESCRIBE_OP);
+        }
+        self.said = Some(said);
     }
 
     /// Puts the call of op `op` with `args` on the clipboard, as an agent or the command line would make it, and says
@@ -711,6 +764,18 @@ fn cli_call(info: &OpInfo, args: &Value) -> String {
 
 /// Runs `info` with `args` as `actor`, and says how it went.
 fn run(ctx: &Context, runner: &dyn Runner, actor: &Actor, info: &OpInfo, args: Value, mode: Mode) -> Said {
+    run_with_output(ctx, runner, actor, info, args, mode).0
+}
+
+/// [`run`], with the op's output as well.
+fn run_with_output(
+    ctx: &Context,
+    runner: &dyn Runner,
+    actor: &Actor,
+    info: &OpInfo,
+    args: Value,
+    mode: Mode,
+) -> (Said, Option<Value>) {
     let request = Request {
         op: info.name.to_owned(),
         args,
@@ -748,9 +813,9 @@ fn run(ctx: &Context, runner: &dyn Runner, actor: &Actor, info: &OpInfo, args: V
                 }
                 None => None,
             };
-            Said::Done { headline, body, changes }
+            (Said::Done { headline, body, changes }, outcome.plan.output)
         }
-        Err(error) => Said::Failed { message: error.message, hint: error.hint },
+        Err(error) => (Said::Failed { message: error.message, hint: error.hint }, None),
     }
 }
 

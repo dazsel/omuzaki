@@ -34,6 +34,10 @@ pub(super) enum Ask {
     Import(String),
     /// Show the Import card's drop zone.
     OpenImport,
+    /// Show the Describe card's text box.
+    OpenDescribe,
+    /// Make a character from these words (the Describe card's button).
+    Describe(String),
     /// Open the Agent panel ("Connect an agent").
     Agent,
 }
@@ -60,6 +64,8 @@ pub(super) struct Page<'a> {
     pub skipped: &'a [Step],
     /// The Import card's drop zone is open.
     pub importing: bool,
+    /// The Describe card's text box is open, with what is typed in it.
+    pub describing: Option<&'a std::cell::RefCell<String>>,
 }
 
 /// Height of the step list.
@@ -329,14 +335,20 @@ fn character(ui: &mut Ui, page: &Page<'_>) -> Vec<Ask> {
     for (choice, icon, title, line) in cards {
         let ready = page.host.character(choice).is_ok();
         let (title, line) = (say(ds, title, &[]), say(ds, line, &[]));
-        let card =
-            Card { icon, title: &title, line: &line, status: None, selected: false, off: (!ready).then_some(&*off) };
+        // The Describe card reads as chosen while its box is open.
+        let selected = choice == CharacterChoice::FromSheetOrIdea && page.describing.is_some();
+        let card = Card { icon, title: &title, line: &line, status: None, selected, off: (!ready).then_some(&*off) };
         if card.show(ui, ds, ("setup_character", choice_key(choice))).clicked() && ready {
-            asks.push(if choice == CharacterChoice::ImportVrm {
-                Ask::OpenImport
-            } else {
-                Ask::Flow(Event::ChooseCharacter(choice))
+            asks.push(match choice {
+                CharacterChoice::ImportVrm => Ask::OpenImport,
+                CharacterChoice::FromSheetOrIdea => Ask::OpenDescribe,
+                _ => Ask::Flow(Event::ChooseCharacter(choice)),
             });
+        }
+        if choice == CharacterChoice::FromSheetOrIdea
+            && let Some(text) = page.describing
+        {
+            asks.extend(describe_box(ui, page, text));
         }
         if choice == CharacterChoice::ImportVrm && page.importing {
             if let Some(path) = drop_zone(ui, &say(ds, text::SETUP_VRM, &[])) {
@@ -347,6 +359,43 @@ fn character(ui: &mut Ui, page: &Page<'_>) -> Vec<Ask> {
             }
         }
         ui.add_space(space::S8);
+    }
+    asks
+}
+
+/// The Describe card's box: what the character looks like, in words, and the button that makes it. Ctrl+Enter makes
+/// it too; Enter alone is a new line.
+fn describe_box(ui: &mut Ui, page: &Page<'_>, text: &std::cell::RefCell<String>) -> Vec<Ask> {
+    let ds = page.ds;
+    let mut asks = Vec::new();
+    let label = say(ds, text::SETUP_DESCRIBE_LABEL, &[]);
+    let hint = say(ds, text::SETUP_DESCRIBE_HINT, &[]);
+    let mut typed = text.borrow_mut();
+    let edit = egui::TextEdit::multiline(&mut *typed)
+        .hint_text(hint.as_ref())
+        .desired_rows(3)
+        .desired_width(f32::INFINITY)
+        .id_salt("setup_describe");
+    let response = ui.add(edit);
+    a11y::describe(&response, || WidgetInfo::labeled(WidgetType::TextEdit, true, label.as_ref()), |_| {});
+    let send = response.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
+    let words = typed.trim().to_owned();
+    drop(typed);
+    let go = say(ds, text::SETUP_DESCRIBE_GO, &[]);
+    let button = Button::new(&go).primary().icon(icons::SPARKLE);
+    let empty = say(ds, text::SETUP_DESCRIBE_EMPTY, &[]);
+    let button = button.disabled_if(words.is_empty(), &empty);
+    if (ui.add(button).clicked() || send) && !words.is_empty() {
+        asks.push(Ask::Describe(words));
+    }
+    if let Some(made) = &page.status.described {
+        let line = say(ds, text::SETUP_DESCRIBED, &[("name", &made.name), ("count", &made.from_words.to_string())]);
+        ui.add(StatusChip::new(Status::Ok, &line));
+        if !made.not_understood.is_empty() {
+            let words = made.not_understood.join(", ");
+            let line = say(ds, text::SETUP_DESCRIBED_UNKNOWN, &[("words", &words)]);
+            ui.label(RichText::new(line).font(ds.text.small.clone()).color(ds.theme.text3));
+        }
     }
     asks
 }

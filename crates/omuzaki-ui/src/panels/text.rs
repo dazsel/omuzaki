@@ -410,9 +410,21 @@ crate::ds::strings::lines! {
     /// The sample card's line.
     pub const SETUP_SAMPLE_LINE: &str = "Ready now. It is already on the stage.";
     /// The sheet card.
-    pub const SETUP_SHEET: &str = "Create from a sheet or idea";
+    pub const SETUP_SHEET: &str = "Describe a character";
     /// The sheet card's line.
-    pub const SETUP_SHEET_LINE: &str = "Describe a character or bring a reference sheet, and build it step by step.";
+    pub const SETUP_SHEET_LINE: &str = "Say who they are in a sentence, and the kit builds them. Change anything after.";
+    /// The describe box's label.
+    pub const SETUP_DESCRIBE_LABEL: &str = "Describe your character";
+    /// The describe box's placeholder.
+    pub const SETUP_DESCRIBE_HINT: &str = "A sleepy librarian with long silver hair, round glasses and a blue cardigan";
+    /// The describe box's button.
+    pub const SETUP_DESCRIBE_GO: &str = "Make it";
+    /// Why the button is off.
+    pub const SETUP_DESCRIBE_EMPTY: &str = "Write a few words first";
+    /// What the words made.
+    pub const SETUP_DESCRIBED: &str = "Made {name} from {count} choices";
+    /// The words the kit didn't read.
+    pub const SETUP_DESCRIBED_UNKNOWN: &str = "Not used yet: {words}";
     /// The import card.
     pub const SETUP_IMPORT: &str = "Import a VRM";
     /// The import card's line.
