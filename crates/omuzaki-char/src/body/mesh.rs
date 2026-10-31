@@ -332,6 +332,9 @@ pub fn skin_region(
     params: CapsuleParams,
 ) -> Result<(), KitError> {
     segments.skin_mesh(mesh, &bones_of(region), params)?;
+    if region == BodyRegion::Torso {
+        skin_along_spine(segments, mesh);
+    }
     let arm = match region {
         BodyRegion::ArmL => Some(true),
         BodyRegion::ArmR => Some(false),
@@ -352,6 +355,71 @@ pub fn skin_region(
         reshape_hand_over(mesh, shoulder, upper_arm, |share| if share < HAND_OVER_TAIL { 0.0 } else { share });
     }
     Ok(())
+}
+
+/// Re-weights a torso by height along its spine (#2604), where capsule distance can't: a torso is as deep as its
+/// bones are far apart, so a point on the belly is about as far from every spine bone's axis, and the capsules
+/// smear the whole chain over it (the lower belly, below the hips joint, took a third of its weight from the spine,
+/// the chest and the upper chest, and swung out through the skirt when the body bent back). Here each bone's weight
+/// peaks at its own height (the hips at its joint, a middle bone halfway along it, the neck at its joint) and hands
+/// over linearly to the next, by where the point projects onto the chain: everything below the hips joint moves with
+/// the hips alone. The smoothing that follows softens the corners of the hand-overs.
+fn skin_along_spine(segments: &SegmentSet, mesh: &mut PartMesh) {
+    use omuzaki_anim_api::HumanoidBone as B;
+    let chain: Vec<(JointRef, DVec3)> = [B::Hips, B::Spine, B::Chest, B::UpperChest, B::Neck]
+        .into_iter()
+        .filter_map(|b| segments.get(&JointRef::Humanoid(b)).map(|s| (JointRef::Humanoid(b), s.head)))
+        .collect();
+    if chain.len() < 2 {
+        return;
+    }
+    // Arc length of each joint along the chain, and each bone's peak.
+    let mut at = vec![0.0_f64];
+    for pair in chain.windows(2) {
+        at.push(at[at.len() - 1] + pair[0].1.distance(pair[1].1));
+    }
+    let last = chain.len() - 1;
+    let peaks: Vec<f64> =
+        (0..chain.len()).map(|k| if k == 0 || k == last { at[k] } else { (at[k] + at[k + 1]) * 0.5 }).collect();
+    // Where `p` falls along the chain: the arc length of its nearest point.
+    let along = |p: DVec3| {
+        let mut best = (f64::MAX, 0.0);
+        for k in 0..last {
+            let (a, b) = (chain[k].1, chain[k + 1].1);
+            let ab = b - a;
+            let t = ((p - a).dot(ab) / ab.length_squared().max(1e-12)).clamp(0.0, 1.0);
+            let d = p.distance(a + ab * t);
+            if d < best.0 {
+                best = (d, at[k] + t * (at[k + 1] - at[k]));
+            }
+        }
+        best.1
+    };
+    let mut joint_bones = Vec::with_capacity(chain.len());
+    for (joint, _) in &chain {
+        joint_bones.push(joint.clone());
+    }
+    let g = &mut mesh.geometry;
+    for (i, position) in g.positions.iter().enumerate() {
+        let s = along(position.as_dvec3());
+        let k = peaks.iter().rposition(|peak| *peak <= s).unwrap_or(0).min(last);
+        let (mut joints, mut weights) = ([0_u16; 4], [0.0_f32; 4]);
+        if k == last || s <= peaks[0] {
+            joints[0] = u16::try_from(if s <= peaks[0] { 0 } else { last }).unwrap_or(0);
+            weights[0] = 1.0;
+        } else {
+            let share = ((s - peaks[k]) / (peaks[k + 1] - peaks[k]).max(1e-9)).clamp(0.0, 1.0);
+            #[allow(clippy::cast_possible_truncation)] // a share in 0..=1
+            let share = share as f32;
+            joints[0] = u16::try_from(k).unwrap_or(0);
+            joints[1] = u16::try_from(k + 1).unwrap_or(0);
+            weights[0] = 1.0 - share;
+            weights[1] = share;
+        }
+        g.joints[i] = joints;
+        g.weights[i] = weights;
+    }
+    mesh.joint_bones = joint_bones;
 }
 
 /// Passes of the kit's weight smoothing after the capsule weights: they take the sharpest hand-overs (where four bones
