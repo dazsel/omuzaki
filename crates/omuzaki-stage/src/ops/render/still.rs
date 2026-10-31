@@ -38,6 +38,8 @@ pub struct StillLight {
     pub outline_light: f32,
     /// How strongly lights behind the character edge its silhouette; `0.0` is the scene default.
     pub back_light_rim: f32,
+    /// How soft shadows are, `0..=1`; `0.0` is the scene default.
+    pub shadow_softness: f32,
     /// Lines where the depth jumps, if any.
     pub edges: Option<EdgeLines>,
     /// Ambient occlusion and contact shadows, if any.
@@ -48,7 +50,16 @@ impl StillLight {
     /// A light with the scene's default outline light (`1.0`, as `Scene::new` sets it).
     #[must_use]
     pub fn new(lights: Vec<Light>, background: Background, post: Post) -> Self {
-        Self { lights, background, post, outline_light: 1.0, back_light_rim: 0.0, edges: None, occlusion: None }
+        Self {
+            lights,
+            background,
+            post,
+            outline_light: 1.0,
+            back_light_rim: 0.0,
+            shadow_softness: 0.0,
+            edges: None,
+            occlusion: None,
+        }
     }
 
     /// The same light with `outline_light` set.
@@ -76,6 +87,13 @@ impl StillLight {
     #[must_use]
     pub fn with_back_light_rim(mut self, back_light_rim: f32) -> Self {
         self.back_light_rim = back_light_rim;
+        self
+    }
+
+    /// The same light with `shadow_softness` set.
+    #[must_use]
+    pub fn with_shadow_softness(mut self, shadow_softness: f32) -> Self {
+        self.shadow_softness = shadow_softness;
         self
     }
 }
@@ -111,6 +129,7 @@ impl StillSpec {
         let light = StillLight::new(r.lights.as_slice().to_vec(), r.background, r.post)
             .with_outline_light(r.outline_light)
             .with_back_light_rim(r.back_light_rim)
+            .with_shadow_softness(r.shadow_softness)
             .with_occlusion(r.occlusion);
         Self { light, size, quality, scene: Some(scene), pose: None }
     }
@@ -248,6 +267,7 @@ fn still_scene(spec: &StillSpec) -> Scene {
     scene.post = spec.light.post;
     scene.outline_light = spec.light.outline_light;
     scene.back_light_rim = spec.light.back_light_rim;
+    scene.shadow_softness = spec.light.shadow_softness;
     scene.edges = spec.light.edges;
     scene.occlusion = spec.light.occlusion;
     scene

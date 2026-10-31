@@ -28,8 +28,8 @@ const MATRIX_TOL: f32 = 1e-5;
 /// The hips' rest translation in the manifest's normalised rig: every case's hips sit here (pose `t` 0, no `par`).
 const REST_HIPS: Vec3 = Vec3::new(0.0, 0.37, 0.0);
 /// The rigs the library ships, in file order: the prototype's seven, the measurement rig, then our own `stage`,
-/// `short-rim` and `flat-cel`.
-const RIGS: [&str; 11] = [
+/// `short-rim`, `library-day` and `flat-cel`.
+const RIGS: [&str; 12] = [
     "viewer-studio",
     "viewer-candle",
     "viewer-moonlit",
@@ -40,6 +40,7 @@ const RIGS: [&str; 11] = [
     "measure-flat",
     "stage",
     "short-rim",
+    "library-day",
     "flat-cel",
 ];
 
@@ -547,4 +548,20 @@ fn every_rigs_skin_floor_shadow_blocks_and_absent_targets_match_the_manifest() {
     }
     assert!(worst <= TOL, "largest skin floor or shadow error {worst:e} is above {TOL:e}");
     eprintln!("skin floors and shadow blocks match the manifest; max error {worst:e}");
+}
+
+/// A rig's `shadow_softness` reaches the scene's lighting, and a value past 1 is refused (#2666).
+#[test]
+fn a_rigs_shadow_softness_reaches_the_lighting_and_is_bounded() {
+    let rig = LightRig::load("library-day").expect("loads");
+    assert!(rig.shadow_softness > 0.0, "the window-lit library has soft shadows");
+    let lighting = rig.to_lighting().expect("lighting");
+    assert!((lighting.shadow_softness - rig.shadow_softness).abs() < f32::EPSILON);
+    let hard = LightRig::load("stage").expect("loads");
+    assert_eq!(hard.to_lighting().expect("lighting").shadow_softness, 0.0, "a rig without it keeps hard shadows");
+    let mut table: toml::Table = toml::from_str(&toml::to_string(&rig).expect("serialises")).expect("a table");
+    assert!(table.contains_key("shadow_softness"), "the field is written out");
+    table.insert("shadow_softness".into(), toml::Value::Float(1.5));
+    let text = toml::to_string(&table).expect("serialises");
+    assert!(LightRig::from_toml(&text).is_err(), "softness above 1 is refused");
 }

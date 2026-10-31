@@ -1,8 +1,9 @@
 //! The light-rig library: the prototype's seven rigs, the measurement rig and our own designs, as data. Each rig is one
 //! TOML file under `library/light-rigs/`: the seven transcribed from the golden manifest's `spec.rig` blocks,
 //! `measure-flat` (flat frontal light for the `measure.*` ops, `docs/design/likeness-measures.md` D10), `stage`
-//! (coloured spots from above, a strong rim and a dark stage, #1165), `short-rim` and `flat-cel` (flat 2D-animation
-//! light whose lit side is exactly the albedo). Only lighting numbers are stored here; no image, mesh or likeness is.
+//! (coloured spots from above, a strong rim and a dark stage, #1165), `short-rim`, `library-day` and `flat-cel` (flat
+//! 2D-animation light whose lit side is exactly the albedo). Only lighting numbers are stored here; no image, mesh or
+//! likeness is.
 //!
 //! Units are three.js's (render-api D10), so every number is copied as the prototype wrote it and never rescaled.
 //! Parts of a rig that the render contract has no field for (the key light's shadow frustum, the skin floor) stay in
@@ -21,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use super::RecipeError;
 
 /// The rigs shipped with the crate, by name. Each file is parsed on use, so a broken file fails the test that loads it.
-static LIBRARY: [(&str, &str); 11] = [
+static LIBRARY: [(&str, &str); 12] = [
     ("viewer-studio", include_str!("../../library/light-rigs/viewer-studio.toml")),
     ("viewer-candle", include_str!("../../library/light-rigs/viewer-candle.toml")),
     ("viewer-moonlit", include_str!("../../library/light-rigs/viewer-moonlit.toml")),
@@ -32,6 +33,7 @@ static LIBRARY: [(&str, &str); 11] = [
     ("measure-flat", include_str!("../../library/light-rigs/measure-flat.toml")),
     ("stage", include_str!("../../library/light-rigs/stage.toml")),
     ("short-rim", include_str!("../../library/light-rigs/short-rim.toml")),
+    ("library-day", include_str!("../../library/light-rigs/library-day.toml")),
     ("flat-cel", include_str!("../../library/light-rigs/flat-cel.toml")),
 ];
 
@@ -82,6 +84,9 @@ pub struct LightRig {
     /// rig leaves it out.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub back_light_rim: f32,
+    /// How soft the shadows are, `0..=1` (`Scene::shadow_softness`); 0, the maps' tight edge, when the rig leaves it out.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub shadow_softness: f32,
     /// Sky-and-ground ambient light: the base of every rig.
     pub hemisphere: Hemisphere,
     /// The key light. Every rig has one.
@@ -252,6 +257,9 @@ impl LightRig {
             return Err(bad(format!("scene_skin_floor {floor} must be in 0..=1")));
         }
         non_negative(self.back_light_rim, "back_light_rim").map_err(bad)?;
+        if !(0.0..=1.0).contains(&self.shadow_softness) {
+            return Err(bad(format!("shadow_softness {} must be in 0..=1", self.shadow_softness)));
+        }
         non_negative(self.hemisphere.intensity, "hemisphere intensity").map_err(bad)?;
         self.key.validate("key").map_err(bad)?;
         for (label, light) in [("rim", &self.rim), ("fill", &self.fill)] {
@@ -388,6 +396,7 @@ impl LightRig {
             background: self.background,
             outline_light: 1.0,
             back_light_rim: self.back_light_rim,
+            shadow_softness: self.shadow_softness,
             skin_floor: self.scene_skin_floor,
             ambient: Ambient {
                 sky: self.hemisphere.sky,

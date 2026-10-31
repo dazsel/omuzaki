@@ -382,6 +382,15 @@ impl InputHost for IdleInput {
     ) -> Result<omuzaki_track_api::body::BodyConfig, InputError> {
         Ok(omuzaki_track_api::body::BodyConfig::OFF)
     }
+
+    // A video reader that adds nothing: the `input.open_video` example dry-runs against it, whatever its path.
+    fn add_video(
+        &self,
+        _path: &std::path::Path,
+        _mode: Mode,
+    ) -> Result<Option<omuzaki_track_api::camera::CameraInfo>, InputError> {
+        Ok(None)
+    }
 }
 
 impl PerformHost for IdleHost {

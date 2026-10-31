@@ -67,7 +67,7 @@ struct ShadowUniform {
     /// x: the shadow-casting light's slot plus one (0: this map is off), y: 1 / map size, z: depth bias in clip depth,
     /// w: normal bias in metres.
     params: [f32; 4],
-    /// x: the spacing of the 3 x 3 comparison taps, in texels.
+    /// x: the spacing of the 3 x 3 comparison taps, in texels; y: the soft disk's radius in texels (0: the 3 x 3 grid).
     kernel: [f32; 4],
 }
 
@@ -83,6 +83,14 @@ struct ReceiverUniform {
 
 /// Byte offset of `params` in an entry: the part that switches a map on and off.
 const PARAMS_OFFSET: u64 = 64;
+/// Byte offset of the soft disk's radius (`kernel.y`) in an entry.
+const SOFTNESS_OFFSET: u64 = 84;
+/// The soft disk's radius at a scene's `shadow_softness` of 1, in world metres: a penumbra about 8 cm wide. The maps are
+/// fitted to their casters, so a texel's size in the world changes from frame to frame; the radius is set in metres.
+const SOFT_METRES: f32 = 0.04;
+/// The most texels the soft disk spans, so that a map fitted tightly to a small caster keeps its 16 taps close enough
+/// to blend.
+const SOFT_MAX_TEXELS: f32 = 160.0;
 /// Bytes between two entries of the receiver uniform (a WGSL uniform array's stride).
 const ENTRY_BYTES: u64 = size_of::<ShadowUniform>() as u64;
 /// Byte offset of the hair shadow's settings in the receiver uniform.
@@ -102,6 +110,10 @@ struct MapState {
     since_drawn: u32,
     /// Whether the uniform currently tells the lookup to sample this map.
     sampling: bool,
+    /// The soft disk's radius the uniform holds for this map, in texels.
+    softness: f32,
+    /// World metres a texel of this map's drawing covers.
+    texel: f32,
 }
 
 /// The shadow maps of one target. See the module docs.
@@ -309,15 +321,23 @@ impl ShadowMaps {
         to_light: Vec3,
     ) {
         let Some(map) = self.maps.get_mut(index) else { return };
+        // The soft radius stays what it was; `set_softness` brings it to this frame's.
+        let radius = map.softness;
         #[allow(clippy::cast_precision_loss)] // slots and sizes are tiny
         let uniform = ShadowUniform {
             view_proj: fit.view_proj.to_cols_array_2d(),
             params: [(light_slot + 1) as f32, 1.0 / self.size as f32, DEPTH_BIAS / fit.depth_range, NORMAL_BIAS],
-            kernel: [tap_spacing, 0.0, 0.0, 0.0],
+            kernel: [tap_spacing, radius, 0.0, 0.0],
         };
         queue.write_buffer(&self.uniform, index as u64 * ENTRY_BYTES, bytemuck::bytes_of(&uniform));
         queue.write_buffer(&self.casters, index as u64 * CASTER_STRIDE, bytemuck::bytes_of(&uniform.view_proj));
-        *map = MapState { drawn_for: Some((light_slot, to_light)), since_drawn: 0, sampling: true };
+        *map = MapState {
+            drawn_for: Some((light_slot, to_light)),
+            since_drawn: 0,
+            sampling: true,
+            softness: uniform.kernel[1],
+            texel: fit.texel,
+        };
     }
 
     /// Starts the render pass that draws the hair's distance, `width` x `height` texels (the frame's internal size; a new
@@ -369,6 +389,26 @@ impl ShadowMaps {
         }
     }
 
+    /// Brings every sampled map's soft radius to `softness` (a scene's `shadow_softness`), after this frame's maps are
+    /// published.
+    pub(crate) fn set_softness(&mut self, queue: &wgpu::Queue, softness: f32) {
+        for (index, map) in self.maps.iter_mut().enumerate() {
+            let radius = if map.texel > 0.0 {
+                (softness.clamp(0.0, 1.0) * SOFT_METRES / map.texel).min(SOFT_MAX_TEXELS)
+            } else {
+                0.0
+            };
+            if map.sampling && map.softness.to_bits() != radius.to_bits() {
+                queue.write_buffer(
+                    &self.uniform,
+                    index as u64 * ENTRY_BYTES + SOFTNESS_OFFSET,
+                    bytemuck::bytes_of(&radius),
+                );
+                map.softness = radius;
+            }
+        }
+    }
+
     /// Switches map `index` off (its light no longer casts, or nothing is left to cast), forgetting its drawing.
     pub(crate) fn disable(&mut self, queue: &wgpu::Queue, index: usize) {
         let Some(map) = self.maps.get_mut(index) else { return };
@@ -397,6 +437,7 @@ mod tests {
     #[test]
     fn the_uniform_is_what_the_shader_declares() {
         assert_eq!(size_of::<ShadowUniform>(), 64 + 16 + 16);
+        assert_eq!(SOFTNESS_OFFSET, std::mem::offset_of!(ShadowUniform, kernel) as u64 + 4, "the radius is kernel.y");
         assert_eq!(ENTRY_BYTES % 16, 0, "a uniform array's stride is a multiple of 16");
         assert_eq!(std::mem::offset_of!(ShadowUniform, params) as u64, PARAMS_OFFSET);
         assert_eq!(HAIR_OFFSET, ENTRY_BYTES * MAX_SHADOW_MAPS as u64, "the hair's settings follow the maps");

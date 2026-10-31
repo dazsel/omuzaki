@@ -110,7 +110,7 @@ struct ShadowMap {
     // x: the casting light's slot plus one (0: this map is off), y: 1 / map size, z: depth bias in clip depth,
     // w: normal bias in metres.
     params: vec4<f32>,
-    // x: the spacing of the 3 x 3 comparison taps, in texels.
+    // x: the spacing of the 3 x 3 comparison taps, in texels; y: the soft disk's radius in texels (0: the 3 x 3 grid).
     kernel: vec4<f32>,
 }
 
@@ -148,6 +148,9 @@ fn shadow_visibility(position: vec3<f32>, n: vec3<f32>, m: u32) -> f32 {
     }
     // Not transformed: the map is addressed by the light's projection of the point, not by a material UV (the
     // material's `uv_transform` does not apply here).
+    if (map.kernel.y > 0.0) {
+        return soft_visibility(uv, depth, m, map.kernel.y * map.params.y, position);
+    }
     var sum = 0.0;
     for (var j = -1; j <= 1; j++) {
         for (var i = -1; i <= 1; i++) {
@@ -156,6 +159,25 @@ fn shadow_visibility(position: vec3<f32>, n: vec3<f32>, m: u32) -> f32 {
         }
     }
     return sum / 9.0;
+}
+
+// A soft shadow (`Scene::shadow_softness`, #2666): 16 comparisons on a golden-angle disk of `radius` (in map UV),
+// turned by a hash of the point so neighbouring pixels sample different spokes and the disk's rings blend into one
+// smooth penumbra (noise that supersampling and the frame's resolve average away). The depth bias grows with the disk,
+// so a sloped receiver does not shadow itself across the wider footprint.
+const SOFT_TAPS: i32 = 16;
+const GOLDEN_ANGLE: f32 = 2.39996323;
+
+fn soft_visibility(uv: vec2<f32>, depth: f32, m: u32, radius: f32, position: vec3<f32>) -> f32 {
+    let turn = fract(sin(dot(position, vec3<f32>(12.9898, 78.233, 37.719))) * 43758.5453) * 6.28318531;
+    let bias = radius * 0.1;
+    var sum = 0.0;
+    for (var k = 0; k < SOFT_TAPS; k++) {
+        let r = sqrt((f32(k) + 0.5) / f32(SOFT_TAPS)) * radius;
+        let a = f32(k) * GOLDEN_ANGLE + turn;
+        sum += textureSampleCompareLevel(shadow_maps, shadow_sampler, uv + vec2<f32>(cos(a), sin(a)) * r, m, depth - bias);
+    }
+    return sum / f32(SOFT_TAPS);
 }
 
 // The hair shadow (#2528): how much of a light toward `to_light` the hair leaves on `position`, 1 lit, 0 under the

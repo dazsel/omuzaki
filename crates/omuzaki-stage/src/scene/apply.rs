@@ -46,6 +46,7 @@ pub fn fill(resolved: &ResolvedScene, scene: &mut Scene) {
     scene.occlusion = resolved.occlusion;
     scene.outline_light = resolved.outline_light;
     scene.back_light_rim = resolved.back_light_rim;
+    scene.shadow_softness = resolved.shadow_softness;
 }
 
 /// What a scene change owes the renderer beyond [`fill`]'s copy.
