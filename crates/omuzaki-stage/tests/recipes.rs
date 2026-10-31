@@ -28,8 +28,8 @@ const MATRIX_TOL: f32 = 1e-5;
 /// The hips' rest translation in the manifest's normalised rig: every case's hips sit here (pose `t` 0, no `par`).
 const REST_HIPS: Vec3 = Vec3::new(0.0, 0.37, 0.0);
 /// The rigs the library ships, in file order: the prototype's seven, the measurement rig, then our own `stage`,
-/// `short-rim` and `library-day`.
-const RIGS: [&str; 11] = [
+/// `short-rim`, `library-day` and `flat-cel`.
+const RIGS: [&str; 12] = [
     "viewer-studio",
     "viewer-candle",
     "viewer-moonlit",
@@ -41,6 +41,7 @@ const RIGS: [&str; 11] = [
     "stage",
     "short-rim",
     "library-day",
+    "flat-cel",
 ];
 
 /// The manifest's cases, or `None` when the goldens are absent. The test then skips, saying why on stderr.

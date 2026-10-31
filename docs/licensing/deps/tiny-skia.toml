@@ -1,8 +1,8 @@
 section = "rust"
 item = "tiny-skia 0.12.0 (and tiny-skia-path 0.12.0)"
 kind = "crate"
-used_for = "dev-dependency of `omuzaki-face` only: the oracle the CPU rasteriser's stroker tests compare with. Not linked into any build of the product"
+used_for = "the motion-graphics layers of `omuzaki-sequence` (paths, fills, strokes, gradients and the shot compositing), linked into the Apps; and a dev-dependency of `omuzaki-face`: the oracle the CPU rasteriser's stroker tests compare with"
 status = "yes"
-condition = "BSD-3-Clause (confirmed in the 0.12.0 manifests and LICENSE); `default-features = false`, feature `std` only"
+condition = "BSD-3-Clause (confirmed in the 0.12.0 manifests and LICENSE); `default-features = false`, feature `std` only; keep the notice in the release zip"
 audit = "(crates.io: BSD-3-Clause; deps strict-num 0.1.1 MIT, arrayref 0.3.9 BSD-2-Clause, arrayvec, bytemuck, cfg-if, log)"
 crates = ["tiny-skia"]

@@ -27,6 +27,7 @@ const NAMED: [&str; 14] = [
     "messy-short",
     "wavy-long",
     "bun",
+    "updo-slick",
     "half-up",
     "swept-up",
     "anime-bob",

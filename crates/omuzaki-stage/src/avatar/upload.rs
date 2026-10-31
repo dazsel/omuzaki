@@ -10,7 +10,7 @@ use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::Vec4;
 use omuzaki_io_api::ColorBindKind;
 use omuzaki_render_api::{
-    Material, MaterialId, MeshId, MeshOptions, MeshUsage, OutlineStyle, Renderer, Shading, TextureId,
+    Material, MaterialId, MeshId, MeshOptions, MeshUsage, OutlineStyle, Renderer, Shading, SurfaceFx, TextureId,
 };
 
 use crate::error::StageError;
@@ -49,6 +49,8 @@ pub struct AvatarUpload {
     textures: BTreeMap<TextureName, TextureId>,
     /// The materials a bind moves, in the order of the evaluator's [`BindDeltas`] (material name order).
     bound: Vec<BoundMaterial>,
+    /// The surface fx the materials are drawn with, and the material-name substrings it spares.
+    surface_fx: Option<(SurfaceFx, Vec<String>)>,
     released: bool,
 }
 
@@ -72,6 +74,7 @@ impl AvatarUpload {
             materials: BTreeMap::new(),
             textures: BTreeMap::new(),
             bound: Vec::with_capacity(bound.len()),
+            surface_fx: None,
             released: false,
         };
         if let Err(error) = upload.fill(renderer, avatar, bound) {
@@ -157,6 +160,55 @@ impl AvatarUpload {
             material.mtoon = Some(Box::new(lit));
         }
         Ok(material)
+    }
+
+    /// Draws every material of `avatar` whose name contains none of `spare` with the surface fx `fx` (`None`: the file's
+    /// own), updated in place, the materials expressions move included. All or nothing: every material is converted
+    /// before the renderer is called, and if it refuses one the earlier ones are put back.
+    ///
+    /// # Errors
+    /// [`StageError::Material`] for a material that doesn't convert, [`StageError::Render`] if the renderer refuses one.
+    pub(crate) fn set_surface_fx(
+        &mut self,
+        renderer: &mut dyn Renderer,
+        avatar: &ImportedAvatar,
+        fx: Option<SurfaceFx>,
+        spare: &[String],
+    ) -> Result<(), StageError> {
+        let spared = |name: &MaterialName| spare.iter().any(|part| name.as_str().contains(part.as_str()));
+        let mut updates = Vec::with_capacity(self.materials.len());
+        for (name, id) in &self.materials {
+            let spec = avatar.materials.get(name).ok_or_else(|| StageError::Avatar {
+                reason: format!("the upload has material '{name}', which the avatar lacks"),
+            })?;
+            let mut material = self.material_of(name, spec, avatar)?;
+            let previous = material.clone();
+            material.fx = fx.filter(|_| !spared(name));
+            updates.push((*id, name.clone(), previous, material));
+        }
+        for (i, (id, name, _, material)) in updates.iter().enumerate() {
+            if let Err(source) = renderer.update_material(*id, material) {
+                for (id, _, previous, _) in &updates[..i] {
+                    if let Err(error) = renderer.update_material(*id, previous) {
+                        tracing::warn!(%error, "putting a material back after a refused surface fx failed too");
+                    }
+                }
+                return Err(StageError::render(format!("material '{name}' with a surface fx"), source));
+            }
+        }
+        self.surface_fx = fx.map(|fx| (fx, spare.to_vec()));
+        for bound in &mut self.bound {
+            if let Some((.., material)) = updates.iter().find(|(id, ..)| *id == bound.id) {
+                bound.base.fx = material.fx;
+                bound.sent.fx = material.fx;
+            }
+        }
+        Ok(())
+    }
+
+    /// The surface fx the materials are drawn with, and the material-name substrings it spares.
+    pub fn surface_fx(&self) -> Option<(&SurfaceFx, &[String])> {
+        self.surface_fx.as_ref().map(|(fx, spared)| (fx, spared.as_slice()))
     }
 
     /// Every mesh, in the avatar's mesh order.

@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 
 use omuzaki_char::outfit::common::{FabricStyle, Garment, GarmentCommon, LAYER_SHIRT, StripeDirection};
 use omuzaki_char::outfit::shirt::{
-    COLLAR_RING, CuffParams, NeckParams, SHIRT_EXPONENT, Shirt, ShirtParams, SleeveParams, sleeve, torso,
+    COLLAR_RING, CuffParams, NeckCut, NeckParams, SHIRT_EXPONENT, Shirt, ShirtParams, SleeveParams, sleeve, torso,
 };
 use omuzaki_char_api::{
     AnchorId, AnchorsFact, BodyRegion, BuildServices, JointRef, KindProvenance, PartCategory, PartId, find_kind,
@@ -115,7 +115,7 @@ fn a_short_sleeved_shirt_with_a_loose_cut_passes_too() {
         common: GarmentCommon { ease: 0.008, ..ShirtParams::default().common },
         length: 0.15,
         sleeve: SleeveParams { length: 0.5, width: 0.01, ease_at_elbow: 0.004 },
-        neck: NeckParams { rise: 0.03 },
+        neck: NeckParams { rise: 0.03, ..NeckParams::default() },
         cuff: CuffParams { height: 0.03, button: false },
         ..ShirtParams::default()
     };
@@ -329,6 +329,48 @@ fn a_shirt_takes_the_torso_it_is_given_in_fractions_of_its_length() {
         );
         assert!((rise - 0.018).abs() < 1e-3, "{template}: the neck opening is 18 mm over the torso: {rise}");
     }
+}
+
+#[test]
+fn a_v_or_scoop_neckline_cuts_the_front_down_and_leaves_the_back() {
+    let cut = |cut: NeckCut| ShirtParams {
+        neck: NeckParams { cut, depth: 0.1, width: 0.25, ..NeckParams::default() },
+        ..ShirtParams::default()
+    };
+    for neck in [NeckCut::V, NeckCut::Scoop] {
+        let rows = conformance::assert_conforms::<Shirt>(&cut(neck), &services());
+        assert!(rows.iter().all(|r| r.min_clearance_mm >= 0.5 * r.ease_mm), "{neck:?}: {rows:?}");
+    }
+    // The highest point of the shirt over the front centre, the back centre and the side, against a round neck.
+    let tops = |params: &ShirtParams| {
+        let v = vertices(&stack("standard", params), "shirt");
+        let top =
+            |keep: &dyn Fn(&DVec3) -> bool| v.iter().filter(|p| keep(p)).map(|p| p.y).fold(f64::NEG_INFINITY, f64::max);
+        [
+            top(&|p| p.x.abs() < 0.01 && p.z > 0.0),
+            top(&|p| p.x.abs() < 0.01 && p.z < 0.0),
+            top(&|p| p.x.abs() > 0.06 && p.y > 1.0),
+        ]
+    };
+    let round = tops(&ShirtParams::default());
+    for neck in [NeckCut::V, NeckCut::Scoop] {
+        let [front, back, side] = tops(&cut(neck));
+        assert!(round[0] - front > 0.1, "{neck:?}: the front drops past the torso's top: {front} against {}", round[0]);
+        assert!((back - round[1]).abs() < 1e-3, "{neck:?}: the back is as a round neck's");
+        assert!((side - round[2]).abs() < 0.02, "{neck:?}: beside the cut the shoulders stay");
+    }
+    // A scoop is fuller than a V at the same depth: halfway out its edge is lower.
+    let halfway = |params: &ShirtParams| {
+        let v = vertices(&stack("standard", params), "shirt");
+        v.iter()
+            .filter(|p| (p.x.abs() - 0.035).abs() < 0.008 && p.z > 0.0)
+            .map(|p| p.y)
+            .fold(f64::NEG_INFINITY, f64::max)
+    };
+    assert!(halfway(&cut(NeckCut::Scoop)) < halfway(&cut(NeckCut::V)), "the scoop's sides fall lower than the V's");
+    let mut bad = cut(NeckCut::V);
+    bad.neck.depth = 0.5;
+    assert!(bad.validate().is_err(), "a cut deeper than 30 cm is refused");
 }
 
 #[test]

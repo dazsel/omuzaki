@@ -1,0 +1,28 @@
+# flat-cel: our own design, not transcribed from anything. Lighting numbers only.
+# The light of flat 2D animation: one white key from the front and above and an even white ambient that together give
+# exactly the albedo on the lit side (pi in three.js units, render-api D10), so a surface reads as its painted colour and
+# its toon shade as its painted shade. No rim, no fill, no bloom. Pair it with a clamped tone map (a sequence shot's
+# `tonemap = "none"`) so the colours land unchanged.
+name = "flat-cel"
+source = "our own design: flat 2D-animation light, lit side equal to the albedo"
+title = "Flat cel"
+summary = "Flat white light whose lit side is exactly the painted colour, for cartoon and anime shots with flat colour."
+tags = ["flat", "cel", "cartoon", "anime", "2d", "neutral"]
+exposure = 1.0
+background = "#ffffff"
+skin_floor = 1.0
+
+[hemisphere]
+sky = "#ffffff"
+ground = "#ffffff"
+intensity = 0.54
+
+[key]
+colour = "#ffffff"
+intensity = 2.6016
+position = [1.0, 2.5, 3.0]
+
+[bloom]
+strength = 0.0
+radius = 0.0
+threshold = 1.0

@@ -149,17 +149,53 @@ pub struct NeckParams {
     /// How far the opening stands above the top of the torso, metres: the shirt's collar stand. The opening follows the
     /// neck's own radius, so a collar hung on it fits the neck.
     pub rise: f64,
+    /// The neckline's shape at the front: `round` follows the neck all round (a crew neck), `v` and `scoop` cut the
+    /// front down by `depth` across `width`.
+    pub cut: NeckCut,
+    /// How far below the top of the torso a `v` or `scoop` reaches at the front centre, metres.
+    pub depth: f64,
+    /// How far round the neck a `v` or `scoop` spans, as a share of the whole way round.
+    pub width: f64,
 }
+
+/// The shape of a neckline at the front.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NeckCut {
+    /// Round the neck, as a crew neck or a shirt worn under a collar. The default.
+    #[default]
+    Round,
+    /// Straight sides down to a point.
+    V,
+    /// A rounded curve down the front.
+    Scoop,
+}
+
+/// The range of a cut neckline's depth below the torso's top, metres, and of its width, a share of the way round.
+const NECK_DEPTH_RANGE: (f64, f64) = (0.0, 0.3);
+const NECK_WIDTH_RANGE: (f64, f64) = (0.05, 0.5);
 
 impl Default for NeckParams {
     fn default() -> Self {
-        Self { rise: 0.018 }
+        Self { rise: 0.018, cut: NeckCut::Round, depth: 0.08, width: 0.25 }
+    }
+}
+
+impl NeckParams {
+    /// The cut the torso is built with, or `None` for a round neck.
+    fn cut(&self) -> Option<torso::Cut> {
+        match self.cut {
+            NeckCut::Round => None,
+            cut => Some(torso::Cut { depth: self.depth, width: self.width, v: cut == NeckCut::V }),
+        }
     }
 }
 
 impl Validate for NeckParams {
     fn check(&self, c: &mut Check) {
         c.range("rise", self.rise, NECK_RISE_RANGE.0, NECK_RISE_RANGE.1);
+        c.range("depth", self.depth, NECK_DEPTH_RANGE.0, NECK_DEPTH_RANGE.1);
+        c.range("width", self.width, NECK_WIDTH_RANGE.0, NECK_WIDTH_RANGE.1);
     }
 }
 
@@ -284,7 +320,13 @@ impl PartKind for Shirt {
         let body = torso::build(
             &column,
             &weights,
-            &torso::TorsoSpec { ease: p.common.ease, hem: p.length, rise: p.neck.rise, tuck: p.tuck },
+            &torso::TorsoSpec {
+                ease: p.common.ease,
+                hem: p.length,
+                rise: p.neck.rise,
+                tuck: p.tuck,
+                cut: p.neck.cut(),
+            },
             tile,
         )
         .map_err(fail)?;

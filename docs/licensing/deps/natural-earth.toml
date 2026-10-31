@@ -1,0 +1,7 @@
+section = "in-use"
+item = "Natural Earth 1:110m land (ne_110m_land)"
+kind = "data"
+used_for = "the world map layer of sequences (`crates/omuzaki-sequence/assets/world-land.txt`): the coastline rings, simplified to 0.35 degrees, about 21 KB"
+status = "yes"
+condition = "Public domain: naturalearthdata.com's terms of use (read on 2026-10-30) say all versions of Natural Earth raster and vector map data are in the public domain, free to use in any manner, with no permission needed. Taken from the project's own repository, https://github.com/nvkelso/natural-earth-vector (`geojson/ne_110m_land.geojson`). No credit is owed; the data file's header credits Natural Earth anyway"
+audit = "(naturalearthdata.com terms of use, read 2026-10-30)"
