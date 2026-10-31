@@ -4,7 +4,7 @@
 //!
 //! The face is Bricolage Grotesque (SIL OFL 1.1, `assets/fonts/`), a variable font drawn at the look's weight. Glyphs
 //! are laid out on one line with the font's advances and kerning (no shaping: the captions are the script's own words)
-//! and shrunk to fit [`MAX_WIDTH_SHARE`] of the frame.
+//! and shrunk to fit the look's width ([`MAX_WIDTH_SHARE`] of the frame unless the short sets its own).
 
 use ab_glyph::{Font, FontRef, Glyph, PxScale, ScaleFont, VariableFont, point};
 
@@ -16,7 +16,7 @@ static FACE: &[u8] = include_bytes!("../assets/fonts/BricolageGrotesque.ttf");
 
 /// The weight the variable face is drawn at by the punchy look.
 pub const WEIGHT: f32 = 800.0;
-/// The widest a caption may be, as a share of the frame width.
+/// The widest a caption may be by default, as a share of the frame width.
 pub const MAX_WIDTH_SHARE: f32 = 0.9;
 /// How long a caption takes to settle from its pop-in size, seconds.
 pub const POP_S: f32 = 0.09;
@@ -42,6 +42,8 @@ pub struct Ink {
     pub fade: f32,
     /// How fast a caption drifts up, as a share of the frame height per second.
     pub rise: f32,
+    /// The widest a caption may be, as a share of the frame width; a longer phrase is drawn smaller.
+    pub width: f32,
     /// The letters' colour, `0..=1` sRGB.
     pub fill: [f32; 3],
     /// The outline's colour, `0..=1` sRGB.
@@ -56,7 +58,7 @@ impl Ink {
             CaptionLook::Clean => (700.0, 0.065, 0.25, false),
             CaptionLook::Outline => (600.0, 0.1, 0.0, false),
         };
-        Self { weight, outline, shadow, pop, fade: 0.0, rise: 0.0, fill: FILL, line: LINE }
+        Self { weight, outline, shadow, pop, fade: 0.0, rise: 0.0, width: MAX_WIDTH_SHARE, fill: FILL, line: LINE }
     }
 
     /// The ink of `captions`: its look, with each field it sets in place of the look's.
@@ -70,6 +72,7 @@ impl Ink {
             pop: captions.pop.unwrap_or(look.pop),
             fade: captions.fade.unwrap_or(look.fade),
             rise: captions.rise.unwrap_or(look.rise),
+            width: captions.width.unwrap_or(look.width),
             fill: captions.fill.map_or(look.fill, rgb),
             line: captions.line.map_or(look.line, rgb),
         }
@@ -199,7 +202,7 @@ impl Captioner {
         let pop = if self.ink.pop { ((t - caption.start) / POP_S).clamp(0.0, 1.0) } else { 1.0 };
         let scale = POP_SCALE + (1.0 - POP_SCALE) * (1.0 - (1.0 - pop) * (1.0 - pop));
         let letter = Self::height(caption.style, width, letter) * scale;
-        let mask = self.mask(&caption.text, letter, width as f32 * MAX_WIDTH_SHARE);
+        let mask = self.mask(&caption.text, letter, width as f32 * self.ink.width);
         let shown = (t - caption.start).max(0.0);
         let strength = if self.ink.fade > 0.0 { (shown / self.ink.fade).min(1.0) } else { 1.0 };
         let y = caption.y.unwrap_or(y) - self.ink.rise * shown;
@@ -307,6 +310,31 @@ mod tests {
         let captioner = Captioner::new(Ink::default()).unwrap();
         let mask = captioner.mask("A VERY LONG SHOUTED CAPTION THAT GOES ON", 80.0, 300.0);
         assert!(mask.width <= 300 + 40, "{}", mask.width);
+    }
+
+    #[test]
+    fn a_short_narrows_the_widest_caption() {
+        // The columns a long caption's letters cover on a black frame.
+        let lit = |ink: Ink| {
+            let captioner = Captioner::new(ink).unwrap();
+            let (w, h) = (360u32, 640u32);
+            let mut rgba = vec![0u8; (w * h * 4) as usize];
+            let caption = CaptionSpan {
+                start: 0.0,
+                end: 1.0,
+                text: "A long phrase that has to shrink".into(),
+                style: CaptionStyle::Normal,
+                y: None,
+            };
+            captioner.draw(&mut rgba, [w, h], &caption, 0.5, 0.5, 0.12);
+            let cols: Vec<u32> = (0..w).filter(|&x| (0..h).any(|y| rgba[((y * w + x) * 4) as usize] > 200)).collect();
+            cols.last().unwrap() - cols.first().unwrap()
+        };
+        let clean = Ink::of_look(CaptionLook::Clean);
+        let wide = lit(clean);
+        let narrow = lit(Ink { width: 0.6, ..clean });
+        assert!(wide > 300 && wide <= 324, "the default width, 0.9 of 360: {wide}");
+        assert!(narrow > 190 && narrow <= 216, "0.6 of 360: {narrow}");
     }
 
     #[test]

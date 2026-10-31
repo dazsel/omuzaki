@@ -295,6 +295,10 @@ pub struct CaptionsDef {
     /// (negative drifts down; 0 holds still).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rise: Option<f32>,
+    /// The widest a caption may be, as a share of the frame width, `0.3..=1`; a longer phrase is drawn smaller to
+    /// fit (0.9 when left out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<f32>,
     /// The letters' colour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill: Option<Colour>,
@@ -355,6 +359,7 @@ impl Default for CaptionsDef {
             pop: None,
             fade: None,
             rise: None,
+            width: None,
             fill: None,
             line: None,
         }
@@ -771,6 +776,7 @@ impl ShortDef {
             ("captions.shadow", captions.shadow, 0.0..=1.0),
             ("captions.fade", captions.fade, 0.0..=1.0),
             ("captions.rise", captions.rise, -0.5..=0.5),
+            ("captions.width", captions.width, 0.3..=1.0),
         ] {
             if let Some(value) = value
                 && !range.contains(&value)
