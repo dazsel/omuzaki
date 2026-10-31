@@ -6,8 +6,8 @@
 //! `|a| / 2` of the way toward the neighbouring guide on its side (the missing neighbour mirrored at the ends of the
 //! curtain), so the outer columns of neighbours meet halfway. Columns end at `1 - 0.15 |a|^1.5` of the length, so the
 //! bottom splits into pointed clumps, and every column bulges outward by `BULGE (1 - a^2) ss(t, 0.04, 0.25)` (zero only
-//! at the outer edge). The prototype's bulge was 7 mm, which ribbed the curtain into a row of ridges next to the anime
-//! samples' smooth sheets; it is 1.5 mm.
+//! at the outer edge). The prototype's bulge was 7 mm, which ribbed the curtain into a row of ridges where an anime curtain
+//! reads as smooth sheets; it is 1.5 mm.
 //!
 //! **Separate vertices per strip.** Neighbouring strips share no vertices, so each clump shades on its own; `hair-info`
 //! carries a seed per strip. Triangles join the columns of one guide only.

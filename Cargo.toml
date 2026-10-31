@@ -52,7 +52,7 @@ symphonia = { version = "0.6", default-features = false, features = ["opt-simd",
 http-body-util = "0.1"
 hyper = { version = "1", default-features = false, features = ["http1", "server"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr", "tga"] }   # tga: Inochi2D 0.8 writes its puppet textures as TGA (omuzaki-inochi2d)
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr", "tga"] }   # tga: Inochi2D 0.8 writes its puppet textures as TGA (omuzaki-inochi2d); PNG: the `voice.compare` overlay (omuzaki-speech)
 inventory = "0.3"
 cpal = { version = "0.18", default-features = false }   # audio device I/O for the live engine (Apache-2.0); `asio` stays off (docs/licensing/deps/cpal.toml), omuzaki-audio-engine
 libc = "0.2"   # the Linux virtual camera's device calls (open, ioctl, write) (MIT OR Apache-2.0), omuzaki-vcam; already in the lock

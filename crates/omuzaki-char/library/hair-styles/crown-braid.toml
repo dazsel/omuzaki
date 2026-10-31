@@ -1,0 +1,78 @@
+id = "crown-braid"
+name = "Crown braid"
+summary = "Long straight hair with a thick braid across the crown from temple to temple, long side locks, long pointed bangs and one lock falling across an eye."
+origin = "built from the kit's generators and tuned on the kit's renders against a pixel overlay"
+
+[volume]
+whorl = { polar_deg = 25.0, azimuth_deg = 180.0 }
+fullness = 1.0
+crown = 1.0
+back = 1.0
+part = { side_deg = 0.0 }
+
+[groups.a-cap]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.a-cap.generator]
+type = "cap"
+
+[groups.b-bangs]
+dynamics = { simulate = false, follow = "head" }
+lock = { profile = "card", split = 2, split_from = 0.6, spread = 0.5 }
+
+[groups.b-bangs.generator]
+type = "bangs"
+sweep_deg = 18.0
+# One long lock falls across the right eye, past the cheekbone.
+wisps = [{ phi_deg = -14.0, tip_height = -0.085, width = 0.03 }]
+
+[[groups.b-bangs.generator.layers]]
+count = 10
+spread_deg = 46.0
+tip_heights = [-0.005, -0.025, -0.015, -0.035, -0.01, -0.03, -0.015, -0.025]
+shade = 0.8
+hook_deg = 6.0
+
+[[groups.b-bangs.generator.layers]]
+count = 7
+spread_deg = 42.0
+tip_heights = [-0.015, -0.045, -0.025, -0.055, -0.03, -0.045, -0.02]
+shade = 1.0
+hook_deg = 6.0
+
+[groups.c-curtain]
+dynamics = { simulate = true, follow = "body" }
+
+[groups.c-curtain.generator]
+type = "curtain"
+length_front = 0.5
+length_back = 0.58
+drape_deg = 95.0
+wave = { amplitude = 0.006, frequency = 1.2, curl = 0.01 }
+# Fewer, broader strips read as the few wide ribbons of an anime model, not a comb of narrow ones.
+count = 24
+columns = 2
+width = { start = 0.066, mid = 0.13, tip = 0.014 }
+
+[groups.d-framing]
+dynamics = { simulate = true, follow = "head" }
+
+[groups.d-framing.generator]
+type = "framing"
+
+[groups.e-braid]
+dynamics = { simulate = false, follow = "head" }
+
+# A thick braid across the crown from temple to temple, in a band over the front of the head just behind the hairline, its ends tucked
+# into the hair above the ears.
+[groups.e-braid.generator]
+type = "braid"
+path = [[72.0, -86.0], [46.0, -62.0], [30.0, -22.0], [30.0, 26.0], [46.0, 66.0], [72.0, 90.0]]
+strands = 3
+lobes = 10.0
+across = 0.022
+out = 0.009
+strand_width = 0.04
+strand_thickness = 0.022
+# Over the fringe's roots (which stand 4.6 cm off the head), not under them.
+lift = 0.052
