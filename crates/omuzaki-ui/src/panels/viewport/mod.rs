@@ -9,9 +9,26 @@
 //! **Camera:** orbit is middle drag or Alt+left drag, pan is Shift+middle drag, zoom is the wheel or a pinch. With the
 //! viewport focused, 1 to 4 are Front, ¾, Side and Back, F frames the selection and Home frames the character; the
 //! toolbar has a button for each.
+//!
+//! **Selecting:** a click picks the part under the pointer ([`pick`]) and selects it, Shift+click adds or removes it,
+//! and a click on nothing clears the selection. The selection is drawn as a box round each selected part, as posed.
+//!
+//! **Placing:** the selected part, when it moves as one piece (an accessory, not hair or a garment), carries move,
+//! rotate and scale handles ([`gizmo`]; W, E and R pick which) in its middle. A drag writes its attachment with
+//! `part.set_attach`, the op an agent calls, inside one transaction: the whole drag is one undo step, Escape puts it
+//! back, and Ctrl snaps. A part placed by its kind alone is pinned first (`part.set_attach` with `pin`), in the same
+//! transaction, so it moves from where it is.
+//!
+//! **Matching a reference** ([`matching`]): Match picks a parity target (one an agent named with `parity.target.set`,
+//! or an image dropped on the viewport, which names one), and the viewport then renders at the reference's own size
+//! and shows it over the character (onion, a wipe, or the exact difference map) with the count of pixels that still
+//! differ: the stop rule's count, which is done only at 0.
 
 pub mod camera;
+pub mod gizmo;
 pub mod gpu;
+pub mod matching;
+pub mod pick;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -19,20 +36,25 @@ use std::sync::{Arc, Mutex, PoisonError};
 use eframe::egui_wgpu;
 use egui::{Key, Modifiers, PointerButton, Rect, Sense, Ui, WidgetInfo, WidgetType};
 use omuzaki_char_api::{
-    BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef, PartId, Quality,
+    Attach, AttachOffset, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef, PartId,
+    Quality,
 };
-use omuzaki_core::glam::UVec2;
+use omuzaki_core::glam::{UVec2, Vec3};
+use omuzaki_ops_api::TxId;
 use omuzaki_stage::ops::render::job::{DEFAULT_LIGHT_RIG, still_light};
+use serde_json::json;
 
 use self::camera::{Bounds, OrbitCamera, View};
+use self::gizmo::{Drag, Handle, Screen, Tool};
 use self::gpu::{Callback, Gpu, Job, SharedJob};
+use self::matching::{Count, Look, Reference};
 use super::edit::EditFocus;
 use super::io::{DocWatch, Io};
 use super::text::{self, say};
 use crate::ds::a11y;
 use crate::ds::icons;
 use crate::ds::theme::ds;
-use crate::ds::widgets::{Button, EmptyState};
+use crate::ds::widgets::{Button, Choice, Dropdown, EmptyState, Segment, Segmented};
 use crate::shell::history::{Preview, Viewing};
 
 /// The viewport's id, as the shell registers it.
@@ -72,6 +94,46 @@ pub struct Viewport {
     built_preview: Option<u64>,
     /// Where the render was drawn last frame, for what a host draws over it (the Theatre's highlight and notes).
     rect: Option<Rect>,
+    /// Each part's attachment from the last build; `None` for a part its kind places by itself.
+    attaches: BTreeMap<PartId, Option<Attach>>,
+    /// What the handles do.
+    tool: Tool,
+    /// The handle under the pointer.
+    hot: Option<Handle>,
+    /// The drag under way.
+    placing: Option<Placing>,
+    /// Why the last drag couldn't place the part.
+    refused: Option<String>,
+    /// The parity targets in the document, by name.
+    targets: Vec<String>,
+    /// The reference being matched.
+    matching: Option<Matching>,
+    /// Why the chosen reference can't be shown.
+    match_problem: Option<String>,
+}
+
+/// A reference being matched: how it shows, and the last measure of the picture against it.
+struct Matching {
+    reference: Reference,
+    look: Look,
+    /// The render the count is of, and the count.
+    measured: Option<(u64, Count)>,
+    /// The exact difference map of that render, when the look shows it.
+    map: Option<egui::TextureHandle>,
+}
+
+/// A handle drag under way: its transaction and what it writes.
+struct Placing {
+    drag: Drag,
+    tx: TxId,
+    character: CharId,
+    part: PartId,
+    /// The attachment as it was when the drag started (after the pin).
+    attach: Attach,
+    /// The offset last written.
+    written: AttachOffset,
+    /// Whether the transaction holds a change (the pin, or a written offset).
+    changed: bool,
 }
 
 impl std::fmt::Debug for Viewport {
@@ -97,7 +159,89 @@ impl Viewport {
             preview: None,
             built_preview: None,
             rect: None,
+            attaches: BTreeMap::new(),
+            tool: Tool::default(),
+            hot: None,
+            placing: None,
+            refused: None,
+            targets: Vec::new(),
+            matching: None,
+            match_problem: None,
         }
+    }
+
+    /// The parity targets the document holds, by name.
+    pub fn targets(&self) -> &[String] {
+        &self.targets
+    }
+
+    /// The name of the reference being matched, if any.
+    pub fn matching(&self) -> Option<&str> {
+        self.matching.as_ref().map(|m| m.reference.name.as_str())
+    }
+
+    /// How far the last picture is from the reference being matched: `None` before the first measure.
+    pub fn match_count(&self) -> Option<Count> {
+        self.matching.as_ref().and_then(|m| m.measured.map(|(_, count)| count))
+    }
+
+    /// Why the chosen reference can't be shown, if it can't.
+    pub fn match_problem(&self) -> Option<&str> {
+        self.match_problem.as_deref()
+    }
+
+    /// Sets how the reference shows over the character.
+    pub fn set_look(&mut self, look: Look) {
+        if let Some(matching) = &mut self.matching {
+            matching.look = look;
+            matching.measured = None;
+        }
+    }
+
+    /// Matches parity target `name` (from `parity/targets`), or stops matching with `None`.
+    pub fn match_target(&mut self, name: Option<&str>, io: Io<'_>) {
+        self.match_problem = None;
+        let Some(name) = name else {
+            self.matching = None;
+            return;
+        };
+        let node = io.runner.get(&matching::targets_path().join(name), &omuzaki_ops_api::Grants::person());
+        let read = match node {
+            Ok(Some(node)) => Reference::read(name, &node, None),
+            Ok(None) => Err(format!("there is no parity target '{name}'")),
+            Err(e) => Err(e.message),
+        };
+        match read {
+            Ok(reference) => {
+                let look = self.matching.as_ref().map_or_else(Look::default, |m| m.look);
+                self.matching = Some(Matching { reference, look, measured: None, map: None });
+            }
+            Err(reason) => {
+                self.matching = None;
+                self.match_problem = Some(reason);
+            }
+        }
+    }
+
+    /// What the handles do.
+    pub const fn tool(&self) -> Tool {
+        self.tool
+    }
+
+    /// Sets what the handles do (the toolbar, W, E and R).
+    pub fn set_tool(&mut self, tool: Tool) {
+        self.tool = tool;
+    }
+
+    /// Why the last handle drag couldn't place the part, if it couldn't.
+    pub fn refused(&self) -> Option<&str> {
+        self.refused.as_deref()
+    }
+
+    /// The handles of the selected part as they land in the view on the last frame, if it has them.
+    pub fn handles(&self) -> Option<Screen> {
+        let rect = self.rect?;
+        Screen::of(&self.camera, [rect.width(), rect.height()], self.handle_origin()?)
     }
 
     /// Where the render was drawn on the last frame.
@@ -166,21 +310,33 @@ impl Viewport {
         }
         self.rebuild(&character, io);
         self.toolbar(ui, &ds);
+        self.match_bar(ui, &ds, io);
         self.viewing_line(ui, &ds);
-        // What is left of the panel, and only what shows of it: the render is the size of what is seen.
-        let rect = ui.available_rect_before_wrap().intersect(ui.clip_rect());
+        // What is left of the panel, and only what shows of it: the render is the size of what is seen, or, while
+        // matching, the reference's shape inside it.
+        let left = ui.available_rect_before_wrap().intersect(ui.clip_rect());
+        let rect = self.matching.as_ref().map_or(left, |m| matching::fit(left, m.reference.size));
         self.rect = Some(rect);
         let response = ui.allocate_rect(rect, Sense::click_and_drag());
+        self.take_drop(ui, &response, io);
         let name = say(&ds, text::VIEWPORT, &[]);
         a11y::describe(&response, || WidgetInfo::labeled(WidgetType::Other, true, name.as_ref()), |_| {});
+        self.place(ui, &response, io, &ds);
         self.input(ui, &response);
         if self.focus.take_frame_request() {
             self.frame_selection();
         }
         self.submit(ui, rect);
-        if let Some(problem) = self.problem() {
+        self.show_reference(ui, rect);
+        self.draw_selection(ui, rect, &ds);
+        if let Some(screen) = self.handles() {
+            let hot = self.placing.as_ref().map(|p| p.drag.handle).or(self.hot);
+            let painter = ui.painter().with_clip_rect(rect);
+            screen.draw(&painter, self.tool, hot, rect.min.to_vec2());
+        }
+        let problem = self.problem().map(|p| say(&ds, text::UNBUILT, &[("reason", &p)]).into_owned());
+        if let Some(text) = problem.or_else(|| self.refused.clone()) {
             let at = rect.left_bottom() + egui::vec2(8.0, -24.0);
-            let text = say(&ds, text::UNBUILT, &[("reason", &problem)]);
             ui.painter().text(at, egui::Align2::LEFT_TOP, text, ds.text.small.clone(), ds.theme.danger);
         }
     }
@@ -198,7 +354,11 @@ impl Viewport {
     fn rebuild(&mut self, character: &CharId, io: Io<'_>) {
         let other = self.character.as_ref() != Some(character);
         let viewing = self.preview.as_ref().and_then(Preview::seq);
-        if !self.watch.stale(io.events) && !other && viewing == self.built_preview {
+        let stale = self.watch.stale(io.events);
+        if stale || other {
+            self.refresh_targets(io);
+        }
+        if !stale && !other && viewing == self.built_preview {
             return;
         }
         self.watch.built();
@@ -209,6 +369,7 @@ impl Viewport {
         };
         let built = def.and_then(|def| {
             let def = def.ok_or_else(|| format!("there is no character '{character}'"))?;
+            self.attaches = def.parts.iter().map(|(id, part)| (id.clone(), part.attach.clone())).collect();
             let options = BuildOptions { variant: None, quality: Quality::Live, rig_export: false };
             self.services.builder.build(character, &def, &options, &self.services.build).map_err(|e| e.to_string())
         });
@@ -223,6 +384,20 @@ impl Viewport {
                 }
             }
             Err(e) => self.problem = Some(e),
+        }
+    }
+
+    /// Reads the parity targets' names, and reads the matched one again when an edit changed or removed it.
+    fn refresh_targets(&mut self, io: Io<'_>) {
+        let node = io.runner.get(&matching::targets_path(), &omuzaki_ops_api::Grants::person()).ok().flatten();
+        let targets = node.as_ref().and_then(serde_json::Value::as_object);
+        self.targets = targets.map(|t| t.keys().cloned().collect()).unwrap_or_default();
+        let Some(matching) = &self.matching else { return };
+        let name = matching.reference.name.clone();
+        match targets.and_then(|t| t.get(&name)) {
+            Some(node) if *node == matching.reference.source => {}
+            Some(_) => self.match_target(Some(&name), io),
+            None => self.matching = None,
         }
     }
 
@@ -275,6 +450,15 @@ impl Viewport {
             if ui.add(Button::new(&say(ds, text::FRAME_CHARACTER, &[])).ghost().shortcut_hint(Key::Home)).clicked() {
                 self.frame_character();
             }
+            ui.separator();
+            let (moving, rotating, scaling) =
+                (say(ds, text::MOVE, &[]), say(ds, text::ROTATE, &[]), say(ds, text::SCALE, &[]));
+            let segments = [
+                Segment::new(Tool::Move, &moving),
+                Segment::new(Tool::Rotate, &rotating),
+                Segment::new(Tool::Scale, &scaling),
+            ];
+            ui.add(Segmented::new(&say(ds, text::HANDLES, &[]), &mut self.tool, &segments));
         });
     }
 
@@ -291,12 +475,55 @@ impl Viewport {
         });
     }
 
+    /// The part under the point `at` of the view (from its top left), if any.
+    pub fn part_at(&self, at: egui::Vec2) -> Option<pick::Hit> {
+        let rect = self.rect?;
+        let pick = self.job.lock().unwrap_or_else(PoisonError::into_inner).pick.clone()?;
+        let (origin, direction) = self.camera.ray([at.x, at.y], [rect.width(), rect.height()]);
+        pick.hit(origin, direction)
+    }
+
+    /// A click at `at`: selects the part there, or with `add` adds or removes it; a click on nothing clears.
+    fn click(&mut self, at: egui::Vec2, add: bool) {
+        match (self.part_at(at), add) {
+            (Some(hit), true) => self.focus.toggle(&hit.part),
+            (Some(hit), false) => self.focus.select(hit.part),
+            (None, true) => {}
+            (None, false) => self.focus.clear(),
+        }
+    }
+
+    /// A box round each selected part, as posed, so the person sees what a click selected.
+    fn draw_selection(&self, ui: &Ui, rect: Rect, ds: &crate::ds::Ds) {
+        let Some(pick) = self.job.lock().unwrap_or_else(PoisonError::into_inner).pick.clone() else { return };
+        let size = [rect.width(), rect.height()];
+        for part in self.focus.selected() {
+            let Some([x0, y0, x1, y1]) = pick.bounds(&part).and_then(|b| self.camera.project_bounds(b, size)) else {
+                continue;
+            };
+            let boxed = Rect::from_min_max(rect.min + egui::vec2(x0, y0), rect.min + egui::vec2(x1, y1)).expand(3.0);
+            ui.painter().with_clip_rect(rect).rect_stroke(
+                boxed,
+                4.0,
+                egui::Stroke::new(1.5, ds.theme.accent),
+                egui::StrokeKind::Outside,
+            );
+        }
+    }
+
     /// The camera gestures and keys (`shell.md` section 5).
     fn input(&mut self, ui: &Ui, response: &egui::Response) {
         if response.clicked() || response.drag_started() {
             response.request_focus();
         }
         let (alt, shift) = ui.input(|i| (i.modifiers.alt, i.modifiers.shift));
+        if response.clicked_by(PointerButton::Primary)
+            && !alt
+            && self.hot.is_none()
+            && let Some(at) = response.interact_pointer_pos()
+        {
+            self.click(at - response.rect.min, shift);
+        }
         let delta = response.drag_delta();
         if response.dragged_by(PointerButton::Middle) && shift {
             self.camera.pan(delta.x, delta.y, response.rect.height());
@@ -325,6 +552,241 @@ impl Viewport {
             if pressed(Key::Home) {
                 self.frame_character();
             }
+            for (tool, key) in [(Tool::Move, Key::W), (Tool::Rotate, Key::E), (Tool::Scale, Key::R)] {
+                if pressed(key) {
+                    self.tool = tool;
+                }
+            }
+        }
+    }
+
+    /// Where the selected part's handles sit, in the character's space: the middle of its posed box. `None` for a part
+    /// bent by several bones or simulated (hair, a garment, the body), which has no place to drag, unless an attachment
+    /// already places it.
+    fn handle_origin(&self) -> Option<Vec3> {
+        let part = self.focus.primary()?;
+        let pick = self.job.lock().unwrap_or_else(PoisonError::into_inner).pick.clone()?;
+        let attached = self.attaches.get(&part).is_some_and(Option::is_some);
+        if !attached && !pick.rigid(&part) {
+            return None;
+        }
+        pick.bounds(&part).map(Bounds::centre)
+    }
+
+    /// The handles: which is under the pointer, and a drag of one, written through `part.set_attach`.
+    fn place(&mut self, ui: &Ui, response: &egui::Response, io: Io<'_>, ds: &crate::ds::Ds) {
+        let local = |p: egui::Pos2| p - response.rect.min.to_vec2();
+        let (alt, ctrl) = ui.input(|i| (i.modifiers.alt, i.modifiers.command || i.modifiers.ctrl));
+        if self.placing.is_none() {
+            let screen = self.handles();
+            self.hot = match (screen, response.hover_pos().or_else(|| response.interact_pointer_pos())) {
+                (Some(screen), Some(pointer)) if !alt => screen.handle_at(self.tool, local(pointer)),
+                _ => None,
+            };
+            if response.drag_started_by(PointerButton::Primary)
+                && let (Some(handle), Some(screen), Some(pointer)) =
+                    (self.hot, self.handles(), response.interact_pointer_pos())
+            {
+                self.start(io, ds, handle, screen, local(pointer));
+            }
+            return;
+        }
+        if ui.input(|i| i.key_pressed(Key::Escape)) {
+            self.finish(io, false);
+            return;
+        }
+        if response.dragged_by(PointerButton::Primary)
+            && let Some(pointer) = response.interact_pointer_pos()
+        {
+            self.drag_to(io, local(pointer), ctrl);
+        }
+        if response.drag_stopped() || !ui.input(|i| i.pointer.primary_down()) {
+            self.finish(io, true);
+        }
+    }
+
+    /// Takes `handle`: opens the drag's transaction and pins the part first when its kind places it.
+    fn start(&mut self, io: Io<'_>, ds: &crate::ds::Ds, handle: Handle, screen: Screen, start: egui::Pos2) {
+        self.refused = None;
+        let (Some(character), Some(part)) = (self.character.clone(), self.focus.primary()) else { return };
+        let label = match self.tool {
+            Tool::Move => text::MOVE_PART,
+            Tool::Rotate => text::ROTATE_PART,
+            Tool::Scale => text::SCALE_PART,
+        };
+        let tx = io.runner.begin(&say(ds, label, &[("part", part.as_str())]), io.actor);
+        let pinned = match self.attaches.get(&part).cloned().flatten() {
+            Some(attach) => Ok((attach, false)),
+            None => io
+                .run("part.set_attach", json!({"character": character, "part": part, "pin": true}), Some(tx))
+                .and_then(|outcome| {
+                    let attach = outcome.plan.output.and_then(|o| o.get("attach").cloned()).unwrap_or_default();
+                    serde_json::from_value::<Attach>(attach)
+                        .map_err(|e| omuzaki_ops_api::OpError::internal(format!("the pin answered no attachment: {e}")))
+                })
+                .map(|attach| (attach, true)),
+        };
+        let pick = self.job.lock().unwrap_or_else(PoisonError::into_inner).pick.clone();
+        let target = match (&pinned, pick) {
+            (Ok((attach, _)), Some(pick)) => pick.target_frame(attach).ok_or_else(|| {
+                omuzaki_ops_api::OpError::invalid("attach", "the viewport can't find what the part is fixed to")
+            }),
+            (Ok(_), None) => Err(omuzaki_ops_api::OpError::internal("the character isn't staged yet")),
+            (Err(e), _) => Err(e.clone()),
+        };
+        match (pinned, target) {
+            (Ok((attach, changed)), Ok(target)) => {
+                let from = *attach.offset();
+                let drag = Drag { handle, start, screen, from, target };
+                self.placing = Some(Placing { drag, tx, character, part, attach, written: from, changed });
+            }
+            (_, Err(e)) | (Err(e), _) => {
+                // Nothing of the drag is kept: the pin, if it ran, goes with the transaction.
+                if let Err(rollback) = io.runner.rollback(tx, io.actor) {
+                    tracing::warn!("the refused drag's transaction didn't roll back: {}", rollback.message);
+                }
+                self.refused = Some(say(ds, text::CANT_PLACE, &[("reason", &e.message)]).into_owned());
+            }
+        }
+    }
+
+    /// The pointer at `pointer` (in the view): writes the offset the drag gives, when it changed.
+    fn drag_to(&mut self, io: Io<'_>, pointer: egui::Pos2, snap: bool) {
+        let Some(placing) = self.placing.as_mut() else { return };
+        let offset = placing.drag.offset(pointer, snap);
+        if offset == placing.written {
+            return;
+        }
+        let attach = gizmo::with_offset(&placing.attach, offset);
+        let args = json!({"character": placing.character, "part": placing.part, "attach": attach});
+        match io.run("part.set_attach", args, Some(placing.tx)) {
+            Ok(_) => {
+                placing.written = offset;
+                placing.changed = true;
+            }
+            Err(e) => self.refused = Some(e.message),
+        }
+    }
+
+    /// Ends the drag: `keep` commits it as one undo step (or drops it when it changed nothing), else rolls it back.
+    fn finish(&mut self, io: Io<'_>, keep: bool) {
+        let Some(placing) = self.placing.take() else { return };
+        let result = if keep && placing.changed {
+            io.runner.commit(placing.tx, io.actor)
+        } else {
+            io.runner.rollback(placing.tx, io.actor)
+        };
+        if let Err(e) = result {
+            self.refused = Some(e.message);
+        }
+        self.watch.force();
+    }
+
+    /// The Match row: which reference, how it shows, and how far the picture is from it. Shown once the document has a
+    /// parity target.
+    fn match_bar(&mut self, ui: &mut Ui, ds: &crate::ds::Ds, io: Io<'_>) {
+        if self.targets.is_empty() && self.matching.is_none() && self.match_problem.is_none() {
+            return;
+        }
+        ui.horizontal_wrapped(|ui| {
+            let none = say(ds, text::MATCH_NONE, &[]);
+            let names = self.targets.clone();
+            let mut choices = vec![Choice::new(None, none.as_ref())];
+            choices.extend(names.iter().map(|name| Choice::new(Some(name.as_str()), name.as_str())));
+            let current = self.matching.as_ref().map(|m| m.reference.name.clone());
+            let mut chosen = current.as_deref();
+            let label = say(ds, text::MATCH, &[]);
+            if ui.add(Dropdown::new(&label, &mut chosen, &choices)).changed() {
+                let chosen = chosen.map(str::to_owned);
+                self.match_target(chosen.as_deref(), io);
+            }
+            if let Some(matching) = &mut self.matching {
+                let (onion, wipe, exact) =
+                    (say(ds, text::MATCH_ONION, &[]), say(ds, text::MATCH_WIPE, &[]), say(ds, text::MATCH_EXACT, &[]));
+                let segments = [
+                    Segment::new(Look::Onion, &onion),
+                    Segment::new(Look::Wipe, &wipe),
+                    Segment::new(Look::Exact, &exact),
+                ];
+                let mut look = matching.look;
+                if ui.add(Segmented::new(&say(ds, text::MATCH_LOOK, &[]), &mut look, &segments)).changed() {
+                    matching.look = look;
+                    matching.measured = None;
+                }
+                let name = matching.reference.name.as_str();
+                let (line, colour) = match matching.measured {
+                    None => (say(ds, text::MATCH_MEASURING, &[("name", name)]), ds.theme.text3),
+                    Some((_, count)) if count.done() => (say(ds, text::MATCH_DONE, &[("name", name)]), ds.theme.ok),
+                    Some((_, count)) => {
+                        let (off, pixels, max) =
+                            (count.off.to_string(), count.pixels.to_string(), count.max_level.to_string());
+                        let args = [("name", name), ("off", &off), ("pixels", &pixels), ("max", &max)];
+                        (say(ds, text::MATCH_COUNT, &args), ds.theme.danger)
+                    }
+                };
+                ui.add(egui::Label::new(egui::RichText::new(line.as_ref()).color(colour)).truncate());
+            }
+            if let Some(problem) = &self.match_problem {
+                let line = say(ds, text::MATCH_UNREAD, &[("reason", problem)]);
+                ui.add(egui::Label::new(egui::RichText::new(line.as_ref()).color(ds.theme.danger)).truncate());
+            }
+        });
+    }
+
+    /// An image dropped on the viewport: names it a parity target (`parity.target.set`, the op an agent calls) and
+    /// matches it.
+    fn take_drop(&mut self, ui: &Ui, response: &egui::Response, io: Io<'_>) {
+        let over = response.contains_pointer() || response.hovered();
+        let dropped = ui
+            .ctx()
+            .input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).find(|p| !p.as_os_str().is_empty()));
+        let Some(path) = dropped.filter(|_| over) else { return };
+        let name = matching::name_for(&path);
+        let frames = json!({"frames": [{"path": path.display().to_string()}]});
+        let target = json!({"reference": frames});
+        match io.run("parity.target.set", json!({"name": name, "target": target}), None) {
+            Ok(_) => {
+                self.refresh_targets(io);
+                self.match_target(Some(&name), io);
+            }
+            Err(e) => self.match_problem = Some(e.message),
+        }
+    }
+
+    /// Measures each new picture against the reference (not while a button is held: a drag shows the reference live
+    /// and is measured when it ends), and draws the reference the way the look asks.
+    fn show_reference(&mut self, ui: &Ui, rect: Rect) {
+        let Some(matching) = &mut self.matching else { return };
+        let busy = ui.input(|i| i.pointer.any_down());
+        let frame = self.job.lock().unwrap_or_else(PoisonError::into_inner).frame.clone();
+        if let Some(frame) = frame.filter(|f| !busy && matching.measured.is_none_or(|(at, _)| at != f.render))
+            && let Some((ours, count)) = matching.reference.measure(frame.size, &frame.rgba8)
+        {
+            matching.measured = Some((frame.render, count));
+            matching.map = (matching.look == Look::Exact).then(|| {
+                let map = matching::exact_map(&ours, &matching.reference.lab);
+                ui.ctx().load_texture("parity-exact-map", map, egui::TextureOptions::NEAREST)
+            });
+        }
+        let painter = ui.painter().with_clip_rect(rect);
+        let whole = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        match matching.look {
+            Look::Onion => {
+                let texture = matching.reference.texture(ui.ctx());
+                painter.image(texture.id(), rect, whole, egui::Color32::from_white_alpha(128));
+            }
+            Look::Wipe => {
+                let texture = matching.reference.texture(ui.ctx());
+                let half = Rect::from_min_max(egui::pos2(rect.center().x, rect.top()), rect.max);
+                let right = Rect::from_min_max(egui::pos2(0.5, 0.0), egui::pos2(1.0, 1.0));
+                painter.image(texture.id(), half, right, egui::Color32::WHITE);
+                painter.vline(rect.center().x, rect.y_range(), egui::Stroke::new(1.5, egui::Color32::WHITE));
+            }
+            Look::Exact => {
+                if let Some(map) = &matching.map {
+                    painter.image(map.id(), rect, whole, egui::Color32::WHITE);
+                }
+            }
         }
     }
 
@@ -332,10 +794,13 @@ impl Viewport {
     fn submit(&mut self, ui: &Ui, rect: Rect) {
         let ppp = ui.ctx().pixels_per_point();
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a panel's size in pixels, rounded")]
-        let size =
-            UVec2::new((rect.width() * ppp).round().max(1.0) as u32, (rect.height() * ppp).round().max(1.0) as u32);
+        let size = self.matching.as_ref().map_or_else(
+            || UVec2::new((rect.width() * ppp).round().max(1.0) as u32, (rect.height() * ppp).round().max(1.0) as u32),
+            |m| m.reference.size,
+        );
         {
             let mut job = self.job.lock().unwrap_or_else(PoisonError::into_inner);
+            job.read_back = self.matching.is_some();
             if self.drawn != Some((self.camera, size)) {
                 job.render = true;
                 self.drawn = Some((self.camera, size));

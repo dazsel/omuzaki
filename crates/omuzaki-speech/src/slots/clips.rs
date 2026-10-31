@@ -230,9 +230,18 @@ pub fn utterances<'a>(speech: &[(f64, f64)], audio: &'a [f32], max_seconds: f64)
 )]
 pub fn decode_16k(path: &Path) -> Result<Vec<f32>, String> {
     let file = File::open(path).map_err(|e| e.to_string())?;
+    decode_file_16k(file, path.extension().and_then(|e| e.to_str()))
+}
+
+/// [`decode_16k`] on a file already open (an op opens its files through the file-access check), with its extension
+/// as a hint to the format.
+///
+/// # Errors
+/// What went wrong, in words.
+pub fn decode_file_16k(file: File, extension: Option<&str>) -> Result<Vec<f32>, String> {
     let stream = MediaSourceStream::new(Box::new(file), MediaSourceStreamOptions::default());
     let mut hint = Hint::new();
-    if let Some(extension) = path.extension().and_then(|e| e.to_str()) {
+    if let Some(extension) = extension {
         hint.with_extension(extension);
     }
     let mut format = symphonia::default::get_probe()

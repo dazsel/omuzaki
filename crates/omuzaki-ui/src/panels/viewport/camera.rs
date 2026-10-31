@@ -156,6 +156,17 @@ impl OrbitCamera {
         Some([(ndc.x * 0.5 + 0.5) * size[0], (0.5 - ndc.y * 0.5) * size[1]])
     }
 
+    /// The ray through the point `at` of a view of `size` points, from its top left: the camera's eye and the unit
+    /// direction into the scene. The inverse of [`project`](Self::project), so a click picks what it is drawn over.
+    pub fn ray(&self, at: [f32; 2], size: [f32; 2]) -> (Vec3, Vec3) {
+        let aspect = (size[0] / size[1].max(1.0)).max(1e-3);
+        let camera = self.camera();
+        let inverse = (camera.projection_matrix(aspect) * camera.view()).inverse();
+        let ndc = Vec3::new(at[0] / size[0].max(1.0) * 2.0 - 1.0, 1.0 - at[1] / size[1].max(1.0) * 2.0, 0.5);
+        let eye = self.eye();
+        (eye, (inverse.project_point3(ndc) - eye).normalize_or_zero())
+    }
+
     /// The screen box around `bounds` in a view of `size` points: its eight corners projected; `None` when any is
     /// behind the camera.
     pub fn project_bounds(&self, bounds: Bounds, size: [f32; 2]) -> Option<[f32; 4]> {
@@ -184,6 +195,20 @@ impl OrbitCamera {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_ray_through_a_projected_point_passes_through_the_point() {
+        let mut camera = OrbitCamera::default();
+        camera.orbit(40.0, -25.0);
+        let size = [640.0, 400.0];
+        for point in [Vec3::new(0.1, 1.2, 0.05), Vec3::new(-0.3, 0.4, 0.2), camera.target] {
+            let at = camera.project(point, size).unwrap_or_else(|| panic!("{point} is in front"));
+            let (origin, direction) = camera.ray(at, size);
+            let along = (point - origin).dot(direction);
+            let miss = (origin + direction * along - point).length();
+            assert!(along > 0.0 && miss < 1e-3, "{point}: misses by {miss}");
+        }
+    }
 
     #[test]
     fn the_front_view_looks_down_minus_z_from_plus_z() {
