@@ -21,13 +21,14 @@ pub const SET_PREFIX: &str = "set-";
 
 /// The presets shipped with the crate, by name. Each file is parsed on use, so a broken file fails the test that loads
 /// it.
-static LIBRARY: [(&str, &str); 6] = [
+static LIBRARY: [(&str, &str); 7] = [
     ("study", include_str!("../../../library/stages/study.toml")),
     ("bedroom", include_str!("../../../library/stages/bedroom.toml")),
     ("cafe", include_str!("../../../library/stages/cafe.toml")),
     ("night-library", include_str!("../../../library/stages/night-library.toml")),
     ("desk", include_str!("../../../library/stages/desk.toml")),
     ("green-screen", include_str!("../../../library/stages/green-screen.toml")),
+    ("grand-library", include_str!("../../../library/stages/grand-library.toml")),
 ];
 
 /// One stage preset as its file holds it.

@@ -118,6 +118,10 @@ harness = false
 name = "live_times"
 required-features = ["wgpu"]
 
+[[example]]
+name = "scene_still"
+required-features = ["wgpu"]
+
 [lints]
 workspace = true
 
