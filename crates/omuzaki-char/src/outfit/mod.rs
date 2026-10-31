@@ -48,6 +48,7 @@ pub mod robe;
 pub mod shirt;
 pub mod shoes;
 pub mod skirt;
+pub mod straps;
 pub mod trim;
 pub mod trousers;
 pub mod vest;
