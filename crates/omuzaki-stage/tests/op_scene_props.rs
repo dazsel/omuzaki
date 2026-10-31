@@ -140,7 +140,24 @@ fn the_kinds_are_listed_from_the_registry_with_their_params() {
     let doc = project();
     let all = plan::<PropKinds>(&doc, json!({})).unwrap().output.unwrap();
     let kinds: Vec<&str> = all["kinds"].as_array().unwrap().iter().map(|k| k["kind"].as_str().unwrap()).collect();
-    for kind in ["bed", "cafe-table", "chair", "cup", "desk", "lamp", "plant", "room", "rug", "shelf", "window"] {
+    for kind in [
+        "armchair",
+        "bed",
+        "cafe-table",
+        "chair",
+        "chest",
+        "cup",
+        "desk",
+        "gramophone",
+        "lamp",
+        "picture",
+        "plant",
+        "room",
+        "rug",
+        "shelf",
+        "urn",
+        "window",
+    ] {
         assert!(kinds.contains(&kind), "{kind} in {kinds:?}");
     }
     let lamp = plan::<PropKinds>(&doc, json!({ "kind": "lamp" })).unwrap().output.unwrap();
@@ -176,5 +193,5 @@ fn a_stage_preset_sets_the_room_and_replaces_only_the_last_presets_set() {
 
     let listed = plan::<StagePresets>(&doc, json!({})).unwrap().output.unwrap();
     let names: Vec<&str> = listed["presets"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["study", "bedroom", "cafe", "night-library", "desk", "green-screen"]);
+    assert_eq!(names, ["study", "bedroom", "cafe", "night-library", "desk", "green-screen", "grand-library"]);
 }

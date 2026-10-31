@@ -3,11 +3,14 @@
 //!
 //! - [`shape`]: boxes, frustums, vessels, ellipsoids, tubes and leaves, closed and painted, appended into one mesh.
 //! - The interior kinds (#1166): [`room`] (`room`, `rug`), [`furniture`] (`desk`, `chair`, `cafe-table`, `bed`),
-//!   [`shelf`], [`lighting`] (`lamp`, `window`, `glow`) and [`small`] (`cup`, `plant`). Each is procedural, in metres, toon
-//!   with vertex colours, and registers itself.
+//!   [`shelf`], [`lighting`] (`lamp`, `window`, `glow`), [`small`] (`cup`, `plant`) and [`decor`] (`gramophone`,
+//!   `picture`, `urn`, `chest`, `armchair`). Each is procedural, in metres, toon with vertex colours, and registers
+//!   itself.
 //! - [`staged`]: a scene's props resolved (builds kept while their params are), uploaded once per build and drawn
 //!   every frame, attached ones under their bones.
 
+#[allow(clippy::many_single_char_names, reason = "w, d, h and x, y, z are the extents and axes of what a kind builds")]
+pub mod decor;
 #[allow(clippy::many_single_char_names, reason = "w, d, h and x, y, z are the extents and axes of what a kind builds")]
 pub mod furniture;
 #[allow(clippy::many_single_char_names, reason = "w, d, h and x, y, z are the extents and axes of what a kind builds")]

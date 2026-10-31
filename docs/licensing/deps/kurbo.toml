@@ -1,0 +1,8 @@
+section = "rust"
+item = "kurbo 0.13.1"
+kind = "crate"
+used_for = "a direct dependency of `omuzaki-paint` since the illustrator's engine: SVG path data, curve flattening and outline stroking for painted shapes. Already in the lock through vello (see `vello-dependencies.toml`)"
+status = "yes"
+condition = "Apache-2.0 OR MIT (we take MIT); `default-features = false`, feature `std` only"
+audit = "(crates.io: Apache-2.0 OR MIT; its dependencies arrayvec, euclid, polycool and smallvec are MIT OR Apache-2.0)"
+crates = ["kurbo"]
