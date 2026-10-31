@@ -38,6 +38,10 @@ pub struct Ink {
     pub shadow: f32,
     /// Whether a caption pops in.
     pub pop: bool,
+    /// How long a caption fades in, seconds; 0 to appear at once.
+    pub fade: f32,
+    /// How fast a caption drifts up, as a share of the frame height per second.
+    pub rise: f32,
     /// The letters' colour, `0..=1` sRGB.
     pub fill: [f32; 3],
     /// The outline's colour, `0..=1` sRGB.
@@ -52,7 +56,7 @@ impl Ink {
             CaptionLook::Clean => (700.0, 0.065, 0.25, false),
             CaptionLook::Outline => (600.0, 0.1, 0.0, false),
         };
-        Self { weight, outline, shadow, pop, fill: FILL, line: LINE }
+        Self { weight, outline, shadow, pop, fade: 0.0, rise: 0.0, fill: FILL, line: LINE }
     }
 
     /// The ink of `captions`: its look, with each field it sets in place of the look's.
@@ -64,6 +68,8 @@ impl Ink {
             outline: captions.outline.unwrap_or(look.outline),
             shadow: captions.shadow.unwrap_or(look.shadow),
             pop: captions.pop.unwrap_or(look.pop),
+            fade: captions.fade.unwrap_or(look.fade),
+            rise: captions.rise.unwrap_or(look.rise),
             fill: captions.fill.map_or(look.fill, rgb),
             line: captions.line.map_or(look.line, rgb),
         }
@@ -179,7 +185,8 @@ impl Captioner {
     }
 
     /// Draws `caption` onto `rgba` (straight alpha, `size` pixels) at `t` seconds, its middle at `y` (share of the
-    /// height), its letters `letter` of the width tall.
+    /// height) unless the caption sets its own, its letters `letter` of the width tall. It fades in over the ink's
+    /// `fade` and drifts up at its `rise` from where it starts.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -193,6 +200,9 @@ impl Captioner {
         let scale = POP_SCALE + (1.0 - POP_SCALE) * (1.0 - (1.0 - pop) * (1.0 - pop));
         let letter = Self::height(caption.style, width, letter) * scale;
         let mask = self.mask(&caption.text, letter, width as f32 * MAX_WIDTH_SHARE);
+        let shown = (t - caption.start).max(0.0);
+        let strength = if self.ink.fade > 0.0 { (shown / self.ink.fade).min(1.0) } else { 1.0 };
+        let y = caption.y.unwrap_or(y) - self.ink.rise * shown;
         let left = (i64::from(width) - mask.width as i64) / 2;
         let top = (height as f32 * y) as i64 - (mask.height as i64) / 2;
         let at = |mx: usize, my: usize| -> Option<usize> {
@@ -202,6 +212,7 @@ impl Captioner {
                 .then(|| (y as usize * width as usize + x as usize) * 4)
         };
         let blend = |rgba: &mut [u8], i: usize, colour: [f32; 3], a: f32| {
+            let a = a * strength;
             for (k, c) in colour.iter().enumerate() {
                 let under = f32::from(rgba[i + k]) / 255.0;
                 rgba[i + k] = ((under + (c - under) * a) * 255.0).round().clamp(0.0, 255.0) as u8;
@@ -279,7 +290,8 @@ mod tests {
         for px in rgba.chunks_mut(4) {
             px.copy_from_slice(&[90, 120, 200, 255]);
         }
-        let caption = CaptionSpan { start: 0.0, end: 1.0, text: "Hello there!".into(), style: CaptionStyle::Normal };
+        let caption =
+            CaptionSpan { start: 0.0, end: 1.0, text: "Hello there!".into(), style: CaptionStyle::Normal, y: None };
         captioner.draw(&mut rgba, [w, h], &caption, 0.5, 0.5, 0.06);
         let white = rgba.chunks(4).filter(|p| p[0] > 245 && p[1] > 245 && p[2] > 245).count();
         let dark = rgba.chunks(4).filter(|p| p[0] < 30 && p[1] < 30 && p[2] < 30).count();
@@ -307,7 +319,7 @@ mod tests {
                 px.copy_from_slice(&[90, 120, 200, 255]);
             }
             let caption =
-                CaptionSpan { start: 0.0, end: 1.0, text: "Hello there!".into(), style: CaptionStyle::Normal };
+                CaptionSpan { start: 0.0, end: 1.0, text: "Hello there!".into(), style: CaptionStyle::Normal, y: None };
             captioner.draw(&mut rgba, [w, h], &caption, t, 0.5, 0.06);
             let white = rgba.chunks(4).filter(|p| p[0] > 245 && p[1] > 245 && p[2] > 245).count();
             let dark = rgba.chunks(4).filter(|p| p[0] < 30 && p[1] < 30 && p[2] < 30).count();
@@ -337,5 +349,48 @@ mod tests {
         assert!(ink.outline.abs() < 1e-6);
         assert!((ink.fill[2] - 200.0 / 255.0).abs() < 1e-6);
         assert_eq!(Ink::of(&CaptionsDef::default()), Ink::default());
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss, reason = "row numbers")]
+    fn a_caption_fades_in_drifts_up_and_sits_at_its_own_height() {
+        // The rows a caption's letters cover and how bright its brightest letter pixel is, at `t`.
+        let draw = |ink: Ink, y: Option<f32>, t: f32| {
+            let captioner = Captioner::new(ink).unwrap();
+            let (w, h) = (360u32, 640u32);
+            let mut rgba = vec![0u8; (w * h * 4) as usize];
+            for px in rgba.chunks_mut(4) {
+                px.copy_from_slice(&[0, 0, 0, 255]);
+            }
+            let caption =
+                CaptionSpan { start: 1.0, end: 3.0, text: "Hello there!".into(), style: CaptionStyle::Normal, y };
+            captioner.draw(&mut rgba, [w, h], &caption, t, 0.5, 0.06);
+            let lit: Vec<u32> = (0..h)
+                .filter(|&row| rgba[(row * w * 4) as usize..((row + 1) * w * 4) as usize].chunks(4).any(|p| p[0] > 60))
+                .collect();
+            let peak = rgba.chunks(4).map(|p| p[0]).max().unwrap();
+            (lit.iter().sum::<u32>() as f32 / lit.len().max(1) as f32, peak)
+        };
+        let steady = Ink::of_look(CaptionLook::Clean);
+        let (middle, full) = draw(steady, None, 1.5);
+        assert!((middle - 320.0).abs() < 12.0, "the short's caption line: {middle}");
+        assert_eq!(full, 255);
+        // The line's own height wins over the short's.
+        let (own, _) = draw(steady, Some(0.25), 1.5);
+        assert!((own - 160.0).abs() < 12.0, "{own}");
+        // A fade starts faint and reaches full strength once its time is up.
+        let fading = Ink { fade: 0.2, ..steady };
+        let (_, first) = draw(fading, None, 1.0);
+        let (_, halfway) = draw(fading, None, 1.1);
+        let (_, done) = draw(fading, None, 1.3);
+        assert!(first < 10, "nothing at the first instant: {first}");
+        assert!((110..=150).contains(&halfway), "half strength halfway: {halfway}");
+        assert_eq!(done, 255);
+        // A rise lifts it by its rate times the time it has shown: 0.1 of 640 rows a second, 32 rows after 0.5 s.
+        let rising = Ink { rise: 0.1, ..steady };
+        let (start, _) = draw(rising, None, 1.0);
+        let (later, _) = draw(rising, None, 1.5);
+        assert!((start - middle).abs() < 1.0, "it starts on its line: {start} against {middle}");
+        assert!((start - later - 32.0).abs() < 2.0, "{start} -> {later}");
     }
 }

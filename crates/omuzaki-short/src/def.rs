@@ -288,6 +288,13 @@ pub struct CaptionsDef {
     /// Whether a caption pops in slightly larger and settles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pop: Option<bool>,
+    /// How long a caption takes to fade in, seconds, `0..=1` (0 to appear at once).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fade: Option<f32>,
+    /// How fast a caption drifts up while it shows, as a share of the frame height per second, `-0.5..=0.5`
+    /// (negative drifts down; 0 holds still).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rise: Option<f32>,
     /// The letters' colour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill: Option<Colour>,
@@ -346,6 +353,8 @@ impl Default for CaptionsDef {
             outline: None,
             shadow: None,
             pop: None,
+            fade: None,
+            rise: None,
             fill: None,
             line: None,
         }
@@ -391,6 +400,9 @@ pub struct LineDef {
     /// The caption's text when it differs from what is said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caption_text: Option<String>,
+    /// Where this line's caption sits, as a share of the frame height from the top; `[captions] y` when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption_y: Option<f32>,
     /// Seconds of quiet after the line.
     #[serde(default = "default_pause")]
     pub pause: f32,
@@ -413,6 +425,7 @@ impl LineDef {
             camera: None,
             caption: CaptionStyle::Normal,
             caption_text: None,
+            caption_y: None,
             pause: default_pause(),
             at: None,
             duration: None,
@@ -756,6 +769,8 @@ impl ShortDef {
             ("captions.weight", captions.weight, CAPTION_WEIGHT_MIN..=CAPTION_WEIGHT_MAX),
             ("captions.outline", captions.outline, 0.0..=0.3),
             ("captions.shadow", captions.shadow, 0.0..=1.0),
+            ("captions.fade", captions.fade, 0.0..=1.0),
+            ("captions.rise", captions.rise, -0.5..=0.5),
         ] {
             if let Some(value) = value
                 && !range.contains(&value)
@@ -815,6 +830,11 @@ fn check_line(i: usize, line: &LineDef) -> Result<(), ShortError> {
     }
     if line.text.chars().count() > MAX_TEXT {
         return Err(ShortError::invalid(field("text"), format!("at most {MAX_TEXT} characters")));
+    }
+    if let Some(y) = line.caption_y
+        && !(0.05..=0.95).contains(&y)
+    {
+        return Err(ShortError::invalid(field("caption_y"), format!("{y} is outside 0.05 to 0.95")));
     }
     if !(0.0..=10.0).contains(&line.pause) {
         return Err(ShortError::invalid(field("pause"), format!("{} s is outside 0 to 10", line.pause)));

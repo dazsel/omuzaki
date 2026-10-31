@@ -67,7 +67,8 @@ To land on a reference's frames rather than near them:
   where `zoom` alone depends on the character's size; `zoom`, `punch` and `push` scale it from there.
 - `[captions]` takes a `look` (`punchy`, the default: extra bold, heavy outline, shadow and pop; `clean`: bold, a thin
   edge, a faint shadow, steady; `outline`: semibold, an outline, no shadow) and changes one thing about it with
-  `weight`, `outline`, `shadow`, `pop`, `fill` and `line`.
+  `weight`, `outline`, `shadow`, `pop`, `fill` and `line`. `fade` (seconds) fades each caption in and `rise` (a share of
+  the frame height per second) drifts it up while it shows; a line's `caption_y` puts its caption at its own height.
 - `short.render` with `lossless: true` writes a lossless video, so a frame-by-frame score measures the render and not
   our codec; score parity renders this way. `face_points: true` also writes `<video>.points.json`: where the face's
   eyes, mouth and chin landed in each frame, ready for `parity.loop`'s `ours_points` and for fitting each shot's camera
