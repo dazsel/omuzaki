@@ -27,7 +27,7 @@ fn run(doc: &MemDoc, name: &str, args: Value) -> Result<Plan, OpError> {
 }
 
 fn clump(upper: bool, at: f32, strands: u32) -> LashClump {
-    LashClump { upper, at, strands, spread: 0.0008, length: 0.008, curl: 1.0, sweep: 20.0 }
+    LashClump { upper, at, strands, spread: 0.0008, length: 0.008, curl: 1.0, sweep: 20.0, lift: None, gather: 1.0 }
 }
 
 fn lashes(design: &EyeDesign) -> Vec<Vec3> {
@@ -80,4 +80,26 @@ fn an_agent_places_lashes_alone_and_undo_takes_them_away() {
     let bad = json!({ "character": "mira", "clumps": [{ "upper": true, "at": 1.5, "strands": 4, "length": 0.008 }] });
     let err = run(&doc, "face.eye3d.lashes", bad).unwrap_err();
     assert!(err.to_string().contains("lashes/clumps/0/at"), "{err}");
+}
+
+#[test]
+fn a_clump_stands_off_the_lid_as_its_lift_says_and_spreads_as_its_gather_says() {
+    let mut design = EyeDesign::default();
+    (design.lashes.upper, design.lashes.lower) = (0, 0);
+    let shaped = |lift: f32, gather: f32| {
+        let mut design = design.clone();
+        design.lashes.clumps =
+            vec![LashClump { lift: Some(lift), gather, curl: 0.0, sweep: 0.0, ..clump(true, 0.5, 5) }];
+        lashes(&design)
+    };
+    // Straight out of the eye reaches further forward than lying along the lid, which climbs further up.
+    let (out, along) = (shaped(90.0, 1.0), shaped(5.0, 1.0));
+    let tip = |hairs: &[Vec3]| hairs[PER_LASH - 1] - hairs[0];
+    assert!(tip(&out).z > tip(&along).z && tip(&along).y > tip(&out).y, "{:?} {:?}", tip(&out), tip(&along));
+    // Ungathered, the tips stay as far apart as the roots.
+    let loose = shaped(45.0, 0.0);
+    let tips: Vec<Vec3> = loose.chunks(PER_LASH).map(|hair| hair[PER_LASH - 1]).collect();
+    let roots: Vec<Vec3> = loose.chunks(PER_LASH).map(|hair| hair[0]).collect();
+    let span = |ps: &[Vec3]| ps.iter().map(|p| (*p - ps[0]).length()).fold(0.0, f32::max);
+    assert!(span(&tips) > 0.6 * span(&roots), "loose hairs keep their spacing");
 }

@@ -6,6 +6,7 @@
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::Vec2;
 use omuzaki_core::time::FakeClock;
 use omuzaki_doc_api::{DocPath, DocRead, DocWrite};
@@ -141,13 +142,30 @@ fn bad_landmarks_and_shots_are_refused_with_their_field() {
 
     // The light rides on the shot, and its numbers are checked with it.
     let mut lit = View::Macro.shot();
-    lit.light.lamp = Some(Lamp { position: [0.03, -0.03, 0.02], intensity: 1.0, reach: 0.06 });
+    let lamp = |intensity: f32| Lamp {
+        position: [0.03, -0.03, 0.02],
+        intensity,
+        reach: 0.06,
+        colour: Colour::hex(0x00ff_f0e0),
+    };
+    lit.light.lamps = vec![lamp(1.0), lamp(2.0)];
+    lit.light.studio = 0.6;
     assert!(lit.check().is_ok());
     let json = serde_json::to_value(&lit).unwrap();
     assert_eq!(serde_json::from_value::<Shot>(json).unwrap(), lit, "a lit shot reads back as it was written");
-    lit.light.lamp = Some(Lamp { position: [0.03, -0.03, 0.02], intensity: 12.0, reach: 0.06 });
-    assert!(lit.check().unwrap_err().contains("lamp"));
-    lit.light.lamp = None;
+    let warm: Shot = serde_json::from_value(json!({ "camera": [0.0, 0.0, 0.06], "look": [0.0, 0.0, 0.0], "fov": 30.0,
+        "gaze": [0.0, 0.0, 1.0], "light": { "lamps": [{ "position": [0.03, -0.03, 0.02], "intensity": 1.0,
+        "reach": 0.06 }] } }))
+    .expect("a lamp's colour may be left out");
+    assert_eq!(warm.light.lamps[0].colour, Colour::hex(0x00ff_e8d0), "a lamp left uncoloured is warm");
+    lit.light.lamps[1] = lamp(12.0);
+    assert!(lit.check().unwrap_err().contains("lamps/1"));
+    lit.light.lamps = vec![lamp(1.0); 5];
+    assert!(lit.check().unwrap_err().contains("at most"));
+    lit.light.lamps.clear();
+    lit.light.studio = 5.0;
+    assert!(lit.check().unwrap_err().contains("studio"));
+    lit.light.studio = 1.0;
     lit.light.key = [0.0; 3];
     assert!(lit.check().unwrap_err().contains("key"));
 }

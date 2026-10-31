@@ -115,7 +115,7 @@ fn every_range_describe_lists_is_the_one_set_style_enforces() {
     let doc = doc();
     let entry = describe(&doc);
     let ranges = entry["ranges"].as_array().expect("a list of ranges");
-    assert_eq!(ranges.len(), 37, "every numeric field of the eye has a range");
+    assert_eq!(ranges.len(), 44, "every numeric field of the eye has a range");
     for range in ranges {
         let (path, lo, hi) =
             (range["path"].as_str().expect("path"), range["lo"].as_f64().unwrap(), range["hi"].as_f64().unwrap());
