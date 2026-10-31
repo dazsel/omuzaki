@@ -6,9 +6,11 @@
 //!   [`shelf`], [`lighting`] (`lamp`, `window`, `glow`), [`small`] (`cup`, `plant`) and [`decor`] (`gramophone`,
 //!   `picture`, `urn`, `chest`, `armchair`). Each is procedural, in metres, toon with vertex colours, and registers
 //!   itself.
+//! - Held things: [`blade`] (`blade`, a sword or a dagger), beside the `cup` in [`small`].
 //! - [`staged`]: a scene's props resolved (builds kept while their params are), uploaded once per build and drawn
 //!   every frame, attached ones under their bones.
 
+pub mod blade;
 #[allow(clippy::many_single_char_names, reason = "w, d, h and x, y, z are the extents and axes of what a kind builds")]
 pub mod decor;
 #[allow(clippy::many_single_char_names, reason = "w, d, h and x, y, z are the extents and axes of what a kind builds")]

@@ -85,6 +85,10 @@ fn on_the_gpu_every_prop_kind_at_its_default_and_an_extreme() {
     let rig = LightRig::load("viewer-studio").unwrap();
     let extremes: BTreeMap<&str, Value> = BTreeMap::from([
         ("bed", json!({"width": 0.9, "pillows": 1, "blanket": "#7aa6d6"})),
+        (
+            "blade",
+            json!({"length": 0.2, "width": 0.025, "point": 0.06, "guard": 0.06, "grip": 0.1, "steel": "#d8dce4"}),
+        ),
         ("cafe-table", json!({"radius": 0.3, "height": 1.05})),
         ("chair", json!({"back": 0.0, "cushion": null})),
         ("cup", json!({"height": 0.14, "radius": 0.03, "saucer": true, "colour": "#f4efe6"})),
