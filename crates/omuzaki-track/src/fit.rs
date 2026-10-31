@@ -7,7 +7,7 @@
 //! toward the pose whose render matches, coarse to fine, until no pixel differs or the steps run out.
 //!
 //! - **What is fitted.** Each bone in [`FitConfig::bones`] turns by a rotation vector on top of its starting rotation,
-//!   one axis at a time, parents before children. A step that lowers the total difference is kept and repeated while
+//!   one axis at a time, in [`Stage`]s: the arms alone first, then everything, then each bone tried back at rest. A step that lowers the total difference is kept and repeated while
 //!   it keeps helping; the step halves when a sweep finds nothing. The search never sees the true pose, only pixels.
 //! - **Two levels.** Big steps are judged on the [`Level::Coarse`] picture (small and cheap), small ones on the
 //!   [`Level::Fine`] one (the frame itself), where a fit is exact only when its map is 0.
@@ -72,13 +72,23 @@ impl Score {
     }
 }
 
-/// What [`fit`] searches and for how long.
+/// One stage of a fit: the bones it turns and the steps it takes.
 #[derive(Clone, Debug)]
-pub struct FitConfig {
-    /// The bones it turns, parents first.
+pub struct Stage {
+    /// The bones free in this stage (each one of [`FitConfig::bones`]); the rest hold where they are.
     pub bones: Vec<HumanoidBone>,
     /// The step sizes in degrees, largest first.
     pub steps_deg: Vec<f32>,
+}
+
+/// What [`fit`] searches and for how long.
+#[derive(Clone, Debug)]
+pub struct FitConfig {
+    /// Every bone it may turn, parents first.
+    pub bones: Vec<HumanoidBone>,
+    /// The stages, in order: by default the arms alone, so the torso and shoulders can't make up for an arm's error,
+    /// then every bone together on the small steps.
+    pub stages: Vec<Stage>,
     /// Steps at or above this many degrees are judged on the coarse picture.
     pub coarse_from_deg: f32,
     /// The most sweeps over every bone at one step size.
@@ -94,26 +104,41 @@ pub struct FitConfig {
 impl Default for FitConfig {
     fn default() -> Self {
         use HumanoidBone as B;
+        let bones = vec![
+            B::Spine,
+            B::Chest,
+            B::UpperChest,
+            B::Neck,
+            B::Head,
+            B::LeftShoulder,
+            B::RightShoulder,
+            B::LeftUpperArm,
+            B::RightUpperArm,
+            B::LeftLowerArm,
+            B::RightLowerArm,
+            B::LeftHand,
+            B::RightHand,
+        ];
         Self {
-            bones: vec![
-                B::Spine,
-                B::Chest,
-                B::UpperChest,
-                B::Neck,
-                B::Head,
-                B::LeftShoulder,
-                B::RightShoulder,
-                B::LeftUpperArm,
-                B::RightUpperArm,
-                B::LeftLowerArm,
-                B::RightLowerArm,
-                B::LeftHand,
-                B::RightHand,
+            bones: bones.clone(),
+            stages: vec![
+                Stage {
+                    bones: vec![
+                        B::LeftUpperArm,
+                        B::RightUpperArm,
+                        B::LeftLowerArm,
+                        B::RightLowerArm,
+                        B::LeftHand,
+                        B::RightHand,
+                    ],
+                    steps_deg: vec![32.0, 16.0, 8.0, 4.0, 2.0, 1.0, 0.5, 0.25, 0.12],
+                },
+                Stage {
+                    bones,
+                    steps_deg: vec![2.0, 1.0, 0.5, 0.25, 0.12, 0.06, 0.03, 0.015, 0.008, 0.004, 0.002, 0.001],
+                },
             ],
-            steps_deg: vec![
-                32.0, 16.0, 8.0, 4.0, 2.0, 1.0, 0.5, 0.25, 0.12, 0.06, 0.03, 0.015, 0.008, 0.004, 0.002, 0.001,
-            ],
-            coarse_from_deg: 0.25,
+            coarse_from_deg: 2.0,
             sweeps: 4,
             renders: 6000,
             blur_per_deg: 0.25,
@@ -158,7 +183,7 @@ pub fn fit(
         renders: [0; 2],
     };
     let first = search.score(&config.bones, Level::Fine, 0)?;
-    let widest = config.steps_deg.first().map_or(0, |&step| config.blur(step));
+    let widest = config.stages.first().and_then(|s| s.steps_deg.first()).map_or(0, |&step| config.blur(step));
     let mut chosen = (search.score(&config.bones, Level::Coarse, widest)?, first_start);
     for start in &starts[1..] {
         search.start = *start;
@@ -168,29 +193,51 @@ pub fn fit(
         }
     }
     search.start = chosen.1;
+    let mut trace = Vec::new();
+    for stage in &config.stages {
+        let free: Vec<usize> = stage.bones.iter().filter_map(|b| config.bones.iter().position(|c| c == b)).collect();
+        if walk(&mut search, &free, &stage.steps_deg, config, &mut trace)? {
+            break;
+        }
+    }
+    let score = search.score(&config.bones, Level::Fine, 0)?;
+    Ok(Fit { pose: search.pose(&config.bones), score, start: first, renders: search.renders, trace })
+}
+
+/// Walks the bones at `free` (indices into [`FitConfig::bones`]) through `steps_deg`, then, on the fine picture, tries
+/// putting each of them back at rest. Whether the fine picture matched exactly (or the renders ran out), which ends the
+/// fit.
+fn walk(
+    search: &mut Search<'_>,
+    free: &[usize],
+    steps_deg: &[f32],
+    config: &FitConfig,
+    trace: &mut Vec<(f32, Level, Score, u32)>,
+) -> Result<bool, String> {
+    let bones = &config.bones;
+    let spent = |search: &Search<'_>| search.renders.iter().sum::<u32>() >= config.renders;
     let mut best = Score::default();
     let mut level = None;
-    let mut trace = Vec::new();
-    'steps: for &step_deg in &config.steps_deg {
+    for &step_deg in steps_deg {
         let now = if step_deg >= config.coarse_from_deg { Level::Coarse } else { Level::Fine };
         let blur = if now == Level::Coarse { config.blur(step_deg) } else { 0 };
         if level != Some((now, blur)) {
             level = Some((now, blur));
-            best = search.score(&config.bones, now, blur)?;
+            best = search.score(bones, now, blur)?;
         }
         let step = step_deg.to_radians();
         for _ in 0..config.sweeps {
             let mut moved = false;
-            for bone in 0..config.bones.len() {
+            for &bone in free {
                 for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
                     for sign in [1.0, -1.0] {
                         let mut went = false;
                         loop {
-                            if search.renders.iter().sum::<u32>() >= config.renders {
-                                break 'steps;
+                            if spent(search) {
+                                return Ok(true);
                             }
                             search.offsets[bone] += sign * step * axis;
-                            let score = search.score(&config.bones, now, blur)?;
+                            let score = search.score(bones, now, blur)?;
                             if score.sum < best.sum {
                                 (best, went, moved) = (score, true, true);
                             } else {
@@ -210,11 +257,30 @@ pub fn fit(
         }
         trace.push((step_deg, now, best, search.renders.iter().sum()));
         if now == Level::Fine && best.differ == 0 {
-            break;
+            return Ok(true);
         }
     }
-    let score = search.score(&config.bones, Level::Fine, 0)?;
-    Ok(Fit { pose: search.pose(&config.bones), score, start: first, renders: search.renders, trace })
+    if level.is_some_and(|(now, _)| now == Level::Fine) {
+        // Back to rest: a bone the picture doesn't need turned may have drifted to make up for another's error.
+        for &bone in free {
+            if spent(search) {
+                return Ok(true);
+            }
+            let rest = search.start.get(bones[bone]).inverse().to_scaled_axis();
+            if (search.offsets[bone] - rest).length() < 1e-7 {
+                continue;
+            }
+            let held = std::mem::replace(&mut search.offsets[bone], rest);
+            let score = search.score(bones, Level::Fine, 0)?;
+            if score.sum < best.sum {
+                best = score;
+            } else {
+                search.offsets[bone] = held;
+            }
+        }
+        trace.push((0.0, Level::Fine, best, search.renders.iter().sum()));
+    }
+    Ok(level.is_some_and(|(now, _)| now == Level::Fine) && best.differ == 0)
 }
 
 impl FitConfig {
@@ -339,7 +405,9 @@ mod tests {
         truth.set(HumanoidBone::Head, Quat::from_rotation_x(0.15));
         let target = draw(&bones, &truth);
         let mut synth = Dial { bones: bones.clone(), out: Vec::new() };
-        let config = FitConfig { bones, ..FitConfig::default() };
+        let steps_deg = vec![32.0, 16.0, 8.0, 4.0, 2.0, 1.0, 0.5, 0.25, 0.12, 0.06, 0.03, 0.015, 0.008];
+        let stages = vec![Stage { bones: bones.clone(), steps_deg }];
+        let config = FitConfig { bones, stages, ..FitConfig::default() };
         let targets = Targets { coarse: &target, coarse_width: 4, fine: &target };
         let fit = fit(&mut synth, targets, &[HumanoidPose::REST], &config).unwrap();
         assert!(fit.start.differ > 0);

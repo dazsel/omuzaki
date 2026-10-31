@@ -560,7 +560,11 @@ fn the_body_fits_onto_its_frames_pixel_for_pixel_when_asked() {
             let ours = synth.render(truth, Level::Fine).unwrap();
             let control = omuzaki_track::fit::Score::of(ours, frame);
             assert_eq!(control.differ, 0, "{name}: the synth is not the still's drawing: {control:?}");
-            println!("{name}: the frame's own pose redrawn: {control:?}");
+            let coarse_floor = omuzaki_track::fit::Score::of(
+                synth.render(truth, Level::Coarse).unwrap(),
+                &shrink(frame, width, height),
+            );
+            println!("{name}: the frame's own pose redrawn: {control:?}; at the coarse level: {coarse_floor:?}");
             checked = true;
             if which == "control" {
                 continue;
