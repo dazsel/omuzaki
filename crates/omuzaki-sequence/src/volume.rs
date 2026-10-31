@@ -80,6 +80,7 @@ impl VolumePreset {
             gravity: 0.0,
             opacity: 1.0,
             melt: 0.45,
+            terminator: 0.12,
         };
         match self {
             Self::Smoke => t(0x00c8_c4cc, [0.62, 0.6, 0.7], 0x004a_4654, 9.0, 2.6, 0.2, 0.45, 0.18, 0.55),
@@ -128,6 +129,8 @@ pub struct Tuning {
     pub opacity: f32,
     /// How far puffs melt into each other, as a share of `size`: low keeps them round, high runs them into one sheet.
     pub melt: f32,
+    /// Where the lit side meets the shade, -1 to 1: higher puts more of the surface in shade.
+    pub terminator: f32,
 }
 
 /// Where a volume's puffs come from.
@@ -223,6 +226,10 @@ pub struct VolumeDef {
     /// as poured liquid or a slime wave does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub melt: Option<f32>,
+    /// Where the lit side meets the shade, -1 to 1 (0.12 by default): higher puts more of the surface in its shade
+    /// colour, as a drawn slime with dark folds; lower lights nearly all of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminator: Option<f32>,
     /// How thick it is over time, 0 to 2: scales every puff (key it up to boil over, down to clear).
     #[serde(default = "density")]
     pub density: Track<f32>,
@@ -264,6 +271,7 @@ impl VolumeDef {
             gravity: self.gravity.unwrap_or(p.gravity),
             opacity: self.opacity.unwrap_or(p.opacity),
             melt: self.melt.unwrap_or(p.melt),
+            terminator: self.terminator.unwrap_or(p.terminator),
         }
     }
 
@@ -275,7 +283,7 @@ impl VolumeDef {
         let mut material = Material::toon(t.colour);
         material.shading = Shading::Toon(Toon {
             shade,
-            shift: 0.12,
+            shift: t.terminator,
             softness: 0.02,
             rim: Rim { colour: Colour::WHITE, power: 4.0, strength: 0.0 },
             emissive: Colour::from_linear((lit * t.glow).clamp(Vec3::ZERO, Vec3::ONE), 1.0),
@@ -314,6 +322,7 @@ impl VolumeDef {
         range("opacity", t.opacity, 0.05, 1.0)?;
         range("line_width", self.line_width, 0.0, 0.05)?;
         range("melt", t.melt, 0.0, 3.0)?;
+        range("terminator", t.terminator, -1.0, 1.0)?;
         range("emitter.radius", self.emitter.radius, 0.0, 10.0)?;
         if let Some(extent) = self.emitter.extent {
             for (axis, v) in ["x", "y", "z"].iter().zip(extent) {
@@ -691,6 +700,21 @@ mod tests {
         assert_eq!(solid.material().alpha, AlphaMode::Opaque, "a solid one stays opaque");
         let thin = VolumeDef { opacity: Some(0.0), ..volume };
         assert!(thin.check("v", &[]).unwrap_err().contains("opacity"));
+    }
+
+    #[test]
+    fn the_terminator_moves_the_shade_line_and_is_checked() {
+        let volume = def(VolumePreset::Goo);
+        let shift = |v: &VolumeDef| match v.material().shading {
+            Shading::Toon(toon) => toon.shift,
+            other => panic!("goo draws toon, not {other:?}"),
+        };
+        assert!((shift(&volume) - 0.12).abs() < 1e-6, "the default terminator");
+        let folds = VolumeDef { terminator: Some(0.6), ..volume.clone() };
+        assert!((shift(&folds) - 0.6).abs() < 1e-6, "more of the surface in shade");
+        folds.material().validate().unwrap();
+        let bad = VolumeDef { terminator: Some(1.5), ..volume };
+        assert!(bad.check("v", &[]).unwrap_err().contains("terminator"));
     }
 
     #[test]
