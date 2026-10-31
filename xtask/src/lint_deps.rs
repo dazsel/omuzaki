@@ -46,6 +46,7 @@ impl CrateKind {
             | "omuzaki-cohost"
             | "omuzaki-short"
             | "omuzaki-sequence"
+            | "omuzaki-brief"
             | "omuzaki-link-probe"
             | "omuzaki-model-worker"
             | "xtask" => Self::App,

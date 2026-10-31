@@ -359,6 +359,7 @@ fn is_non_commercial(spdx: &str) -> bool {
 /// `#[path]` lines into the crate's own `src/`, `link()` calls, or data, never a registration macro.
 const GENERATED: [(&str, &str, &str); 23] = [
     ("omuzaki-anim", "crate_mods.rs", "omuzaki_embed::modules"),
+    ("omuzaki-brief", "link_calls.rs", "omuzaki_link_build::emit"),
     ("omuzaki-char", "ops_mods.rs", "omuzaki_embed::modules"),
     ("omuzaki-char", "looks.rs", "looks.rs"),
     ("omuzaki-char", "styles.rs", "styles.rs"),

@@ -4834,6 +4834,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-brief"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-char",
+ "omuzaki-char-api",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-face",
+ "omuzaki-link-build",
+ "omuzaki-ops-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "omuzaki-budget"
 version = "0.0.0"
 dependencies = [
@@ -4933,6 +4951,7 @@ dependencies = [
  "omuzaki-audio-engine",
  "omuzaki-audio-fx",
  "omuzaki-audio-mock",
+ "omuzaki-brief",
  "omuzaki-char",
  "omuzaki-char-api",
  "omuzaki-core",
@@ -4962,6 +4981,7 @@ dependencies = [
  "omuzaki-obs",
  "omuzaki-ops",
  "omuzaki-ops-api",
+ "omuzaki-parity",
  "omuzaki-performer-api",
  "omuzaki-render",
  "omuzaki-render-api",
@@ -5945,6 +5965,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-parity"
+version = "0.0.0"
+dependencies = [
+ "base64",
+ "image",
+ "moxcms",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-ops-api",
+ "omuzaki-store-api",
+ "omuzaki-store-mock",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "omuzaki-performer"
 version = "0.0.0"
 dependencies = [
@@ -6861,6 +6899,7 @@ dependencies = [
  "omuzaki-audio-api",
  "omuzaki-audio-engine",
  "omuzaki-audio-fx",
+ "omuzaki-brief",
  "omuzaki-camera-mf",
  "omuzaki-char",
  "omuzaki-char-api",
@@ -6891,6 +6930,7 @@ dependencies = [
  "omuzaki-ops-api",
  "omuzaki-ops-mock",
  "omuzaki-osc",
+ "omuzaki-parity",
  "omuzaki-render",
  "omuzaki-render-api",
  "omuzaki-render-mock",
