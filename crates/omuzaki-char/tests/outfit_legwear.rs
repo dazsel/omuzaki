@@ -191,3 +191,35 @@ fn the_kind_is_registered_with_its_layer_and_requirements() {
     assert!((10..=15).contains(&LAYER_LEGWEAR));
     assert_eq!(<Legwear as Garment>::open_borders(&LegwearParams::default()), 4);
 }
+
+fn bottom_of(stack: &conformance::Stack) -> f64 {
+    let g = &stack.output("legwear").meshes[0].geometry;
+    g.positions.iter().map(|p| f64::from(p.y)).fold(f64::INFINITY, f64::min)
+}
+
+#[test]
+fn shorts_conform_on_every_template_and_shape() {
+    let shorts = LegwearParams { style: LegwearStyle::Leggings, bottom: Some(0.25), ..LegwearParams::default() };
+    conformance::assert_conforms::<Legwear>(&shorts, &services());
+}
+
+#[test]
+fn a_bottom_ends_the_legwear_above_the_knee_and_below_its_top() {
+    for template in conformance::TEMPLATES {
+        let tights = bottom_of(&built(template, &LegwearParams::default()));
+        let hot_pants = built(template, &LegwearParams { bottom: Some(0.2), ..LegwearParams::default() });
+        let bike = bottom_of(&built(template, &LegwearParams { bottom: Some(0.8), ..LegwearParams::default() }));
+        assert!(bottom_of(&hot_pants) > bike + 0.02, "{template}: hot pants end above bike shorts");
+        assert!(bike > tights + 0.1, "{template}: bike shorts end well above the ankle ({bike} vs {tights})");
+        assert!(top_of(&hot_pants) > bottom_of(&hot_pants) + 0.008, "{template}: a short tube is still a tube");
+    }
+    let too_high = LegwearParams { top: Some(LegTop::Knee), bottom: Some(0.3), ..LegwearParams::default() };
+    let def = conformance::character(
+        "standard",
+        &omuzaki_char_api::BodyShape::default(),
+        &[("legwear", "legwear", LAYER_LEGWEAR, serde_json::to_value(&too_high).unwrap())],
+    );
+    let error = conformance::build(def, &services()).err().expect("a bottom above the top").to_string();
+    assert!(error.contains("bottom"), "{error}");
+    assert!(LegwearParams { bottom: Some(0.01), ..LegwearParams::default() }.validate().is_err());
+}

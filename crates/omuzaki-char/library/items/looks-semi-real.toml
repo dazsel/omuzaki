@@ -1,0 +1,23 @@
+schema = 1
+id = "omuzaki/looks/semi-real"
+version = "1.0.0"
+section = "looks"
+kind = "setting"
+target = "character"
+title = "Semi-real"
+summary = "Halfway to physical: softly lit skin and hair, thin lines, ambient occlusion and contact shadows, a gentle bloom and a touch of contrast."
+tags = ["look", "shading", "semi", "real"]
+origin = "the kit's semi-real look preset (#2696)"
+compat = { kinds = ["humanoid"] }
+
+[rights]
+author = "Omuzaki"
+licence = "CC0-1.0"
+commercial = "ok"
+owned = true
+
+[[step]]
+op = "look.set_preset"
+[step.args]
+character = "$character"
+preset = "semi-real"

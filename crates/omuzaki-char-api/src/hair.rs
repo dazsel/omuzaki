@@ -800,6 +800,12 @@ pub struct BraidGen {
     /// the hair round it instead of ending in mid-air. `None`: none for the crown, 1.2 cm on a path of its own.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tuck: Option<f64>,
+    /// Sit the braid on the hair under it: each point of its path is carried along the head's normal to this far
+    /// above the outer face of the rest of the hair there (negative sinks it in), the tucked ends still sinking by
+    /// their tuck, so it lies on the cap and the fringe's roots on any head and at any fullness. `None` (the default)
+    /// stands it at [`lift`](Self::lift) off the head, whatever is under it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat: Option<f64>,
 }
 
 impl Default for BraidGen {
@@ -819,6 +825,7 @@ impl Default for BraidGen {
             path: Vec::new(),
             lift: None,
             tuck: None,
+            seat: None,
         }
     }
 }
@@ -840,6 +847,13 @@ pub struct CurtainGen {
     pub length_front: f64,
     /// Hair length at the back.
     pub length_back: f64,
+    /// A blunt hem: the height the hair is cut level at, `[at the sides, at the back]` in metres from the head's
+    /// centre (negative below it), blended round the head as the lengths are. When set, each guide's length is solved
+    /// so its lowest point sits on the hem, and `length_front`, `length_back` and their jitter only start the solve:
+    /// equal heights cut a level bob, a lower side than back an A-line, a higher one an inverted bob. `None` (the
+    /// default) hangs each guide its own length.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hem: Option<[f64; 2]>,
     /// How far the hair stands from the body axis, as `[bind-space y, distance]` pairs from the shoulders down
     /// (traced from the sheet's silhouette).
     pub envelope: Vec<[f64; 2]>,
@@ -878,6 +892,7 @@ impl Default for CurtainGen {
             root_height_back: -0.04,
             length_front: 0.47,
             length_back: 0.56,
+            hem: None,
             envelope: vec![[0.7, 0.2], [0.5, 0.31], [0.3, 0.34], [0.2, 0.32]],
             wave: Wave { amplitude: 0.036, frequency: 2.1, phase: 0.0, curl: 0.045, growth: [0.15, 0.65] },
             root_tuck_deg: 20.0,
@@ -2351,6 +2366,9 @@ impl Validate for HairGroup {
                 if let Some(tuck) = g.tuck {
                     c.range("generator/tuck", tuck, 0.0, 0.05);
                 }
+                if let Some(seat) = g.seat {
+                    c.range("generator/seat", seat, -0.05, 0.05);
+                }
                 if let Some(r) = g.height_radius {
                     c.range("generator/height_radius", r, 0.01, 1.0);
                 }
@@ -2364,6 +2382,9 @@ impl Validate for HairGroup {
                 c.range("generator/root_tuck_deg", g.root_tuck_deg, 0.0, 60.0);
                 c.range("generator/root_tuck_offset", g.root_tuck_offset, 0.0, 0.1);
                 c.range("generator/drape_deg", g.drape_deg, 0.0, 100.0);
+                for (i, hem) in g.hem.iter().flatten().enumerate() {
+                    c.range(&format!("generator/hem/{i}"), *hem, -3.0, 0.5);
+                }
                 if g.envelope.len() < 2 {
                     c.fail("generator/envelope", "needs at least two [y, distance] points");
                 }

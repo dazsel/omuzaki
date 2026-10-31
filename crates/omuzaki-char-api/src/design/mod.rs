@@ -46,6 +46,7 @@ pub mod frame;
 pub mod layer;
 pub mod library;
 pub mod locate;
+pub mod refine;
 pub mod sculpt;
 
 use std::collections::BTreeMap;

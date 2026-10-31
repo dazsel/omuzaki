@@ -77,7 +77,7 @@ fn score_face(span: &FaceSpan, expressions: &ExpressionSet, rest: &ChannelBuf) -
 
 impl OfflinePerformer {
     /// A performer for a character with `expressions`, resting at `rest` on `base`, with every face of `timeline`
-    /// resolved up front, its life seeded by `seed`.
+    /// resolved up front, its life seeded by `seed` and its body moving as `body` sets.
     ///
     /// # Errors
     /// [`ShortError::Invalid`] for a face that names an expression the character lacks.
@@ -87,13 +87,14 @@ impl OfflinePerformer {
         rest: ChannelBuf,
         base: HumanoidPose,
         seed: u64,
+        body: omuzaki_anim_api::BodyStyle,
     ) -> Result<Self, ShortError> {
         let faces = timeline.faces.iter().map(|span| score_face(span, expressions, &rest)).collect::<Result<_, _>>()?;
         let parts = PerformerParts {
             source: Box::new(NoSource),
             retarget: Box::new(ArkitRetarget::new(DeviceProfile::Webcam)),
             life: Box::new(Life::new(LifeConfig::new(seed))),
-            animator: Box::new(LivingBody::new(omuzaki_anim_api::BodyStyle::default(), seed)),
+            animator: Box::new(LivingBody::new(body.clamped(), seed)),
         };
         let mut performer = Performer::new(parts, rest, base);
         if let Ok(grammar) = GrammarStage::new(&GrammarConfig::default()) {

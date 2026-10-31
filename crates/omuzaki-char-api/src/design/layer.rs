@@ -318,6 +318,15 @@ pub enum MaskKind {
         /// To.
         to: f32,
     },
+    /// A ramp over the part's height (`0` its bottom, `1` its top): 0 at `from`, 1 at `to`, smooth between, so a tint
+    /// fades along the part (a stocking from teal at the thigh to indigo at the foot: `from = 1, to = 0`).
+    #[non_exhaustive]
+    Gradient {
+        /// Where the ramp is 0.
+        from: f32,
+        /// Where it is 1.
+        to: f32,
+    },
     /// Surfaces facing a direction: 0 at `from` (the cosine to the direction), 1 at `to`.
     Facing {
         /// The direction, bind space.
@@ -340,6 +349,38 @@ pub enum MaskKind {
         #[serde(default)]
         seed: u32,
     },
+    /// One side of a plane through a point of the body: 1 on the side `dir` points to, 0 on the other, over a soft
+    /// edge `softness` metres wide. A leotard's leg opening, a neckline, a hem or a stripe's edge; several give a
+    /// polygon (the masks multiply). With `mirror` the character's right is folded onto its left (`x` to `|x|`) before
+    /// the test, so one plane placed on the left cuts both sides alike.
+    #[non_exhaustive]
+    Plane {
+        /// A point the plane passes through; on the body it follows every shape change.
+        at: PartPoint,
+        /// The plane's normal, bind space (x the character's left, y up, z forward): the side it points to shows.
+        dir: [f32; 3],
+        /// The width of the soft edge, metres.
+        #[serde(default = "edge")]
+        softness: f32,
+        /// Fold the right side onto the left first.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        mirror: bool,
+    },
+    /// Inside an ellipsoid round a point of the body: 1 inside, 0 outside, over a soft edge `softness` metres wide. A
+    /// window cut out of a painted suit (inverted), a patch or a spot. `mirror` as for a plane.
+    #[non_exhaustive]
+    Ellipsoid {
+        /// The centre; on the body it follows every shape change.
+        at: PartPoint,
+        /// The half-widths along x, y and z (bind space), metres.
+        radii: [f32; 3],
+        /// The width of the soft edge, metres.
+        #[serde(default = "edge")]
+        softness: f32,
+        /// Fold the right side onto the left first.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        mirror: bool,
+    },
     /// Edges that stand out (positive curvature): 0 at `from` (1/m), 1 at `to`.
     Convex {
         /// Where it starts.
@@ -354,6 +395,31 @@ pub enum MaskKind {
         /// Where it is full.
         to: f32,
     },
+}
+
+impl MaskKind {
+    /// A [`MaskKind::Gradient`]: 0 at `from` up the part's height, 1 at `to`.
+    #[must_use]
+    pub const fn gradient(from: f32, to: f32) -> Self {
+        Self::Gradient { from, to }
+    }
+
+    /// A [`MaskKind::Plane`] through `at`, showing the side `dir` points to.
+    #[must_use]
+    pub const fn plane(at: PartPoint, dir: [f32; 3], softness: f32, mirror: bool) -> Self {
+        Self::Plane { at, dir, softness, mirror }
+    }
+
+    /// A [`MaskKind::Ellipsoid`] round `at`.
+    #[must_use]
+    pub const fn ellipsoid(at: PartPoint, radii: [f32; 3], softness: f32, mirror: bool) -> Self {
+        Self::Ellipsoid { at, radii, softness, mirror }
+    }
+}
+
+/// The default soft edge of a plane or an ellipsoid mask, metres.
+const fn edge() -> f32 {
+    0.004
 }
 
 fn one() -> f32 {
@@ -446,10 +512,21 @@ impl MaterialLayer {
         for (i, mask) in self.masks.iter().enumerate() {
             let ok = match &mask.mask {
                 MaskKind::Region { from, to, .. } | MaskKind::Height { from, to } => from <= to,
+                MaskKind::Gradient { from, to } => {
+                    (from - to).abs() > f32::EPSILON && (0.0..=1.0).contains(from) && (0.0..=1.0).contains(to)
+                }
                 MaskKind::Landmark { reach, .. } => *reach > 0.0 && *reach <= 180.0,
                 MaskKind::Facing { dir, .. } => Vec3::from(*dir).length() > 1e-6,
                 MaskKind::Noise { scale, softness, .. } => *scale > 0.0 && *softness >= 0.0,
                 MaskKind::Convex { from, to } | MaskKind::Concave { from, to } => from < to,
+                MaskKind::Plane { at, dir, softness, .. } => {
+                    at.check().map_err(|e| format!("masks/{i}/mask/at/{e}"))?;
+                    Vec3::from(*dir).length() > 1e-6 && softness.is_finite() && *softness >= 0.0
+                }
+                MaskKind::Ellipsoid { at, radii, softness, .. } => {
+                    at.check().map_err(|e| format!("masks/{i}/mask/at/{e}"))?;
+                    radii.iter().all(|r| r.is_finite() && *r > 0.0) && softness.is_finite() && *softness >= 0.0
+                }
             };
             if !ok {
                 return Err(format!("masks/{i}: its numbers are out of order or out of range"));
@@ -605,6 +682,13 @@ fn mask_value(mask: &Mask, v: &Vertex, frames: &Frames) -> f32 {
         MaskKind::Height { from, to } => {
             smoothstep(from - 0.02, from + 0.02, v.height) * (1.0 - smoothstep(to - 0.02, to + 0.02, v.height))
         }
+        MaskKind::Gradient { from, to } => {
+            if to > from {
+                smoothstep(*from, *to, v.height)
+            } else {
+                1.0 - smoothstep(*to, *from, v.height)
+            }
+        }
         MaskKind::Facing { dir, from, to } => {
             let c = v.n.dot(Vec3::from(*dir).normalize_or(Vec3::Y));
             if to > from { smoothstep(*from, *to, c) } else { 1.0 - smoothstep(*to, *from, c) }
@@ -615,8 +699,37 @@ fn mask_value(mask: &Mask, v: &Vertex, frames: &Frames) -> f32 {
         }
         MaskKind::Convex { from, to } => smoothstep(*from, *to, v.curvature),
         MaskKind::Concave { from, to } => smoothstep(*from, *to, -v.curvature),
+        MaskKind::Plane { at, dir, softness, mirror } => match frames.point(at) {
+            Some((o, _, _)) => {
+                let (p, o) = folded(v.p, o, *mirror);
+                let d = (p - o).dot(Vec3::from(*dir).normalize_or(Vec3::Y));
+                soft_step(d, *softness)
+            }
+            None => 0.0,
+        },
+        MaskKind::Ellipsoid { at, radii, softness, mirror } => match frames.point(at) {
+            Some((o, _, _)) => {
+                let (p, o) = folded(v.p, o, *mirror);
+                let r = Vec3::from(*radii).max(Vec3::splat(1e-6));
+                let q = (p - o) / r;
+                // The level's distance from the surface, metres: exact on a sphere, close on an ellipsoid.
+                let d = (1.0 - q.length()) * r.min_element();
+                soft_step(d, *softness)
+            }
+            None => 0.0,
+        },
     };
     if mask.invert { 1.0 - value } else { value }
+}
+
+/// `p` and `o` with the character's right folded onto its left when `mirror` is set.
+fn folded(p: Vec3, o: Vec3, mirror: bool) -> (Vec3, Vec3) {
+    if mirror { (Vec3::new(p.x.abs(), p.y, p.z), Vec3::new(o.x.abs(), o.y, o.z)) } else { (p, o) }
+}
+
+/// 0 below `-width / 2`, 1 above `width / 2`, smooth between; a hard step at a width of 0.
+fn soft_step(d: f32, width: f32) -> f32 {
+    if width <= 0.0 { if d >= 0.0 { 1.0 } else { 0.0 } } else { smoothstep(-0.5 * width, 0.5 * width, d) }
 }
 
 /// What a layer does to one vertex's colour (linear) and skin terms.
@@ -798,7 +911,7 @@ fn shared_decals<'a>(design: &'a super::DesignDef, part: &PartId) -> Vec<&'a Mat
 ///
 /// # Errors
 /// [`BuildError::Colour`] for a colour that names a slot the palette doesn't have.
-#[allow(clippy::too_many_arguments)] // the build step's own inputs: the design, the age, the palette, the face and the part
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // the build step's own inputs: the design, the age, the palette, the face and the part
 pub fn apply(
     design: &super::DesignDef,
     age: Option<AgeLayers>,
@@ -857,11 +970,16 @@ pub fn apply(
             LayerKind::Wet { .. } | LayerKind::Cavity { .. } | LayerKind::Makeup { zone: MakeupZone::Blush, .. }
         )
     });
+    // A runtime may address a part's vertices by index, so only a part without one is cut along its layers' edges.
+    let may_cut = output.runtime.is_none();
     for mesh in &mut output.meshes {
         let Some(mi) = output.materials.iter().position(|(name, _)| *name == mesh.material) else { continue };
         let base = output.materials[mi].1.base.to_linear();
         let program = program_materials.contains(&mi);
         let skin = skin_classes.contains(&mi);
+        if may_cut && !program && !mesh.dynamic {
+            cut_along_edges(mesh, &resolved, &frames);
+        }
         let vertices = vertices(mesh, frames.part.as_ref(), category, uses_curvature || skin);
         let mut colours = if mesh.geometry.colours.is_empty() {
             vec![[1.0f32; 4]; vertices.len()]
@@ -910,6 +1028,33 @@ pub fn apply(
     Ok(())
 }
 
+/// Where a layer's plane and ellipsoid masks are cut into the mesh: the levels of their product near either end of
+/// their soft edge, so the triangles between hold just the edge.
+const EDGE_LEVELS: [f32; 2] = [0.02, 0.98];
+
+/// Cuts `mesh` along the soft edges of each layer's plane and ellipsoid masks ([`super::refine`]), so an edge is drawn
+/// as crisp as its softness rather than as wide as the triangles it crosses.
+fn cut_along_edges(mesh: &mut PartMesh, resolved: &[Resolved<'_>], frames: &Frames) {
+    for r in resolved {
+        let sharp: Vec<&Mask> = r
+            .layer
+            .masks
+            .iter()
+            .filter(|m| matches!(m.mask, MaskKind::Plane { .. } | MaskKind::Ellipsoid { .. }))
+            .collect();
+        if sharp.is_empty() {
+            continue;
+        }
+        let field = |p: Vec3| {
+            let v = Vertex { p, n: Vec3::Y, m: Membership::default(), height: 0.5, curvature: 0.0, distal: 0.0 };
+            sharp.iter().map(|m| mask_value(m, &v, frames)).product::<f32>()
+        };
+        for level in EDGE_LEVELS {
+            super::refine::split_along(&mut mesh.geometry, &field, level);
+        }
+    }
+}
+
 /// The vertex colour that makes `base × colour` equal `target`, or the old colour where the base is black.
 fn divide(target: f32, base: f32, old: f32) -> f32 {
     if base > 1e-4 { (target / base).max(0.0) } else { old }
@@ -930,7 +1075,7 @@ fn frames(
         None => published.get::<HeadFrameFact>().clone().or_else(|| {
             let surface =
                 output.publishes.values::<HeadFact>().next().cloned().or_else(|| published.get::<HeadFact>().clone());
-            surface.map(|s| std::sync::Arc::new(HeadFrame::of(s, layout, published.scale())))
+            surface.map(|s| std::sync::Arc::new(HeadFrame::of(s, layout)))
         }),
     };
     let body = match output.publishes.values::<BodyFrameFact>().next() {
@@ -1128,6 +1273,65 @@ mod tests {
             assert!((0.0..=1.0).contains(&n));
             assert_eq!(n, fbm(p, 3));
         }
+    }
+
+    #[test]
+    fn a_gradient_ramps_along_the_height_either_way() {
+        let frames = Frames { body: None, head: None, part: None };
+        let at = |mask: MaskKind, height: f32| {
+            let v = Vertex { p: Vec3::ZERO, n: Vec3::Y, m: Membership::default(), height, curvature: 0.0, distal: 0.0 };
+            mask_value(&Mask { mask, invert: false }, &v, &frames)
+        };
+        let up = MaskKind::gradient(0.2, 0.8);
+        assert!(at(up.clone(), 0.1) < 1e-6 && (at(up.clone(), 0.9) - 1.0).abs() < 1e-6);
+        assert!((at(up.clone(), 0.5) - 0.5).abs() < 1e-6);
+        let down = MaskKind::gradient(1.0, 0.0);
+        assert!(at(down.clone(), 0.9) < at(down.clone(), 0.5) && at(down.clone(), 0.5) < at(down, 0.1));
+        let id = LayerId::new("fade").unwrap();
+        let layer = |mask| MaterialLayer {
+            masks: vec![Mask { mask, invert: false }],
+            ..MaterialLayer::new(id.clone(), LayerKind::Wet { amount: 0.5 })
+        };
+        assert!(layer(MaskKind::gradient(1.0, 0.0)).check().is_ok());
+        assert!(layer(MaskKind::gradient(0.5, 0.5)).check().is_err());
+        assert!(layer(MaskKind::gradient(0.0, 1.5)).check().is_err());
+    }
+
+    #[test]
+    fn a_plane_and_an_ellipsoid_cut_where_they_are_put_and_mirror() {
+        // With no body frame a body point resolves nowhere, so the box point of a unit part stands in for it.
+        let part = PartFrame { min: Vec3::splat(-1.0), max: Vec3::splat(1.0) };
+        let frames = Frames { body: None, head: None, part: Some(part) };
+        let at = |mask: MaskKind, p: Vec3| {
+            let v = Vertex { p, n: Vec3::Y, m: Membership::default(), height: 0.5, curvature: 0.0, distal: 0.0 };
+            mask_value(&Mask { mask, invert: false }, &v, &frames)
+        };
+        let left = PartPoint::Box { at: [0.75, 0.5, 0.5] }; // x = 0.5
+        let cut = MaskKind::plane(left, [-1.0, 0.0, 0.0], 0.01, false);
+        assert!((at(cut.clone(), Vec3::new(0.2, 0.0, 0.0)) - 1.0).abs() < 1e-6);
+        assert!(at(cut.clone(), Vec3::new(0.8, 0.0, 0.0)) < 1e-6);
+        assert!((at(cut.clone(), Vec3::new(0.5, 0.0, 0.0)) - 0.5).abs() < 1e-3);
+        // Unmirrored, the right side (x < 0) is all on the shown side; mirrored, it is cut at x = -0.5 too.
+        assert!((at(cut, Vec3::new(-0.8, 0.0, 0.0)) - 1.0).abs() < 1e-6);
+        let both = MaskKind::plane(left, [-1.0, 0.0, 0.0], 0.01, true);
+        assert!(at(both.clone(), Vec3::new(-0.8, 0.0, 0.0)) < 1e-6);
+        assert!((at(both, Vec3::new(-0.2, 0.0, 0.0)) - 1.0).abs() < 1e-6);
+        let window = MaskKind::ellipsoid(left, [0.1, 0.2, 0.1], 0.0, true);
+        assert!((at(window.clone(), Vec3::new(0.5, 0.15, 0.0)) - 1.0).abs() < 1e-6);
+        assert!((at(window.clone(), Vec3::new(-0.55, -0.1, 0.0)) - 1.0).abs() < 1e-6);
+        assert!(at(window, Vec3::new(0.5, 0.25, 0.0)) < 1e-6);
+        let id = LayerId::new("cut").unwrap();
+        let layer = |mask| MaterialLayer {
+            masks: vec![Mask { mask, invert: false }],
+            ..MaterialLayer::new(id.clone(), LayerKind::Wet { amount: 0.5 })
+        };
+        assert!(layer(MaskKind::plane(left, [0.0, 0.0, 0.0], 0.01, false)).check().is_err());
+        assert!(layer(MaskKind::ellipsoid(left, [0.1, 0.0, 0.1], 0.01, false)).check().is_err());
+        assert!(
+            layer(MaskKind::plane(PartPoint::Box { at: [1.5, 0.5, 0.5] }, [1.0, 0.0, 0.0], 0.0, false))
+                .check()
+                .is_err()
+        );
     }
 
     #[test]

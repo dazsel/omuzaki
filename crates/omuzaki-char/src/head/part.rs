@@ -96,7 +96,7 @@ impl PartKind for Head {
             meshes.push(part_mesh(ctx, "neck", neck_mesh, bones, "skin-neck")?);
         }
 
-        let (ear_meshes, mut ear_anchors, ear_covers) = ears(ctx, &placed, surface.as_ref())?;
+        let (ear_meshes, mut ear_anchors, ear_covers) = ears(ctx, &placed, surface.as_ref(), template_head - drop)?;
         meshes.extend(ear_meshes);
         let mut rig = RigContribution::default();
         if placed.ears.kind == EarKind::Animal {
@@ -133,12 +133,14 @@ impl PartKind for Head {
         for cover in ear_covers {
             publishes.put::<EarCoverFact>(cover);
         }
-        Ok(PartOutput::new()
+        let mut output = PartOutput::new()
             .with_meshes(meshes)
             .with_materials(materials)
             .with_publishes(publishes)
             .with_rig(rig)
-            .with_warnings(warnings))
+            .with_warnings(warnings);
+        sized(ctx, &mut output, params.size(), template_head - drop)?;
+        Ok(output)
     }
 
     /// The head's colours are its materials, made by the same function as the build's; the face window's overlays are
@@ -192,7 +194,12 @@ type EarParts = (Vec<PartMesh>, Vec<(AnchorId, Anchor)>, Vec<(Side, ears::EarCov
 /// The ear meshes (rigid on the head, in the `skin-ear` material), their `ear_l` and `ear_r` anchors and the
 /// [`EarCoverFact`] of each. The left ear roots on the head as built, the right mirrors it across the head's centre; a
 /// kind with no ear on the side builds none of them.
-fn ears(ctx: &BuildCtx<'_>, placed: &HeadParams, surface: &dyn HeadSurface) -> Result<EarParts, BuildError> {
+fn ears(
+    ctx: &BuildCtx<'_>,
+    placed: &HeadParams,
+    surface: &dyn HeadSurface,
+    joint: Vec3,
+) -> Result<EarParts, BuildError> {
     let left_root = ears::root(&placed.ears, surface);
     let (mut meshes, mut anchors, mut covers) = (vec![], vec![], vec![]);
     for side in Side::BOTH {
@@ -213,9 +220,11 @@ fn ears(ctx: &BuildCtx<'_>, placed: &HeadParams, surface: &dyn HeadSurface) -> R
         if let Some(bind) = ears::anchor(&placed.ears, side, root) {
             anchors.push((name.parse().map_err(|e| ctx.fail(format!("anchor '{name}': {e}")))?, bind));
         }
-        // The head is built at the template's size and scaled to the stature afterwards, which scales the anchors but not
-        // this fact, so the disc is scaled here, the way `scale_output` scales an anchor.
+        // The head is built at the template's size, sized about its joint and scaled to the stature afterwards, which
+        // moves the anchors but not this fact, so the disc is moved here, the way `scale_output_about` moves an anchor.
         if let Some(cover) = ears::cover(&placed.ears, side, root) {
+            #[allow(clippy::float_cmp)] // exactly 1 is the template's head, bit for bit
+            let cover = if placed.size() == 1.0 { cover } else { cover.about(narrow(placed.size()), joint) };
             covers.push((side, cover.scaled(ctx.published.scale())));
         }
     }
@@ -301,6 +310,24 @@ fn along_chain(v: f32, bones: usize) -> ([u16; 4], [f32; 4]) {
     let t = narrow((v - knots[above - 1]) / (knots[above] - knots[above - 1]));
     let (below, above) = (above as u16, above as u16 + 1);
     ([below, above, 0, 0], [1.0 - t, t, 0.0, 0.0])
+}
+
+/// Scales the head's own output by `size` about its joint `joint` (the template's, dropped), leaving the neck mesh as
+/// the body has it: a bigger or smaller head on the same neck, its painted face, eyes, jaw, ears and anchors with it.
+fn sized(ctx: &BuildCtx<'_>, output: &mut PartOutput, size: f64, joint: Vec3) -> Result<(), BuildError> {
+    #[allow(clippy::float_cmp)] // exactly 1 is the template's head, bit for bit
+    if size == 1.0 {
+        return Ok(());
+    }
+    let neck: Vec<PartMesh> = output.meshes.extract_if(.., |m| is_neck(&m.name)).collect();
+    omuzaki_char_api::scale_output_about(ctx.part, output, narrow(size), joint)?;
+    output.meshes.extend(neck);
+    Ok(())
+}
+
+/// Whether a mesh of the head part is its neck (`part_mesh` names it `<part>-neck`).
+fn is_neck(name: &str) -> bool {
+    name == "neck" || name.ends_with("-neck")
 }
 
 /// `params` with the cranium's centre written: as the author wrote it, or, when unset, seated on the template whose head

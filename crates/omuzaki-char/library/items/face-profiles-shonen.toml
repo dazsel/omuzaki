@@ -1,0 +1,23 @@
+schema = 1
+id = "omuzaki/face-profiles/shonen"
+version = "1.0.0"
+section = "face-profiles"
+kind = "setting"
+target = "character"
+title = "Shonen"
+summary = "Action-manga look: narrow, sharp eyes under thick straight brows, a wide mouth, broad shoulders and messy short hair, in flat cel."
+tags = ["face", "style", "anime", "shonen"]
+origin = "the kit's shonen art style (#2696)"
+compat = { kinds = ["humanoid"], requires = ["head", "body"] }
+
+[rights]
+author = "Omuzaki"
+licence = "CC0-1.0"
+commercial = "ok"
+owned = true
+
+[[step]]
+op = "character.set_style"
+[step.args]
+character = "$character"
+style = "shonen"

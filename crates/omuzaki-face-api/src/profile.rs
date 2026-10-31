@@ -1091,6 +1091,9 @@ pub enum MarkKind {
     Paint,
     /// A line scar.
     Scar,
+    /// A drawn line through `points`, with a round pad at each end when `pads` is set: a tattoo line, a circuit
+    /// trace, a tribal or a tear streak.
+    Line,
 }
 
 /// One freckle patch, beauty mark, face paint or scar (CB-23), drawn on the `Base` layer.
@@ -1111,6 +1114,12 @@ pub struct FaceMark {
     pub count: u8,
     /// Seed for placing freckles, so the pattern is stable.
     pub seed: u32,
+    /// For a line: its points, as offsets from `at` in units of `size` (each within 1 of it), drawn in order.
+    pub points: Vec<[f64; 2]>,
+    /// For a line: its width, in metres.
+    pub width: f64,
+    /// For a line: a round pad at each end, this many times the line's width across (0 none).
+    pub pads: f64,
 }
 
 impl Default for FaceMark {
@@ -1123,9 +1132,15 @@ impl Default for FaceMark {
             opacity: 0.8,
             count: 12,
             seed: 1,
+            points: Vec::new(),
+            width: 0.0012,
+            pads: 0.0,
         }
     }
 }
+
+/// The most points a line mark holds.
+pub const MAX_MARK_POINTS: usize = 32;
 
 impl Validate for FaceMark {
     fn check(&self, c: &mut Check) {
@@ -1133,6 +1148,18 @@ impl Validate for FaceMark {
         c.range("at/1", self.at[1], -0.4, 0.3);
         c.range("size", self.size, 0.0003, 0.1);
         c.range("opacity", self.opacity, 0.0, 1.0);
+        c.range("width", self.width, 0.0002, 0.01);
+        c.range("pads", self.pads, 0.0, 6.0);
+        c.rule(&["points"], self.points.len() <= MAX_MARK_POINTS, "a line mark holds at most 32 points");
+        c.rule(
+            &["points"],
+            self.kind != MarkKind::Line || self.points.len() >= 2,
+            "a line mark needs at least two points",
+        );
+        for (i, p) in self.points.iter().enumerate() {
+            c.range(&format!("points/{i}/0"), p[0], -1.0, 1.0);
+            c.range(&format!("points/{i}/1"), p[1], -1.0, 1.0);
+        }
     }
 }
 

@@ -221,3 +221,28 @@ fn only_the_scalp_shell_meets_the_horns_which_is_the_hole_the_hair_cap_will_get(
 fn every_documented_preset_is_among_the_styles_the_sweeps_use() {
     accessory_common::assert_styles_found("horns", &["swept_back", "ram", "oni", "antler"]);
 }
+
+/// The extent of the left horn's vertices along x (across the head) and z (front to back).
+fn left_extent(params: Value) -> (f32, f32) {
+    let s = built_scene("standard", "horns", params, None);
+    let left: Vec<Vec3> = vertices(&s.built).into_iter().filter(|v| v.x > 0.0).collect();
+    let span = |f: &dyn Fn(&Vec3) -> f32| {
+        let (lo, hi) = left.iter().map(f).fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)));
+        hi - lo
+    };
+    (span(&|v| v.x), span(&|v| v.z))
+}
+
+#[test]
+fn a_flat_horn_is_a_blade_thin_from_side_to_side() {
+    let blade = json!({ "shape": "oni", "flat": 0.2, "curl": 0.0, "direction": [0.75, 0.6, 0.0], "spread_deg": -20.0 });
+    let s = built_scene("standard", "horns", blade.clone(), None);
+    assert_closed(&s.built, "a flat horn");
+    let (round_x, _) =
+        left_extent(json!({ "shape": "oni", "curl": 0.0, "direction": [0.75, 0.6, 0.0], "spread_deg": -20.0 }));
+    let (flat_x, flat_z) = left_extent(blade);
+    assert!(flat_x < 0.75 * round_x, "the blade is thinner across: {flat_x} against {round_x}");
+    assert!(flat_z > 2.0 * flat_x, "and deeper than it is thick: {flat_z} against {flat_x}");
+    let registration = find_kind("horns").unwrap();
+    assert!((registration.check)(&json!({ "flat": 0.05 })).is_err());
+}

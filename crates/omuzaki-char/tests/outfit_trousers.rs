@@ -209,7 +209,7 @@ fn parameters_are_checked_and_round_trip() {
     assert!(bad(&|p| p.leg.hem = 0.5).contains("hem"), "narrower than the body");
     assert!(bad(&|p| p.leg.knee = f64::NAN).contains("knee"));
     assert!(bad(&|p| p.length = 1.2).contains("length"));
-    assert!(bad(&|p| p.length = 0.2).contains("length"));
+    assert!(bad(&|p| p.length = 0.05).contains("length"));
     assert!(bad(&|p| p.waistband.height = 0.5).contains("waistband"));
     assert!(bad(&|p| p.cuff.roll = -0.001).contains("cuff"));
     assert!(bad(&|p| p.common.ease = 0.0).contains("ease"));
@@ -264,5 +264,16 @@ fn render_the_trousers_when_asked() {
         let stack = conformance::build(def, &services()).unwrap();
         let framing = render::Framing::parts(&stack, &["trousers"]);
         render::render(&stack, framing, &format!("{template}-{variant}"), directory.as_ref());
+    }
+}
+
+#[test]
+fn hot_pants_end_high_on_the_thigh() {
+    for template in ["standard", "tall"] {
+        let (long_floor, _) = extent(&built(template, &TrousersParams::default()));
+        let (shorts_floor, _) = extent(&built(template, &TrousersParams { length: 0.60, ..TrousersParams::default() }));
+        let (hot_floor, _) = extent(&built(template, &TrousersParams { length: 0.36, ..TrousersParams::default() }));
+        assert!(hot_floor > shorts_floor + 0.1, "{template}: hot pants end {hot_floor}, shorts {shorts_floor}");
+        assert!(shorts_floor > long_floor, "{template}");
     }
 }

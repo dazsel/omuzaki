@@ -1,0 +1,97 @@
+# Animated feature: the stylized 3D look of feature-film animation, on the tall template (7.5 heads).
+#
+# An adult with realistic-stylized proportions (not a big head). Round, open eyes with a lot of white around a small
+# iris, a soft crease and fine strand lashes; a sculpted nose read through shade and a light on its bridge; a wide
+# mouth with full, tinted lips; contoured cheeks; strong, shaped brows. Shaded with the `animated-feature` look: soft wrapped light,
+# warm skin terminators and lit-edge rims, so the face turns like a lit sculpture rather than a drawing.
+id = "animated-feature"
+name = "Animated feature"
+family = "western"
+summary = "Feature-film 3D animation: round open eyes with a small iris, a sculpted nose and full lips, adult proportions and soft volumetric shading."
+origin = "Design target: the stylized-character conventions of feature animation (eyes large but anatomically placed with the sclera showing round the iris, a modelled nose and lips, adult proportions near seven heads, soft subsurface-like light), tuned by eye on the kit's own renders; no traced likeness."
+templates = ["tall"]
+profile = "egg-oval"
+hair = "half-up"
+look = "animated-feature"
+
+[face.layout]
+eye_width = 0.047
+eye_spacing = 0.086
+brow_gap = 0.064
+
+[face.eyes]
+scale = 1.0
+lid_shadow = 0.55
+
+[face.eyes.aperture]
+roundness = 0.85
+upper_height = 0.8
+lower_depth = 0.66
+tilt = 0.03
+inner_sharpness = 0.6
+outer_bluntness = 0.7
+
+[face.eyes.iris]
+width = 0.5
+height = 0.62
+inset = 0.02
+drop = 0.03
+
+[face.eyes.highlights]
+shape = "blob"
+size = 0.2
+shimmer = 0.15
+second = 0.3
+extra = []
+
+[face.eyes.sclera]
+corner_shade = 0.65
+caruncle = 0.75
+waterline = 0.7
+
+[face.eyes.lash]
+thickness = 0.004
+flick = 0.3
+lower = 0.0
+inner_tick = false
+
+[face.eyes.lash.strands]
+upper = { count = 40, length = 0.22, curl = 0.5, clumping = 0.4 }
+lower = { count = 18, length = 0.1, opacity = 0.7 }
+
+[face.eyes.crease]
+strength = 0.7
+lift = 0.4
+
+[face.mouth]
+half_width = 0.017
+
+[face.mouth.lips]
+strength = 0.6
+tint = 0.45
+
+[face.nose]
+kind = "tick"
+size = 1.8
+shadow = 0.6
+highlight = 0.5
+
+[face.cheeks]
+contour = 0.3
+
+[face.brows]
+thickness = 0.0028
+arch = 0.007
+
+[body]
+hands = "five_finger"
+
+[body.proportions]
+neck_length = 1.15
+
+[body.shape]
+height = 0.2
+
+# A rounder face plane: the painted features sit on a modelled face, not a flattened anime one.
+[head.cranium]
+face_flatten = 0.015

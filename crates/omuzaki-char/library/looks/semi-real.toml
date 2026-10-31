@@ -1,0 +1,31 @@
+# Semi-real: halfway between cel and physical, the look of the semi-real character style.
+#
+# Every class sits midway on the style axis (skin with some subsurface glow, hair with some fibre light, cloth with
+# some sheen), with thin lines, a soft terminator, ambient occlusion and contact shadows to seat the forms, a gentle
+# bloom and a touch of contrast.
+id = "semi-real"
+name = "Semi-real"
+summary = "Halfway to physical: softly lit skin and hair, thin lines, ambient occlusion and contact shadows, a gentle bloom and a touch of contrast."
+origin = """Design target: semi-realistic stylized rendering (soft volumetric light, a trace of line, occlusion that seats \
+the forms); numbers tuned by eye on the kit's renders."""
+
+[params.all]
+style = 0.45
+softness_scale = 1.4
+rim_scale = 0.6
+outline_width_scale = 0.4
+
+# The kit's anime fringe casts a hard, jagged hair shadow that reads as a stain on half-physical skin.
+[params.skin]
+receives_hair_shadow = false
+
+[params.scene]
+bloom = true
+depth_of_field = false
+grain = 0.0
+
+[params.scene.grade]
+contrast = 1.05
+
+[params.scene.occlusion]
+strength = 0.6

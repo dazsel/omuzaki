@@ -13,7 +13,7 @@ use crate::ops_shared::check::check_edit;
 use crate::ops_shared::edit::{changed_output, marks_len, stored_face, to_json, working_copy};
 use crate::ops_shared::path::template;
 
-/// Adds a mark (freckles, a beauty mark, face paint or a scar) at the end of a character's marks list.
+/// Adds a mark (freckles, a beauty mark, face paint, a scar or a line) at the end of a character's marks list.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AddMark {
@@ -28,7 +28,7 @@ impl Op for AddMark {
     fn meta() -> OpMeta {
         OpMeta {
             name: "face.add_mark",
-            summary: "Add a face mark (freckles, beauty mark, paint or scar) at the end of a character's marks list",
+            summary: "Add a face mark (freckles, beauty mark, paint, scar or line) at the end of a character's marks list",
             kind: OpKind::Edit,
             scope: Scope::EditCharacter,
             undo: Undo::Auto,

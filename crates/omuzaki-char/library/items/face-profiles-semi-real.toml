@@ -1,0 +1,23 @@
+schema = 1
+id = "omuzaki/face-profiles/semi-real"
+version = "1.0.0"
+section = "face-profiles"
+kind = "setting"
+target = "character"
+title = "Semi-real"
+summary = "Between anime and life: near life-size almond eyes with a small iris and dense lashes, a modelled nose, full lips and half-physical shading."
+tags = ["face", "style", "real", "semi"]
+origin = "the kit's semi-real art style (#2696)"
+compat = { kinds = ["humanoid"], requires = ["head", "body"] }
+
+[rights]
+author = "Omuzaki"
+licence = "CC0-1.0"
+commercial = "ok"
+owned = true
+
+[[step]]
+op = "character.set_style"
+[step.args]
+character = "$character"
+style = "semi-real"

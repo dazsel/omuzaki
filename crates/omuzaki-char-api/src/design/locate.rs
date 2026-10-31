@@ -71,7 +71,7 @@ pub fn locate(
             .next()
             .cloned()
             .ok_or_else(|| fail("the head publishes no surface"))?;
-        let head = HeadFrame::of(surface, &def.face.layout, published.scale());
+        let head = HeadFrame::of(surface, &def.face.layout);
         return Ok(head_point(&head, point));
     }
     let nearest = nearest_group(&output.meshes, point, category);

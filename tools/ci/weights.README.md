@@ -4,6 +4,15 @@ Estimated seconds of wall time one crate adds to a CI test job (compile of the w
 the dependency cache warm), used by `cargo xtask check --format json` (`xtask/src/report.rs`) to balance the test jobs.
 Crates not listed weigh `default`.
 
+## `omuzaki-stage` (2026-10-31, issue #2300)
+
+`omuzaki-stage` was 137; it is now 1470. Measured on `test (5)` of PR #2704's run 41169003419, whose first nextest call
+was `omuzaki-app omuzaki-short omuzaki-stage omuzaki-test-char`: about 460 s from the first workspace `Compiling` line to
+`Starting 1071 tests`, plus a 1006 s `Summary`, with 833 of the tests (1984 of 2047 test-seconds) in `omuzaki-stage`'s
+render tests. At 137 the packer put that call and the `omuzaki-char` partition with the outfit suites in one shard, which
+was cancelled at the 45-minute cap three times with every finished test passing. The other three crates keep their
+numbers.
+
 ## Current numbers (2026-10-15, issue #2118)
 
 Measured on the six test jobs of merge-queue run 38810711080 (24 affected crates). For every `cargo nextest run` call:

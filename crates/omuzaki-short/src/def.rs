@@ -121,6 +121,10 @@ pub struct ShortDef {
     /// to [`MAX_HANDHELD`]. A shot's `shake` comes on top.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub handheld: f32,
+    /// How the body moves on its own while the face talks (the living body's dials, every amount `0..=2`): `gestures
+    /// = 0` keeps the hands still, `amount = 0` leaves only the head, the lean and the breath. As tuned when left out.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub body: omuzaki_anim_api::BodyStyle,
 }
 
 /// The most handheld drift a short may ask for.
@@ -288,6 +292,17 @@ pub struct CaptionsDef {
     /// Whether a caption pops in slightly larger and settles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pop: Option<bool>,
+    /// How long a caption takes to fade in, seconds, `0..=1` (0 to appear at once).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fade: Option<f32>,
+    /// How fast a caption drifts up while it shows, as a share of the frame height per second, `-0.5..=0.5`
+    /// (negative drifts down; 0 holds still).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rise: Option<f32>,
+    /// The widest a caption may be, as a share of the frame width, `0.3..=1`; a longer phrase is drawn smaller to
+    /// fit (0.9 when left out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<f32>,
     /// The letters' colour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill: Option<Colour>,
@@ -346,6 +361,9 @@ impl Default for CaptionsDef {
             outline: None,
             shadow: None,
             pop: None,
+            fade: None,
+            rise: None,
+            width: None,
             fill: None,
             line: None,
         }
@@ -391,6 +409,9 @@ pub struct LineDef {
     /// The caption's text when it differs from what is said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caption_text: Option<String>,
+    /// Where this line's caption sits, as a share of the frame height from the top; `[captions] y` when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption_y: Option<f32>,
     /// Seconds of quiet after the line.
     #[serde(default = "default_pause")]
     pub pause: f32,
@@ -413,6 +434,7 @@ impl LineDef {
             camera: None,
             caption: CaptionStyle::Normal,
             caption_text: None,
+            caption_y: None,
             pause: default_pause(),
             at: None,
             duration: None,
@@ -692,6 +714,7 @@ impl ShortDef {
             cues: Vec::new(),
             inserts: Vec::new(),
             handheld: 1.0,
+            body: omuzaki_anim_api::BodyStyle::default(),
         }
     }
 
@@ -756,6 +779,9 @@ impl ShortDef {
             ("captions.weight", captions.weight, CAPTION_WEIGHT_MIN..=CAPTION_WEIGHT_MAX),
             ("captions.outline", captions.outline, 0.0..=0.3),
             ("captions.shadow", captions.shadow, 0.0..=1.0),
+            ("captions.fade", captions.fade, 0.0..=1.0),
+            ("captions.rise", captions.rise, -0.5..=0.5),
+            ("captions.width", captions.width, 0.3..=1.0),
         ] {
             if let Some(value) = value
                 && !range.contains(&value)
@@ -783,6 +809,14 @@ impl ShortDef {
         }
         if !(0.0..=MAX_HANDHELD).contains(&self.handheld) {
             return Err(ShortError::invalid("handheld", format!("{} is outside 0 to {MAX_HANDHELD}", self.handheld)));
+        }
+        for (name, value) in self.body.amounts() {
+            if !(0.0..=omuzaki_anim_api::MAX_BODY_AMOUNT).contains(&value) {
+                return Err(ShortError::invalid(
+                    format!("body.{name}"),
+                    format!("{value} is outside 0 to {}", omuzaki_anim_api::MAX_BODY_AMOUNT),
+                ));
+            }
         }
         if self.cues.len() > MAX_CUES {
             return Err(ShortError::invalid("cue", format!("{} cues; at most {MAX_CUES}", self.cues.len())));
@@ -815,6 +849,11 @@ fn check_line(i: usize, line: &LineDef) -> Result<(), ShortError> {
     }
     if line.text.chars().count() > MAX_TEXT {
         return Err(ShortError::invalid(field("text"), format!("at most {MAX_TEXT} characters")));
+    }
+    if let Some(y) = line.caption_y
+        && !(0.05..=0.95).contains(&y)
+    {
+        return Err(ShortError::invalid(field("caption_y"), format!("{y} is outside 0.05 to 0.95")));
     }
     if !(0.0..=10.0).contains(&line.pause) {
         return Err(ShortError::invalid(field("pause"), format!("{} s is outside 0 to 10", line.pause)));
@@ -991,6 +1030,17 @@ text = "Second line."
         let shaky = text.replace("handheld = 0.0", "handheld = 9.0");
         assert!(ShortDef::from_toml(&shaky).unwrap_err().to_string().contains("handheld"));
         assert!(!ShortDef::from_toml(SAMPLE).unwrap().to_toml().unwrap().contains("handheld"), "the default stays out");
+    }
+
+    #[test]
+    fn reads_the_body_dials_and_checks_them() {
+        let still = ShortDef::from_toml(&format!("{SAMPLE}\n[body]\ngestures = 0.0\nfidgets = 0.0\n")).unwrap();
+        assert!(still.body.gestures.abs() < f32::EPSILON && still.body.fidgets.abs() < f32::EPSILON);
+        assert!((still.body.sway - 1.0).abs() < f32::EPSILON, "what it leaves out stays as tuned");
+        assert_eq!(ShortDef::from_toml(&still.to_toml().unwrap()).unwrap(), still);
+        let wild = ShortDef::from_toml(&format!("{SAMPLE}\n[body]\narms = 3.0\n"));
+        assert!(wild.unwrap_err().to_string().contains("body.arms"));
+        assert!(!ShortDef::from_toml(SAMPLE).unwrap().to_toml().unwrap().contains("[body]"), "the default stays out");
     }
 
     #[test]

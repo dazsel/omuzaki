@@ -95,6 +95,10 @@ pub trait StageMember: FrameLoop + sealed::Sealed {
     /// The scene's transform of this member: what [`FrameLoop::set_subject_root`] last set.
     fn subject_root(&self) -> Mat4;
 
+    /// The lift that stands the body on its lowest point (`frame::stand_lift`), which its frame's root ends with: a
+    /// root the cast hands the body (its hand goals' space, its partner's) is `subject_root * input.root * stand`.
+    fn stand(&self) -> Mat4;
+
     /// Keeps the body's arms out of another member's `parts` (world space) from the next frame, the body standing at
     /// `root` then; an empty slice clears them. Allocation-free.
     fn set_partner_parts(&mut self, parts: &[Obstacle], root: Mat4);
@@ -129,6 +133,9 @@ impl StageMember for Stage {
     }
     fn subject_root(&self) -> Mat4 {
         self.subject_root_now()
+    }
+    fn stand(&self) -> Mat4 {
+        self.stand_now()
     }
     fn set_partner_parts(&mut self, parts: &[Obstacle], root: Mat4) {
         Stage::set_partner_parts(self, parts, root);
@@ -165,6 +172,9 @@ impl StageMember for AvatarStage {
     }
     fn subject_root(&self) -> Mat4 {
         self.subject_root_now()
+    }
+    fn stand(&self) -> Mat4 {
+        self.stand_now()
     }
     fn set_partner_parts(&mut self, parts: &[Obstacle], root: Mat4) {
         AvatarStage::set_partner_parts(self, parts, root);
@@ -223,6 +233,12 @@ impl StageMember for AnyStage {
         match self {
             Self::Kit(stage) => stage.subject_root_now(),
             Self::Avatar(stage) => stage.subject_root_now(),
+        }
+    }
+    fn stand(&self) -> Mat4 {
+        match self {
+            Self::Kit(stage) => stage.stand_now(),
+            Self::Avatar(stage) => stage.stand_now(),
         }
     }
     fn set_partner_parts(&mut self, parts: &[Obstacle], root: Mat4) {
@@ -552,10 +568,11 @@ impl<M: StageMember> CastStage<M> {
             let root_b_input = self.input_of(b).map_or(Mat4::IDENTITY, |input| input.root);
             if let Some(stage) = self.member_mut(b) {
                 stage.set_subject_root(moved);
-                stage.set_partner_parts(&parts_a[..na], moved * root_b_input);
+                let root = moved * root_b_input * stage.stand();
+                stage.set_partner_parts(&parts_a[..na], root);
             }
             if let Some(stage) = self.member_mut(a) {
-                let root = stage.subject_root() * root_a;
+                let root = stage.subject_root() * root_a * stage.stand();
                 stage.set_partner_parts(&parts_b[..nb], root);
             }
         }
@@ -571,6 +588,7 @@ impl<M: StageMember> CastStage<M> {
         id: &MemberId,
         input: &FrameInput,
         subject_root: Mat4,
+        stand: Mat4,
     ) -> Option<&'a FrameInput> {
         let mut any = false;
         for touch in touches {
@@ -585,7 +603,7 @@ impl<M: StageMember> CastStage<M> {
                 scratch.clone_from(input);
                 any = true;
             }
-            let root = subject_root * input.root;
+            let root = subject_root * input.root * stand;
             interact::apply(&touch.overlays[half], touch.weight, root, palm, &mut scratch.pose, &mut scratch.goals);
         }
         any.then_some(&*scratch)
@@ -652,6 +670,7 @@ impl<M: StageMember> CastStage<M> {
             &self.lead_id,
             &self.lead_input,
             self.lead.subject_root(),
+            self.lead.stand(),
         )
         .unwrap_or(&self.lead_input);
         let prepared = match pass {
@@ -663,10 +682,17 @@ impl<M: StageMember> CastStage<M> {
         for member in &mut self.members {
             member.input.dt = self.lead_input.dt;
             member.input.time = self.lead_input.time;
-            let root = member.stage.subject_root();
-            let input =
-                Self::touched_input(&self.touches, &self.palm, &mut self.touched, &member.id, &member.input, root)
-                    .unwrap_or(&member.input);
+            let (root, stand) = (member.stage.subject_root(), member.stage.stand());
+            let input = Self::touched_input(
+                &self.touches,
+                &self.palm,
+                &mut self.touched,
+                &member.id,
+                &member.input,
+                root,
+                stand,
+            )
+            .unwrap_or(&member.input);
             let prepared = match pass {
                 Pass::Tick => member.stage.prepare(renderer, input),
                 Pass::Redraw => member.stage.prepare_redraw(renderer, input),

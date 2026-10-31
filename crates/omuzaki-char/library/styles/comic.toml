@@ -1,0 +1,94 @@
+# Comic: the inked Western comic book, on the tall template (7.5 heads).
+#
+# Smaller, narrower eyes with a small iris and a pin of light, a heavy inked crease and lower lid, no strand lashes;
+# thick, shaped brows; a long drawn nose with a strong shadow; a wide mouth; cheekbones hatched in. A heroic build:
+# broad shoulders, muscle, long legs. Shaded with the `comic-halftone` look: hard cel, heavy
+# ink lines, halftone dots and hatching in the shade, on paper.
+id = "comic"
+name = "Comic"
+family = "western"
+summary = "Inked comic book: narrow eyes under a heavy crease, thick brows, a long shadowed nose, a wide mouth and a heroic build, in halftone-printed cel."
+origin = "Design target: the Western comic-book drawing conventions (smaller eyes with a heavy crease and lower lid, anatomical noses and mouths drawn with shadow shapes, heroic proportions near eight heads), tuned by eye on the kit's own renders; no traced likeness."
+templates = ["tall"]
+profile = "egg-oval"
+hair = "messy-short"
+look = "comic-halftone"
+shading = 1.0
+
+[face.layout]
+eye_width = 0.042
+eye_spacing = 0.084
+brow_gap = 0.055
+
+[face.eyes]
+scale = 0.86
+lid_shadow = 0.7
+
+[face.eyes.aperture]
+roundness = 0.32
+upper_height = 0.55
+lower_depth = 0.45
+tilt = 0.05
+inner_sharpness = 0.9
+outer_bluntness = 0.3
+
+[face.eyes.iris]
+width = 0.45
+height = 0.56
+drop = 0.04
+
+[face.eyes.highlights]
+shape = "blob"
+size = 0.12
+shimmer = 0.0
+second = 0.0
+caustic = 0.0
+extra = []
+
+[face.eyes.lash]
+thickness = 0.008
+flick = 0.15
+lower = 0.1
+inner_tick = false
+
+[face.eyes.lash.strands]
+upper = { count = 0 }
+lower = { count = 0 }
+
+[face.eyes.lower_lid]
+line = 0.8
+
+[face.eyes.crease]
+strength = 0.9
+lift = 0.35
+
+[face.mouth]
+half_width = 0.017
+
+[face.mouth.lips]
+strength = 0.4
+
+[face.nose]
+kind = "tick"
+size = 2.0
+shadow = 0.75
+
+[face.cheeks]
+kind = "hatched"
+contour = 0.5
+
+[face.brows]
+thickness = 0.004
+arch = 0.005
+
+[body]
+hands = "five_finger"
+
+[body.proportions]
+neck_length = 1.2
+shoulder_width = 1.12
+
+[body.shape]
+height = 0.7
+musculature = 0.55
+shoulder_hip = 0.45

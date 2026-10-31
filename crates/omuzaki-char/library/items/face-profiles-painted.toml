@@ -1,0 +1,23 @@
+schema = 1
+id = "omuzaki/face-profiles/painted"
+version = "1.0.0"
+section = "face-profiles"
+kind = "setting"
+target = "character"
+title = "Painted"
+summary = "Soft 2D painted illustration: glowing round eyes, a nose and mouth modelled by light rather than lines, a painted blush and soft volume."
+tags = ["face", "style", "anime", "painted"]
+origin = "the kit's painted art style (#2696)"
+compat = { kinds = ["humanoid"], requires = ["head", "body"] }
+
+[rights]
+author = "Omuzaki"
+licence = "CC0-1.0"
+commercial = "ok"
+owned = true
+
+[[step]]
+op = "character.set_style"
+[step.args]
+character = "$character"
+style = "painted"
