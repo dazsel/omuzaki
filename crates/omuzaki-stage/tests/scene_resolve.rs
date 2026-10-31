@@ -260,7 +260,7 @@ fn an_error_leaves_the_last_resolve_in_place() {
 }
 
 fn dof(focus: Focus) -> DepthOfFieldDef {
-    DepthOfFieldDef { focus, range: 0.5, max_blur: 0.02 }
+    DepthOfFieldDef { focus, range: 0.5, max_blur: 0.02, bokeh: 0.0, bokeh_threshold: None }
 }
 
 #[test]
@@ -286,10 +286,7 @@ fn each_row_of_the_mapping() {
     assert_eq!(out.post.bloom, Some(Bloom { strength: 0.4, radius: 0.3, threshold: 0.8 }));
     assert_eq!(out.post.grain, Some(FilmGrain { strength: 0.1 }));
     assert_eq!(out.post.grade, Some(ColourGrade { saturation: 1.2, contrast: 0.9 }));
-    assert_eq!(
-        out.post.depth_of_field,
-        Some(DepthOfField { focus_distance: 3.0, focus_range: 0.5 * h, max_blur: 0.02 })
-    );
+    assert_eq!(out.post.depth_of_field, Some(DepthOfField::new(3.0, 0.5 * h, 0.02)));
     assert_eq!(out.outline_light, 0.6);
     assert_eq!(out.skin_floor, Some(0.35));
     assert_eq!((out.ground.kind, out.ground.opacity, out.ground.radius_m), (GroundKind::Shadow, 0.5, 2.0 * h));

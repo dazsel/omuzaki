@@ -6,7 +6,7 @@
 use bytemuck::{Pod, Zeroable};
 use omuzaki_core::glam::{Mat3, Mat4, UVec2, Vec2, Vec3};
 use omuzaki_render_api::limits::MAX_LIGHTS;
-use omuzaki_render_api::{Fog, Instance, Light, Projection, Scene};
+use omuzaki_render_api::{Fog, Instance, Light, Projection, Scene, Smear};
 
 /// `Light.vector.w` for each kind (`LIGHT_*` in the shader).
 mod light_kind {
@@ -70,6 +70,8 @@ pub(crate) struct InstanceUniform {
 
 /// `Instance.skin.y` bit: the vertex shader skins this instance.
 pub(super) const INSTANCE_SKINNED: u32 = 1;
+/// `Instance.skin.y` bit: the vertex shader smears this skinned instance along its trailing pose.
+pub(super) const INSTANCE_SMEAR: u32 = 2;
 
 /// Packs the camera, lights and look for a frame drawn at `internal` size, with the picture moved by `jitter` pixels
 /// (x right, y down; a supersampling round's offset, zero otherwise).
@@ -195,15 +197,28 @@ pub(crate) fn instance_uniform(instance: &Instance, skinned: bool) -> InstanceUn
     // A flattened instance (scale 0) has no inverse; its normals are meaningless, so keep them finite.
     let normal = if linear.determinant() == 0.0 { Mat3::IDENTITY } else { linear.inverse().transpose() };
     let column = |v: Vec3| [v.x, v.y, v.z, 0.0];
-    let (first_joint, flags) = match instance.skin {
-        Some(range) if skinned => (range.start, INSTANCE_SKINNED),
-        _ => (0, 0),
+    let skin = match (instance.skin, instance.smear) {
+        (Some(range), Some(smear)) if skinned => {
+            [range.start, INSTANCE_SKINNED | INSTANCE_SMEAR, smear.trail.start, smear_params(&smear)]
+        }
+        (Some(range), _) if skinned => [range.start, INSTANCE_SKINNED, 0, 0],
+        _ => [0; 4],
     };
     InstanceUniform {
         model: model.to_cols_array_2d(),
         normal: [column(normal.x_axis), column(normal.y_axis), column(normal.z_axis)],
-        skin: [first_joint, flags, 0, 0],
+        skin,
     }
+}
+
+/// A smear's amount, threshold and jag as the shader's `unpack4x8unorm` reads them: each scaled to `0..=1` by its
+/// range and rounded to a byte.
+fn smear_params(smear: &Smear) -> u32 {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 0..=255 first
+    let byte = |v: f32, max: f32| u32::from((v / max).clamp(0.0, 1.0).mul_add(255.0, 0.5) as u8);
+    byte(smear.amount, Smear::MAX_AMOUNT)
+        | (byte(smear.threshold, Smear::MAX_THRESHOLD) << 8)
+        | (byte(smear.jag, 1.0) << 16)
 }
 
 /// True if the instance's transform flips triangle winding, so its front face must be declared clockwise.
@@ -336,6 +351,9 @@ mod tests {
         inst.skin = Some(JointRange { start: 5, len: 2 });
         assert_eq!(instance_uniform(&inst, true).skin, [5, INSTANCE_SKINNED, 0, 0]);
         assert_eq!(instance_uniform(&inst, false).skin, [0, 0, 0, 0], "a rigid mesh ignores the range");
+        inst.smear = Some(Smear { threshold: 0.1, jag: 1.0, ..Smear::new(JointRange { start: 7, len: 2 }, 2.0) });
+        assert_eq!(instance_uniform(&inst, true).skin, [5, INSTANCE_SKINNED | INSTANCE_SMEAR, 7, 0x00ff_80ff]);
+        assert_eq!(instance_uniform(&inst, false).skin, [0, 0, 0, 0], "a rigid mesh does not smear");
     }
 
     #[test]

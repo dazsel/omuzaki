@@ -211,6 +211,25 @@ impl Shape {
         self
     }
 
+    /// A blade along `at`'s +Y from its base at the origin: a lozenge cross-section `width` across (x) and `thickness`
+    /// deep (z), double-edged, its last `point` metres tapering to a tip, curving toward +X by `curve` metres at the tip
+    /// (a sabre), flat-shaded so its bevels catch the light. Closed at the base.
+    #[allow(clippy::too_many_arguments, reason = "a blade's shape is these numbers")]
+    pub fn blade(
+        &mut self,
+        at: At,
+        length: f32,
+        width: f32,
+        thickness: f32,
+        point: f32,
+        curve: f32,
+        colour: Colour,
+    ) -> &mut Self {
+        let (positions, normals, uvs, indices) = blade(length, width, thickness, point, curve);
+        self.append(at, colour, &positions, &normals, &uvs, &indices);
+        self
+    }
+
     /// A thin leaf: a lens-shaped blade of `length` and `width` along `at`'s +Y, bent forward by `curl` metres at its
     /// tip, with two sides so it reads from behind.
     pub fn leaf(&mut self, at: At, length: f32, width: f32, curl: f32, colour: Colour) -> &mut Self {
@@ -221,6 +240,64 @@ impl Shape {
 }
 
 type Solid = (Vec<Vec3>, Vec<Vec3>, Vec<Vec2>, Vec<u32>);
+
+/// See [`Shape::blade`]. Stations up the blade, each a lozenge (edge +x, spine +z, edge -x, spine -z), joined face by
+/// face; the last station is the tip, a point.
+fn blade(length: f32, width: f32, thickness: f32, point: f32, curve: f32) -> Solid {
+    const STATIONS: u16 = 12;
+    let point = point.clamp(0.0, length);
+    let station = |i: u16| {
+        let y = length * f32::from(i) / f32::from(STATIONS);
+        let into_point = if point > 0.0 { ((y - (length - point)) / point).clamp(0.0, 1.0) } else { 0.0 };
+        // The point narrows on a gentle ogive, the spine keeping some thickness until near the tip.
+        let narrow = 1.0 - into_point * into_point.sqrt();
+        let half = Vec2::new(width * 0.5 * narrow, thickness * 0.5 * (1.0 - into_point * into_point));
+        let bend = curve * (y / length.max(1e-6)).powi(2);
+        let centre = Vec3::new(bend, y, 0.0);
+        [
+            centre + Vec3::new(half.x, 0.0, 0.0),
+            centre + Vec3::new(0.0, 0.0, half.y),
+            centre + Vec3::new(-half.x, 0.0, 0.0),
+            centre + Vec3::new(0.0, 0.0, -half.y),
+        ]
+    };
+    let mut solid: Solid = Default::default();
+    let outward = |k: usize| match k {
+        0 => Vec3::new(1.0, 0.0, 1.0),
+        1 => Vec3::new(-1.0, 0.0, 1.0),
+        2 => Vec3::new(-1.0, 0.0, -1.0),
+        _ => Vec3::new(1.0, 0.0, -1.0),
+    };
+    // The tip: the last station's centre (with no point, a flat end fanned from it).
+    let tip = Vec3::new(curve, length, 0.0);
+    for i in 0..STATIONS {
+        let (low, high) = (station(i), station(i + 1));
+        for k in 0..4 {
+            let j = (k + 1) % 4;
+            if i + 1 == STATIONS {
+                // The last span closes on the tip: one triangle a face.
+                let mut tri = [low[k], low[j], tip];
+                if (tri[1] - tri[0]).cross(tri[2] - tri[0]).dot(outward(k)) < 0.0 {
+                    tri.swap(1, 2);
+                }
+                let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or(outward(k).normalize());
+                let base = u32::try_from(solid.0.len()).unwrap_or(0);
+                for p in tri {
+                    solid.0.push(p);
+                    solid.1.push(normal);
+                    solid.2.push(Vec2::new(0.5, 1.0));
+                }
+                solid.3.extend([base, base + 1, base + 2]);
+            } else {
+                quad_into(&mut solid, [low[k], low[j], high[j], high[k]], outward(k));
+            }
+        }
+    }
+    // The base: the first lozenge, facing down.
+    let base_ring = station(0);
+    quad_into(&mut solid, [base_ring[0], base_ring[1], base_ring[2], base_ring[3]], Vec3::NEG_Y);
+    solid
+}
 
 fn quad_into(solid: &mut Solid, corners: [Vec3; 4], outward: Vec3) {
     let wound = (corners[1] - corners[0]).cross(corners[2] - corners[0]).dot(outward) > 0.0;

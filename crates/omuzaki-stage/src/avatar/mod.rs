@@ -34,6 +34,7 @@ use self::upload::AvatarUpload;
 use crate::error::StageError;
 use crate::frame::face::SETTLE_DT;
 use crate::frame::rig::RigFrame;
+use crate::frame::smear::Trails;
 use crate::frame::squash::Jelly;
 use crate::frame::timing::Holds;
 use crate::frame::{FrameInput, FrameOutput, Prepared, StageClock};
@@ -78,6 +79,8 @@ pub struct AvatarStage {
     holds: Holds,
     /// The scene's squash and stretch of the drawn body (`scene.squash`).
     squash: Jelly,
+    /// The body's recent palettes, for the scene's smear frames (`scene.smears`).
+    trails: Trails,
 }
 
 impl AvatarStage {
@@ -147,6 +150,7 @@ impl AvatarStage {
             clock,
             holds: Holds::default(),
             squash: Jelly::default(),
+            trails: Trails::default(),
         })
     }
 
@@ -211,7 +215,7 @@ impl AvatarStage {
             let hips = avatar_bone_world(&self.avatar, &self.rig, self.root, HumanoidBone::Hips);
             self.squash.step(tick.time.0, hips.map_or(f32::NAN, |m| m.w_axis.y));
         }
-        self.prepare_draw(renderer, input, tick, hold.face)
+        self.prepare_draw(renderer, input, tick, hold.face, true)
     }
 
     /// Everything [`redraw`](Self::redraw) does before the render.
@@ -220,7 +224,7 @@ impl AvatarStage {
         renderer: &mut dyn Renderer,
         input: &FrameInput,
     ) -> Result<Prepared, StageError> {
-        self.prepare_draw(renderer, input, self.tick, true)
+        self.prepare_draw(renderer, input, self.tick, true, false)
     }
 
     /// Renders the pose the last [`tick`](Self::tick) left with `input`'s channels, for a still that differs from the
@@ -229,7 +233,7 @@ impl AvatarStage {
     /// # Errors
     /// As [`tick`](Self::tick).
     pub fn redraw(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
-        let prepared = self.prepare_draw(renderer, input, self.tick, true)?;
+        let prepared = self.prepare_draw(renderer, input, self.tick, true, false)?;
         self.submit(renderer, prepared, "the still")
     }
 
@@ -251,13 +255,14 @@ impl AvatarStage {
     }
 
     /// Step 4: expressions (when `face` moves this frame; a held face keeps the last weights) and the scene, ready to
-    /// render.
+    /// render, smeared along the trail; `record` keeps the frame for later frames' smears (a tick, not a redraw).
     fn prepare_draw(
         &mut self,
         renderer: &mut dyn Renderer,
         input: &FrameInput,
         tick: Tick,
         face: bool,
+        record: bool,
     ) -> Result<Prepared, StageError> {
         let uploads = if face {
             self.evaluator.evaluate(&input.channels, &mut self.weights, &mut self.binds);
@@ -267,6 +272,13 @@ impl AvatarStage {
         };
         let root = self.squash.matrix(self.root.w_axis.truncate()) * self.root;
         self.plan.fill(&mut self.scene, self.rig.world(), &self.weights, root);
+        let own = self.scene.joints.len();
+        if let Some((past, carry)) = self.trails.trail(tick.time.0, root) {
+            AvatarPlan::smear(&mut self.scene, past, carry, &self.trails);
+        }
+        if record {
+            self.trails.push(tick.time.0, &self.scene.joints[..own], root);
+        }
         self.ground.push(&mut self.scene);
         let (avatar, rig) = (&self.avatar, &self.rig);
         self.props.push(&mut self.scene, &|bone| avatar_bone_world(avatar, rig, root, bone));
@@ -311,6 +323,7 @@ impl AvatarStage {
         self.props.take(&resolved.props);
         self.holds.set(resolved.timing);
         self.squash.set(resolved.squash);
+        self.trails.set(resolved.smears);
         self.set_subject_root(subject_root);
         owed
     }

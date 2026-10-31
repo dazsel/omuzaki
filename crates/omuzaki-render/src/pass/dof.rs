@@ -9,6 +9,13 @@
 //! sharp scene with the gathered image by the blur width, so the in-focus part of the picture is never softened by the
 //! half-size images.
 //!
+//! **Bokeh** (`DepthOfField::bokeh`, #2714). A gather averages, so a small light out of focus turns into a dim haze of the
+//! few taps that hit it; a lens draws it as a crisp disc. With bokeh on, what is brighter than `bokeh_threshold` in a
+//! blurred pixel leaves the gather, and a fourth pass, before the gather, scatters it: one quad per 2x2 block of the
+//! prepass image, as wide as the block's blur, drawn as a disc into an image of its own, light and coverage summed. The
+//! gather adds the discs' mean light over each pixel, dimmed for a light smaller than a few blocks so a speck stays a speck,
+//! times `bokeh`. Sharp pixels never read the discs, so they are untouched; with bokeh 0 nothing of it runs.
+//!
 //! The model is a thin lens with a flat sharp zone (`DepthOfField::focus_range`): blur grows with the distance from the
 //! zone divided by the distance from the camera, so a far wall blurs to at most `max_blur` and things very close blur
 //! hard. `max_blur` is a fraction of the image height, so the look is the same at every `render_scale`.
@@ -101,7 +108,9 @@ struct Params {
     depth_samples: u32,
     colour_taps: u32,
     tile: i32,
-    padding: [u32; 3],
+    bokeh: f32,
+    bokeh_threshold: f32,
+    padding: u32,
 }
 
 /// What a frame asks of the pass, after sanitising: the look in the units the shader wants.
@@ -110,6 +119,9 @@ struct Request {
     half_range: f32,
     /// The largest blur radius in pixels of the half-size images.
     max_coc: f32,
+    /// The gain of the highlight discs (0 draws none) and what counts as a highlight.
+    bokeh: f32,
+    bokeh_threshold: f32,
 }
 
 impl Request {
@@ -166,7 +178,13 @@ fn requested(cx: &PassCx<'_>) -> Option<Request> {
     let height = cx.frame.target_size.y as f32;
     let max_coc = finite(look.max_blur).clamp(0.0, MAX_BLUR) * height * 0.5;
     let on = cx.frame.quality.post_effects.depth_of_field && finite(look.focus_distance) > 0.0 && max_coc >= MIN_REACH;
-    on.then(|| Request { focus: look.focus_distance, half_range: finite(look.focus_range).max(0.0) * 0.5, max_coc })
+    on.then(|| Request {
+        focus: look.focus_distance,
+        half_range: finite(look.focus_range).max(0.0) * 0.5,
+        max_coc,
+        bokeh: finite(look.bokeh).clamp(0.0, Look::MAX_BOKEH),
+        bokeh_threshold: finite(look.bokeh_threshold).max(0.0),
+    })
 }
 
 /// The depth-buffer-to-distance coefficients of a projection: with `d` the stored depth,
@@ -178,9 +196,10 @@ fn depth_coefficients(projection: &omuzaki_core::glam::Mat4) -> [f32; 4] {
 /// The group-0 layout of the tiles, the gather and `Resolve`: an image, a bilinear sampler and a second image (the `CoC`, or the blur width). The same function
 /// builds it for both, so the two are the same layout.
 pub(super) fn layers_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    // The bokeh scatter reads the prepass's images in its vertex stage.
     let texture = |binding| wgpu::BindGroupLayoutEntry {
         binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
+        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
         ty: wgpu::BindingType::Texture {
             sample_type: wgpu::TextureSampleType::Float { filterable: true },
             view_dimension: wgpu::TextureViewDimension::D2,
@@ -194,7 +213,7 @@ pub(super) fn layers_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
             texture(0),
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
@@ -213,6 +232,8 @@ struct Layers {
     /// The foreground reach of each block of the request's tile size in half-size pixels, in the corner of an image sized
     /// for the smallest tile.
     tiles: wgpu::TextureView,
+    /// The highlight discs (light and coverage summed), half size: drawn before the gather, which adds them.
+    bokeh: wgpu::TextureView,
     /// The gather's result and the blur width it used, half size.
     blurred: wgpu::TextureView,
     reach: wgpu::TextureView,
@@ -248,6 +269,7 @@ impl Layers {
         let colour = image("dof colour", SCENE_FORMAT, half);
         let coc = image("dof coc", COC_FORMAT, half);
         let tiles = image("dof tiles", COC_FORMAT, tile_size);
+        let bokeh = image("dof bokeh", SCENE_FORMAT, half);
         let blurred = image("dof blurred", SCENE_FORMAT, half);
         let reach = image("dof reach", COC_FORMAT, half);
         let sampler = &shared.defaults.linear_clamp;
@@ -279,7 +301,10 @@ impl Layers {
         let tiles_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("dof tiles"),
             layout: &dof.tiles_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&tiles) }],
+            entries: &[
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&tiles) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&bokeh) },
+            ],
         });
         Self {
             size,
@@ -290,6 +315,7 @@ impl Layers {
             colour,
             coc,
             tiles,
+            bokeh,
             blurred,
             reach,
             params,
@@ -307,6 +333,8 @@ struct Pipelines {
     tiles: Option<wgpu::RenderPipeline>,
     /// Indexed by `[packed]`.
     gather: [Option<wgpu::RenderPipeline>; 2],
+    /// The highlight discs, indexed by `[packed]`.
+    bokeh: [Option<wgpu::RenderPipeline>; 2],
 }
 
 /// See the module docs.
@@ -315,7 +343,8 @@ pub(crate) struct DepthOfField {
     params_layout: wgpu::BindGroupLayout,
     /// The gather's spiral ([`spiral_table`]), bound with the params of every size's images.
     spiral: wgpu::Buffer,
-    /// How the gather reads the tiles (binding 1, beside the prepass's depth at binding 0 of the same group index).
+    /// How the gather reads the tiles (binding 1, beside the prepass's depth at binding 0 of the same group index) and the
+    /// bokeh (binding 2).
     tiles_layout: wgpu::BindGroupLayout,
     pipelines: Pipelines,
     layers: Vec<Layers>,
@@ -331,7 +360,7 @@ impl DepthOfField {
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
@@ -358,8 +387,8 @@ impl DepthOfField {
             }),
             tiles_layout: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("dof tiles"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 1,
+                entries: &[1, 2].map(|binding| wgpu::BindGroupLayoutEntry {
+                    binding,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
@@ -367,7 +396,7 @@ impl DepthOfField {
                         multisampled: false,
                     },
                     count: None,
-                }],
+                }),
             }),
             pipelines: Pipelines::default(),
             layers: Vec::with_capacity(CACHED_SIZES),
@@ -416,6 +445,55 @@ impl DepthOfField {
         })
     }
 
+    /// The highlight discs: `vs_bokeh` places a quad per block of the prepass image, `fs_bokeh` draws its disc, summed (light
+    /// and coverage) into the bokeh image the gather then reads.
+    fn bokeh_pipeline(
+        device: &wgpu::Device,
+        module: &wgpu::ShaderModule,
+        groups: &[&wgpu::BindGroupLayout],
+        packed: bool,
+    ) -> wgpu::RenderPipeline {
+        let layouts: Vec<Option<&wgpu::BindGroupLayout>> = groups.iter().copied().map(Some).collect();
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("dof bokeh"),
+            bind_group_layouts: &layouts,
+            immediate_size: 0,
+        });
+        let constants = [("packed", f64::from(u8::from(packed)))];
+        let options = wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() };
+        let add = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        };
+        let blend = wgpu::BlendState { color: add, alpha: add };
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("dof bokeh"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module,
+                entry_point: Some("vs_bokeh"),
+                compilation_options: options.clone(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module,
+                entry_point: Some("fs_bokeh"),
+                compilation_options: options,
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: SCENE_FORMAT,
+                    blend: Some(blend),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    }
+
     /// Compiles whatever this frame needs that is not built yet.
     fn build_pipelines(&mut self, shared: &Shared, multisampled: bool, packed: bool) {
         let device = &shared.gpu.device;
@@ -429,7 +507,10 @@ impl DepthOfField {
         };
         let colour_input = &shared.layouts.colour_input;
         let kind = usize::from(packed);
-        if self.pipelines.tiles.is_none() || self.pipelines.gather[kind].is_none() {
+        if self.pipelines.tiles.is_none()
+            || self.pipelines.gather[kind].is_none()
+            || self.pipelines.bokeh[kind].is_none()
+        {
             // Neither of these reads depth; the single-sample module is the cheaper one to compile them from.
             let module = module("texture_depth_2d");
             let layers = [&self.layers_layout, &self.params_layout];
@@ -445,6 +526,9 @@ impl DepthOfField {
                     &[SCENE_FORMAT, COC_FORMAT],
                     packed,
                 ));
+            }
+            if self.pipelines.bokeh[kind].is_none() {
+                self.pipelines.bokeh[kind] = Some(Self::bokeh_pipeline(device, &module, &layers, packed));
             }
         }
         let (depth_type, layout) = if multisampled {
@@ -524,7 +608,9 @@ fn frame_params(cx: &PassCx<'_>, request: &Request, half: UVec2) -> Params {
         depth_samples: detail.depth_samples(cx.frame.samples > 1, cx.frame.samples),
         colour_taps: reduction_taps(scale),
         tile: i32::try_from(request.tile()).unwrap_or(i32::MAX),
-        padding: [0; 3],
+        bokeh: request.bokeh,
+        bokeh_threshold: request.bokeh_threshold,
+        padding: 0,
     }
 }
 
@@ -541,10 +627,11 @@ impl FramePass for DepthOfField {
         self.build_pipelines(shared, multisampled, packed);
         let at = self.layers_for(shared, cx.frame.target_size);
         let kind = usize::from(packed);
-        let (Some(prepass), Some(tiles), Some(gather), Some(layers)) = (
+        let (Some(prepass), Some(tiles), Some(gather), Some(bokeh), Some(layers)) = (
             &self.pipelines.prepass[usize::from(multisampled)][kind],
             &self.pipelines.tiles,
             &self.pipelines.gather[kind],
+            &self.pipelines.bokeh[kind],
             self.layers.get(at),
         ) else {
             return Err(RenderError::Backend("depth of field: the pipelines or images were not built".into()));
@@ -574,6 +661,16 @@ impl FramePass for DepthOfField {
         pass.set_bind_group(1, &layers.params_group, &[]);
         pass.draw(0..3, 0..1);
         drop(pass);
+        let mut draws = 3;
+        if request.bokeh > 0.0 {
+            let mut pass = begin(cx.encoder, "dof bokeh", &[Some(clear_to(&layers.bokeh))]);
+            pass.set_pipeline(bokeh);
+            pass.set_bind_group(0, &layers.gather_input, &[]);
+            pass.set_bind_group(1, &layers.params_group, &[]);
+            pass.draw(0..6, 0..layers.half.x.div_ceil(2) * layers.half.y.div_ceil(2));
+            drop(pass);
+            draws += 1;
+        }
         let mut pass =
             begin(cx.encoder, "dof gather", &[Some(clear_to(&layers.blurred)), Some(clear_to(&layers.reach))]);
         pass.set_pipeline(gather);
@@ -582,9 +679,8 @@ impl FramePass for DepthOfField {
         pass.set_bind_group(2, &layers.tiles_group, &[]);
         pass.draw(0..3, 0..1);
         drop(pass);
-
         cx.attachments.post.depth_of_field = Some(layers.published.clone());
-        cx.stats.draw_calls += 3;
+        cx.stats.draw_calls += draws;
         Ok(Outcome::Ran)
     }
 }
@@ -656,7 +752,7 @@ mod tests {
 
     #[test]
     fn blocks_are_at_least_as_wide_as_the_widest_blur_and_never_under_the_minimum() {
-        let tile = |max_coc| Request { focus: 1.0, half_range: 0.0, max_coc }.tile();
+        let tile = |max_coc| Request { focus: 1.0, half_range: 0.0, max_coc, bokeh: 0.0, bokeh_threshold: 0.8 }.tile();
         assert_eq!((tile(0.5), tile(8.0), tile(8.1), tile(23.0), tile(37.8)), (8, 8, 12, 24, 40));
         assert!(tile(100.0) >= 100);
     }

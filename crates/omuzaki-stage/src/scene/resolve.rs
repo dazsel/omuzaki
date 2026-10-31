@@ -16,7 +16,7 @@ use omuzaki_render_api::{
 use omuzaki_stage_api::resolve::{AnchorFrame, LightBuf};
 use omuzaki_stage_api::{
     Anchor, Backdrop, Bars, CameraDef, CameraId, CastMember, EnvironmentSource, Focus, Framing, GroundKind, Lighting,
-    MAX_CAMERAS, MemberId, SceneDef, SceneError, Squash, Timing,
+    MAX_CAMERAS, MemberId, SceneDef, SceneError, Smears, Squash, Timing,
 };
 
 use super::backdrop::ImagePixels;
@@ -127,6 +127,8 @@ pub struct Changes {
     pub timing: bool,
     /// The squash and stretch changed.
     pub squash: bool,
+    /// The smear frames changed.
+    pub smears: bool,
 }
 
 impl Changes {
@@ -190,6 +192,8 @@ pub struct ResolvedScene {
     pub timing: Timing,
     /// How the cast's bodies squash and stretch (`scene.squash`).
     pub squash: Squash,
+    /// How the cast's fast moves smear (`scene.smears`).
+    pub smears: Smears,
 }
 
 /// An image backdrop as the renderer takes it: the picture's asset, how it fits, and the bars' gradient.
@@ -292,6 +296,7 @@ impl ResolvedScene {
             props: ResolvedProps::default(),
             timing: Timing::SMOOTH,
             squash: Squash::OFF,
+            smears: Smears::OFF,
         }
     }
 
@@ -410,6 +415,7 @@ impl ResolvedScene {
             prop_builds: prop_changes.builds,
             timing: replace(&mut self.timing, def.scene.timing),
             squash: replace(&mut self.squash, def.scene.squash),
+            smears: replace(&mut self.smears, def.scene.smears),
             ..Changes::default()
         };
         changes.backdrop |= replace(&mut self.backdrop_image, backdrop_image);
@@ -668,7 +674,11 @@ fn resolve_post(
                     -camera.view().transform_point3(figure.root.transform_point3(aim)).z
                 }
             };
-            Ok(DepthOfField { focus_distance, focus_range: dof.range * unit, max_blur: dof.max_blur })
+            Ok(DepthOfField {
+                bokeh: dof.bokeh,
+                bokeh_threshold: dof.bokeh_threshold.unwrap_or(DepthOfField::BOKEH_THRESHOLD),
+                ..DepthOfField::new(focus_distance, dof.range * unit, dof.max_blur)
+            })
         })
         .transpose()?;
     Ok(Post {
@@ -679,6 +689,7 @@ fn resolve_post(
         grain: p.grain.map(|strength| FilmGrain { strength }),
         grade: p.grade.map(Into::into),
         stylize: p.stylize.unwrap_or_default(),
+        glare: p.glare,
     })
 }
 

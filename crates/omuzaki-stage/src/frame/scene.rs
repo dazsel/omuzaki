@@ -3,8 +3,10 @@
 
 use omuzaki_char_api::{BuiltCharacter, PartMesh};
 use omuzaki_core::glam::Mat4;
+use omuzaki_render_api::limits::MAX_JOINTS;
 use omuzaki_render_api::{Instance, JointRange, MaterialId, MeshId, Scene};
 
+use super::smear::Trails;
 use crate::error::StageError;
 use crate::upload::MeshLookup;
 
@@ -65,9 +67,10 @@ impl ScenePlan {
     /// Grows the scene's instance and joint buffers to hold this plan's frame, so [`fill`](Self::fill) never allocates
     /// with it. Cold: called when a plan is made for a character that a later frame will fill with.
     pub(crate) fn reserve(&self, scene: &mut Scene) {
-        // One more for the ground disc the stage adds after the character.
+        // One more for the ground disc the stage adds after the character, and the joints twice over for a smear's
+        // trailing pose.
         scene.instances.reserve((self.draws.len() + 1).saturating_sub(scene.instances.len()));
-        scene.joints.reserve(self.joints.saturating_sub(scene.joints.len()));
+        scene.joints.reserve((2 * self.joints).saturating_sub(scene.joints.len()));
     }
 
     /// Replaces the scene's instances and joint palette with this frame's. Lights, camera and the rest stay as the
@@ -88,6 +91,27 @@ impl ScenePlan {
                 });
             }
             scene.instances.push(instance);
+        }
+    }
+
+    /// Gives the skinned instances a [`fill`](Self::fill) just made a smear along `past`, the skin palette of an earlier
+    /// frame, carried into this frame's model space by `carry`. Left as posed when the trailing joints would not fit in
+    /// the scene ([`MAX_JOINTS`]). Hot path: allocation-free after [`reserve`](Self::reserve).
+    pub(crate) fn smear(&self, scene: &mut Scene, past: &[Mat4], carry: Mat4, trails: &Trails) {
+        if scene.joints.len() + self.joints > MAX_JOINTS {
+            return;
+        }
+        let Scene { instances, joints, .. } = scene;
+        for (draw, instance) in self.draws.iter().zip(instances.iter_mut()) {
+            if draw.bones.is_empty() {
+                continue;
+            }
+            let start = joints.len();
+            joints.extend(draw.bones.iter().map(|bone| carry * joint_matrix(*bone, past)));
+            instance.smear = Some(trails.smear(JointRange {
+                start: u32::try_from(start).unwrap_or(u32::MAX),
+                len: u32::try_from(draw.bones.len()).unwrap_or(u32::MAX),
+            }));
         }
     }
 }

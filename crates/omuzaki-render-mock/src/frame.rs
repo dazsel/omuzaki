@@ -332,14 +332,27 @@ fn pose(mesh: &MeshEntry, inst: &Instance, scene: &Scene) -> Result<Posed, Rende
     let rest = morph_rest(mesh, inst, &scene.morph_weights)?;
     let palette =
         inst.skin.filter(|_| d.is_skinned()).map(|r| &scene.joints[r.start as usize..(r.start + r.len) as usize]);
+    // A smear skins the vertex by its trail too (validated against the palette with the scene).
+    let trail = palette.and(inst.smear).map(|smear| {
+        let r = smear.trail;
+        (smear.quantized(), &scene.joints[r.start as usize..(r.start + r.len) as usize])
+    });
     let n = d.positions.len();
     let mut posed = Posed { world: Vec::with_capacity(n), hull_dir: Vec::with_capacity(n), rim: Vec::with_capacity(n) };
     for (i, (&position, &normal)) in rest.positions.iter().zip(&rest.hull_dir).enumerate() {
-        let model = match palette {
-            None => inst.transform,
-            Some(palette) => inst.transform * blend_joints(palette, d.joints[i], d.weights[i])?,
+        let skin = match palette {
+            None => None,
+            Some(palette) => Some(blend_joints(palette, d.joints[i], d.weights[i])?),
         };
-        posed.world.push(model.transform_point3(position));
+        let model = skin.map_or(inst.transform, |skin| inst.transform * skin);
+        if let (Some(skin), Some((smear, trail))) = (skin, trail) {
+            let trailed = blend_joints(trail, d.joints[i], d.weights[i])?.transform_point3(position);
+            let skinned_normal = skin.transform_vector3(d.normals[i]);
+            let pulled = smear.pull(skin.transform_point3(position), trailed, skinned_normal, position);
+            posed.world.push(inst.transform.transform_point3(pulled));
+        } else {
+            posed.world.push(model.transform_point3(position));
+        }
         posed.hull_dir.push(model.transform_vector3(normal).normalize_or_zero());
         let rim = mesh.rims[i];
         posed.rim.push(model.transform_vector3(rim).normalize_or_zero() * rim.length());

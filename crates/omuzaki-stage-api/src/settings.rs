@@ -1,7 +1,7 @@
 //! Scene settings (design D2): `scene.toml`: the subject, the opening camera, the backdrop, the ground, the post look.
 
 pub use omuzaki_render_api::BackdropFit;
-use omuzaki_render_api::{ColourGrade, Stylize, Tonemap};
+use omuzaki_render_api::{ColourGrade, Glare, Stylize, Tonemap};
 use omuzaki_store_api::ContentHash;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -141,6 +141,18 @@ pub struct DepthOfFieldDef {
     pub range: f32,
     /// The strongest blur, as a fraction of the image height, `>= 0`.
     pub max_blur: f32,
+    /// Bokeh: out-of-focus highlights drawn as discs of their blur, `0..=8` (0 off, 1 keeps a light's energy, more makes
+    /// them glow).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub bokeh: f32,
+    /// The linear luminance above which a pixel is a highlight for `bokeh`, `>= 0`; just under white when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bokeh_threshold: Option<f32>,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if takes a reference
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
 }
 
 /// A colour grade as authored: the render-api [`ColourGrade`] with a strict reader (a misspelt key is refused).
@@ -214,6 +226,10 @@ pub struct PostDef {
     /// wanted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stylize: Option<Stylize>,
+    /// Lens glare from the brightest lights (streaks, a halo, ghosts), if wanted. It rides the bloom switch of the
+    /// render quality but not `bloom` above: a scene may have glare without glow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glare: Option<Glare>,
 }
 
 fn yes() -> bool {
@@ -230,6 +246,7 @@ impl Default for PostDef {
             grade: None,
             occlusion: None,
             stylize: None,
+            glare: None,
         }
     }
 }
@@ -320,6 +337,44 @@ impl Default for Squash {
     }
 }
 
+/// Smear frames (#animated motion): a fast move is drawn as one streaked shape, the way animated films draw a swing,
+/// instead of a sharp pose. Each body part is drawn between where it is and where it was `length_s` ago: the side
+/// facing away from the motion is pulled back toward the earlier pose, so a hand that whips across the frame leaves a
+/// streak behind it, and anything moving slower than `min_speed` stays crisp. Drawn only, like squash and stretch.
+/// Off (`amount` 0) by default.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Smears {
+    /// How far back the streak reaches: `1` to where the part was `length_s` ago, `2` as far again. `0..=2`.
+    #[schemars(range(min = 0.0, max = 2.0))]
+    pub amount: f32,
+    /// How far back in time the earlier pose is taken, seconds: longer streaks a slower move. `0.01..=0.25`.
+    #[schemars(range(min = 0.01, max = 0.25))]
+    pub length_s: f32,
+    /// The speed a part must pass before it smears, metres per second; it fades in up to twice that. `0..=10`.
+    #[schemars(range(min = 0.0, max = 10.0))]
+    pub min_speed: f32,
+    /// How ragged the streak's edge is: `0` one clean shape, `1` uneven fingers. `0..=1`.
+    #[schemars(range(min = 0.0, max = 1.0))]
+    pub jag: f32,
+}
+
+impl Smears {
+    /// No smears.
+    pub const OFF: Self = Self { amount: 0.0, length_s: 0.05, min_speed: 1.0, jag: 0.5 };
+
+    /// True when nothing smears.
+    pub fn is_off(&self) -> bool {
+        self.amount <= 0.0
+    }
+}
+
+impl Default for Smears {
+    fn default() -> Self {
+        Self::OFF
+    }
+}
+
 /// `scene.toml`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -347,6 +402,9 @@ pub struct SceneSettings {
     /// Squash and stretch of the cast's bodies.
     #[serde(default, skip_serializing_if = "Squash::is_off")]
     pub squash: Squash,
+    /// Smear frames on the cast's fast moves.
+    #[serde(default, skip_serializing_if = "Smears::is_off")]
+    pub smears: Smears,
 }
 
 impl SceneSettings {
@@ -361,6 +419,7 @@ impl SceneSettings {
             post: PostDef::default(),
             timing: Timing::SMOOTH,
             squash: Squash::OFF,
+            smears: Smears::OFF,
         }
     }
 }
@@ -407,6 +466,10 @@ mod tests {
         assert_eq!(on.squash, Squash { stretch: 0.1, ..Squash::OFF });
         assert!(!on.squash.is_off());
         assert!(serde_json::from_value::<Squash>(json!({"wobble": 1})).is_err());
+        assert!(serde_json::to_value(&s).unwrap().get("smears").is_none());
+        let smeared: SceneSettings =
+            serde_json::from_value(json!({"name": "Main", "smears": {"amount": 1.0}})).unwrap();
+        assert_eq!(smeared.smears, Smears { amount: 1.0, ..Smears::OFF });
     }
 
     #[test]

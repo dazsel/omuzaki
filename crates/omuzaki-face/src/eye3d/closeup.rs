@@ -420,11 +420,7 @@ fn build(
     scene.occlusion = (real > 0.01).then(|| Occlusion::new(0.0025, 0.7 * real));
     if shot.depth_of_field {
         // A macro lens: sharp on the iris, the lashes and the skin falling out of focus.
-        scene.post.depth_of_field = Some(DepthOfField {
-            focus_distance: (camera_at - forward * 0.0105).length(),
-            focus_range: 0.005,
-            max_blur: 0.025,
-        });
+        scene.post.depth_of_field = Some(DepthOfField::new((camera_at - forward * 0.0105).length(), 0.005, 0.025));
     }
     Ok(scene)
 }

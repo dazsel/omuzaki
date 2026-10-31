@@ -59,6 +59,9 @@ const TEXTURE_PREMULTIPLIED: u32 = 2u;
 
 // Instance.skin.y
 const INSTANCE_SKINNED: u32 = 1u;
+// Instance.skin.y: the instance smears along a trailing pose (Instance.skin.z: its first joint; skin.w: the amount / 2,
+// the threshold / 0.2 m and the jag, as unorm8s).
+const INSTANCE_SMEAR: u32 = 2u;
 
 struct Light {
     // Directional: unit direction toward the light. Point and spot: position. w is the kind.
@@ -209,6 +212,36 @@ struct Posed {
     world_normal: vec3<f32>,
 }
 
+// A number in 0..1 for a cell of the bind pose: the same for every frame, so a smear's fingers hold their shape.
+fn smear_hash(cell: vec3<i32>) -> f32 {
+    var h = (bitcast<u32>(cell.x) * 0x8da6b343u) ^ (bitcast<u32>(cell.y) * 0xd8163841u) ^ (bitcast<u32>(cell.z) * 0xcb1ab31fu);
+    h = (h ^ (h >> 16u)) * 0x7feb352du;
+    h = (h ^ (h >> 15u)) * 0x846ca68bu;
+    h = h ^ (h >> 16u);
+    return f32(h >> 8u) / 16777216.0;
+}
+
+// The smear frame (`Smear` in render-api): `posed` (the vertex skinned now, model space) pulled back toward `trailed`
+// (skinned by the trailing pose) on the side facing away from the motion, by how far it moved past the threshold.
+fn smeared(v: Vertex, inst: Instance, posed: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
+    let trailed = (skin_matrix(inst.skin.z, v.joints, v.weights) * vec4<f32>(v.position, 1.0)).xyz;
+    let moved = posed - trailed;
+    let distance = length(moved);
+    let n = length(normal);
+    if (distance < 1e-6 || n < 1e-6) {
+        return posed;
+    }
+    let params = unpack4x8unorm(inst.skin.w);
+    let amount = params.x * 2.0;
+    let threshold = params.y * 0.2;
+    // Facing away from the motion pulls back in full; side-on, partly; the leading side holds the pose.
+    let trailing = smoothstep(-0.1, 0.6, -dot(normal / n, moved / distance));
+    let past = smoothstep(threshold, threshold * 2.0 + 1e-4, distance);
+    // Ragged fingers: 3 cm cells of the bind pose each pulled back by their own share.
+    let finger = mix(1.0, 0.25 + 1.5 * smear_hash(vec3<i32>(floor(v.position / 0.03))), params.z);
+    return posed - moved * (amount * trailing * past * finger);
+}
+
 // A vertex after skinning (if the instance is skinned) and the model transform.
 fn pose(v: Vertex, inst: Instance) -> Posed {
     var position = vec4<f32>(v.position, 1.0);
@@ -217,6 +250,9 @@ fn pose(v: Vertex, inst: Instance) -> Posed {
         let skin = skin_matrix(inst.skin.x, v.joints, v.weights);
         position = skin * position;
         normal = (skin * vec4<f32>(normal, 0.0)).xyz;
+        if ((inst.skin.y & INSTANCE_SMEAR) != 0u) {
+            position = vec4<f32>(smeared(v, inst, position.xyz, normal), 1.0);
+        }
     }
     var out: Posed;
     out.world_position = (inst.model * position).xyz;

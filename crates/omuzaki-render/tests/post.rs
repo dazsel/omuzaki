@@ -281,7 +281,7 @@ fn depth_scene(r: &mut dyn Renderer) -> Scene {
 }
 
 fn focus(distance: f32) -> DepthOfField {
-    DepthOfField { focus_distance: distance, focus_range: 0.3, max_blur: 0.04 }
+    DepthOfField::new(distance, 0.3, 0.04)
 }
 
 /// A patch of the checkered wall to the right of the pole, and the character's left outline with the wall behind it.
@@ -745,7 +745,7 @@ fn the_report_says_which_post_passes_ran() {
     assert_eq!(ran(&mut r, &scene), (true, false));
     scene.post.depth_of_field = Some(focus(2.0));
     assert_eq!(ran(&mut r, &scene), (true, true));
-    scene.post.depth_of_field = Some(DepthOfField { focus_distance: 2.0, focus_range: 0.3, max_blur: 0.0 });
+    scene.post.depth_of_field = Some(DepthOfField::new(2.0, 0.3, 0.0));
     assert_eq!(ran(&mut r, &scene), (true, false), "a blur of nothing is not drawn");
 }
 
@@ -923,12 +923,12 @@ fn evidence_pictures_at_720p() {
     };
     shoot("rust_720p_dof_off.png", &scene, &offline());
     for (name, distance) in [("character", 1.5), ("pole", 3.5), ("wall", 6.0)] {
-        scene.post.depth_of_field = Some(DepthOfField { focus_distance: distance, focus_range: 0.3, max_blur: 0.03 });
+        scene.post.depth_of_field = Some(DepthOfField::new(distance, 0.3, 0.03));
         shoot(&format!("rust_720p_dof_{name}_offline.png"), &scene, &offline());
         shoot(&format!("rust_720p_dof_{name}_live.png"), &scene, &Quality { samples: 4, ..Quality::high() });
     }
     look.post.bloom = Some(BLOOM);
-    look.post.depth_of_field = Some(DepthOfField { focus_distance: 1.5, focus_range: 0.3, max_blur: 0.03 });
+    look.post.depth_of_field = Some(DepthOfField::new(1.5, 0.3, 0.03));
     look.post.grain = Some(FilmGrain { strength: 0.04 });
     look.post.grade = Some(ColourGrade { saturation: 1.15, contrast: 1.15 });
     shoot("rust_720p_everything_offline.png", &look, &offline());

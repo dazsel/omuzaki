@@ -53,6 +53,7 @@ use omuzaki_render_api::{ParamValue, ProgramParams, RenderError, Shading, Toon};
 
 mod band_highlight;
 mod eye;
+mod fabric;
 mod gem;
 mod hair;
 mod metal;

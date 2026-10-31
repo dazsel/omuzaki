@@ -32,6 +32,7 @@
 
 mod environment;
 mod error;
+mod glare;
 mod handle;
 mod material;
 pub mod memory;
@@ -48,6 +49,7 @@ mod stylize;
 
 pub use environment::{EnvironmentDesc, EnvironmentUse, sky_radiance};
 pub use error::RenderError;
+pub use glare::{Glare, MAX_STREAKS};
 pub use handle::{EnvironmentId, MaterialId, MeshId, ParticleSystemId, ResourceRef, TargetId, TextureId};
 pub use material::{
     AlphaMode, HairShadow, MAX_SURFACE_FX_AMOUNT, MAX_SURFACE_FX_EDGE, MAX_SURFACE_FX_GLOW, Mapping, Material, Outline,
@@ -72,6 +74,6 @@ pub use resource::{
 };
 pub use scene::{
     BackdropFit, Background, Bloom, Camera, ColourGrade, DepthOfField, EdgeLines, FilmGrain, Fog, FrameInfo, Instance,
-    JointRange, Light, MorphRange, Occlusion, Post, Projection, SKY_LENS_DEG, Scene, Tonemap, gradient_at,
+    JointRange, Light, MorphRange, Occlusion, Post, Projection, SKY_LENS_DEG, Scene, Smear, Tonemap, gradient_at,
 };
 pub use stylize::{Halftone, Hatching, MAX_POSTERIZE, Paper, SplitTone, Stylize, Vignette};

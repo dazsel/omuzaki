@@ -15,7 +15,7 @@ use omuzaki_render_api::{
     ExtraAttribute, Filter, Fog, FrameReport, Image, Instance, JointRange, Light, Mapping, Material, MaterialId,
     MeshData, MeshId, MeshOptions, MeshUsage, MorphRange, MorphSet, Outline, Overlay, PaintTarget, ParamValue,
     PixelRect, ProgramParams, Projection, Quality, RenderError, Renderer, RendererExt, Rim, Sampler, Scene, Shading,
-    TargetDesc, TextureDesc, Tonemap, Toon, UvTransform, gradient_at, limits,
+    Smear, TargetDesc, TextureDesc, Tonemap, Toon, UvTransform, gradient_at, limits,
 };
 
 use crate::shapes;
@@ -78,6 +78,7 @@ pub const CHECKS: &[(&str, Check)] = &[
     ("edge lines draw on the near side of every depth jump", edge_lines_draw_on_the_near_side_of_depth_jumps),
     ("blended instances sort back to front", blended_instances_sort_back_to_front),
     ("skinned instances follow their joints", skinned_instances_follow_their_joints),
+    ("a smear pulls the trailing side back", a_smear_pulls_the_trailing_side_back),
     ("mirrored instances render like the original", mirrored_instances_render_like_the_original),
     ("more samples smooth edges", more_samples_smooth_edges),
     ("unknown shading programs fall back to toon", unknown_shading_programs_fall_back_to_toon),
@@ -787,6 +788,71 @@ fn skinned_instances_follow_their_joints(r: &mut dyn Renderer) -> Outcome {
     let img = draw(r, &s, &plain())?;
     expect_pixel(&img, CENTRE, Colour::BLACK, tol, "the bind-pose position is now empty")?;
     expect_pixel(&img, (CENTRE.0 + 16, CENTRE.1), Colour::WHITE, tol, "the quad at its skinned position")?;
+    for resource in [mesh.into(), material.into()] {
+        r.release(resource)?;
+    }
+    Ok(())
+}
+
+/// A disc in the XY plane, `radius` across, as the silhouette of a ball: its centre faces +Z and its rim faces out
+/// from the centre, one joint for all of it.
+fn skinned_disc(radius: f32) -> MeshData {
+    let rim = 24_u16;
+    let mut positions = vec![Vec3::ZERO];
+    let mut normals = vec![Vec3::Z];
+    for i in 0..rim {
+        let a = 2.0 * PI * f32::from(i) / f32::from(rim);
+        let out = Vec3::new(a.cos(), a.sin(), 0.0);
+        positions.push(out * radius);
+        normals.push(out);
+    }
+    let indices = (0..u32::from(rim)).flat_map(|i| [0, 1 + i, 1 + (i + 1) % u32::from(rim)]).collect();
+    let n = positions.len();
+    MeshData {
+        uvs: vec![Vec2::ZERO; n],
+        joints: vec![[0, 0, 0, 0]; n],
+        weights: vec![[1.0, 0.0, 0.0, 0.0]; n],
+        positions,
+        normals,
+        indices,
+        ..MeshData::default()
+    }
+}
+
+fn a_smear_pulls_the_trailing_side_back(r: &mut dyn Renderer) -> Outcome {
+    let tol = tolerance(r).max(1);
+    let mesh = r.create_mesh(&skinned_disc(0.25))?;
+    let material = unlit(r, Colour::WHITE)?;
+    // The disc moved half a unit (16 px) right since its trailing pose, which left it at the origin.
+    let render = |r: &mut dyn Renderer, smear: Option<Smear>| {
+        let mut s = scene(Colour::BLACK);
+        let mut inst = Instance::new(mesh, material, Mat4::IDENTITY);
+        inst.skin = Some(JointRange { start: 0, len: 1 });
+        inst.smear = smear;
+        s.instances.push(inst);
+        s.joints = vec![Mat4::from_translation(Vec3::new(0.5, 0.0, 0.0)), Mat4::IDENTITY];
+        draw(r, &s, &plain())
+    };
+    let trail = JointRange { start: 1, len: 1 };
+    let posed = render(r, None)?;
+    let streak = render(r, Some(Smear::new(trail, 1.0)))?;
+    let behind = (CENTRE.0 + 4, CENTRE.1);
+    expect_pixel(&posed, behind, Colour::BLACK, tol, "the posed disc is clear of where it was")?;
+    expect_pixel(&streak, behind, Colour::WHITE, tol, "the smear streaks back to where it was")?;
+    expect_pixel(&streak, (CENTRE.0 + 23, CENTRE.1), Colour::WHITE, tol, "the leading side holds")?;
+    expect_pixel(&streak, (CENTRE.0 + 28, CENTRE.1), Colour::BLACK, tol, "and goes no further ahead")?;
+    expect_pixel(&streak, (CENTRE.0 + 4, CENTRE.1 + 8), Colour::BLACK, tol, "the streak narrows behind")?;
+    // A slow move, 0.15 m under a 0.2 m threshold, stays crisp.
+    let mut s = scene(Colour::BLACK);
+    let mut inst = Instance::new(mesh, material, Mat4::IDENTITY);
+    inst.skin = Some(JointRange { start: 0, len: 1 });
+    inst.smear = Some(Smear { threshold: 0.2, ..Smear::new(trail, 1.0) });
+    s.instances.push(inst);
+    s.joints = vec![Mat4::from_translation(Vec3::new(0.15, 0.0, 0.0)), Mat4::IDENTITY];
+    let slow = draw(r, &s, &plain())?;
+    s.instances[0].smear = None;
+    let slow_posed = draw(r, &s, &plain())?;
+    same_image(&slow, &slow_posed, tol, "a move under the threshold is drawn as posed")?;
     for resource in [mesh.into(), material.into()] {
         r.release(resource)?;
     }

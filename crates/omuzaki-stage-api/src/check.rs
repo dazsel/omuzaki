@@ -99,6 +99,10 @@ impl SceneDef {
             }
             non_negative("scene.post.depth_of_field.range", dof.range)?;
             non_negative("scene.post.depth_of_field.max_blur", dof.max_blur)?;
+            within("scene.post.depth_of_field.bokeh", dof.bokeh, 0.0, 8.0)?;
+            if let Some(t) = dof.bokeh_threshold {
+                non_negative("scene.post.depth_of_field.bokeh_threshold", t)?;
+            }
         }
         if let Some(g) = s.post.grain {
             within("scene.post.grain", g, 0.0, 1.0)?;
@@ -123,10 +127,20 @@ impl SceneDef {
         within("scene.squash.bounce_hz", q.bounce_hz, 0.5, 12.0)?;
         within("scene.squash.damping", q.damping, 0.05, 1.0)?;
         within("scene.squash.limit", q.limit, 0.0, 0.6)?;
+        let m = &s.smears;
+        within("scene.smears.amount", m.amount, 0.0, 2.0)?;
+        within("scene.smears.length_s", m.length_s, 0.01, 0.25)?;
+        within("scene.smears.min_speed", m.min_speed, 0.0, 10.0)?;
+        within("scene.smears.jag", m.jag, 0.0, 1.0)?;
         if let Some(stylize) = &s.post.stylize
             && let Err(omuzaki_render_api::RenderError::Invalid { reason, .. }) = stylize.validate()
         {
             return refuse("scene.post.stylize", reason);
+        }
+        if let Some(glare) = &s.post.glare
+            && let Err(omuzaki_render_api::RenderError::Invalid { reason, .. }) = glare.validate()
+        {
+            return refuse("scene.post.glare", reason);
         }
         if let Some(subject) = &s.subject {
             self.require_member("scene.subject", subject)?;

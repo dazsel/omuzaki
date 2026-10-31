@@ -10,10 +10,12 @@ use omuzaki_avatar::buffers::MorphWeights;
 use omuzaki_avatar_api::avatar::ImportedAvatar;
 use omuzaki_char_api::JointRef;
 use omuzaki_core::glam::Mat4;
+use omuzaki_render_api::limits::MAX_JOINTS;
 use omuzaki_render_api::{Instance, JointRange, MaterialId, MeshId, MorphRange, Scene};
 
 use super::upload::AvatarUpload;
 use crate::error::StageError;
+use crate::frame::smear::Trails;
 
 /// One joint of a mesh's run: the bone that moves it and the mesh's inverse bind for it.
 #[derive(Copy, Clone, Debug)]
@@ -121,9 +123,10 @@ impl AvatarPlan {
 
     /// Grows the scene's buffers to hold this plan's frame, so [`fill`](Self::fill) never allocates. Cold.
     pub(crate) fn reserve(&self, scene: &mut Scene) {
-        // One more for the ground disc the stage adds after the avatar.
+        // One more for the ground disc the stage adds after the avatar, and the palette twice over for a smear's
+        // trailing pose.
         scene.instances.reserve((self.draws.len() + 1).saturating_sub(scene.instances.len()));
-        scene.joints.reserve(self.joints.len().saturating_sub(scene.joints.len()));
+        scene.joints.reserve((2 * self.joints.len()).saturating_sub(scene.joints.len()));
         scene.morph_weights.reserve(self.weights.saturating_sub(scene.morph_weights.len()));
     }
 
@@ -143,6 +146,27 @@ impl AvatarPlan {
             instance.morph = draw.morph;
             instance.skin = draw.skin;
             scene.instances.push(instance);
+        }
+    }
+
+    /// Gives the skinned instances a [`fill`](Self::fill) just made a smear along `past`, the palette of an earlier
+    /// frame (as long as this one's), carried into this frame's model space by `carry`: the trailing palette follows
+    /// the scene's own, each instance's run at the same place in it. Left as posed when it would not fit
+    /// ([`MAX_JOINTS`]). Hot path: allocation-free after [`reserve`](Self::reserve).
+    pub(crate) fn smear(scene: &mut Scene, past: &[Mat4], carry: Mat4, trails: &Trails) {
+        let own = scene.joints.len();
+        let Ok(offset) = u32::try_from(own) else {
+            return;
+        };
+        if past.len() != own || 2 * own > MAX_JOINTS {
+            return;
+        }
+        let Scene { instances, joints, .. } = scene;
+        joints.extend(past.iter().map(|m| carry * *m));
+        for instance in instances.iter_mut() {
+            if let Some(skin) = instance.skin {
+                instance.smear = Some(trails.smear(JointRange { start: skin.start + offset, len: skin.len }));
+            }
         }
     }
 }
