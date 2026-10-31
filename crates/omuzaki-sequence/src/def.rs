@@ -148,6 +148,13 @@ pub struct Shot {
     /// A named light rig (`stage.light_rigs`) in place of the scene's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub light_rig: Option<String>,
+    /// How the 3D frame's light maps to colour: `aces` (filmic, the default) or `none` (clamped, so a flat 2D look
+    /// keeps its exact colours).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tonemap: Option<omuzaki_render_api::Tonemap>,
+    /// The 3D frame's exposure, 0 to 4, in place of the scene's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure: Option<f32>,
     /// What is behind the 3D frame.
     #[serde(default)]
     pub backdrop: Backdrop,
@@ -585,6 +592,9 @@ impl Shot {
             return Err(format!("{at}: at most {MAX_VOLUMES} volumes"));
         }
         self.opacity.check(&format!("{at}.opacity"))?;
+        if self.exposure.is_some_and(|e| !(e.is_finite() && (0.0..=4.0).contains(&e))) {
+            return Err(format!("{at}.exposure is 0 to 4"));
+        }
         let c = &self.camera;
         c.position.check(&format!("{at}.camera.position"))?;
         c.target.check(&format!("{at}.camera.target"))?;
@@ -761,5 +771,17 @@ emitter = { at = [0.0, 0.2, -0.5], radius = 0.3 }
         let mut def = SequenceDef::from_toml(TWO_SHOTS).unwrap();
         def.shots[0].actors.clear();
         assert!(def.check().unwrap_err().to_string().contains("actor"));
+    }
+
+    #[test]
+    fn a_shot_can_keep_flat_colours() {
+        let mut def = SequenceDef::from_toml(TWO_SHOTS).unwrap();
+        def.shots[0].tonemap = Some(omuzaki_render_api::Tonemap::None);
+        def.shots[0].exposure = Some(1.0);
+        def.check().unwrap();
+        let again = SequenceDef::from_toml(&def.to_toml().unwrap()).unwrap();
+        assert_eq!(again.shots[0].tonemap, Some(omuzaki_render_api::Tonemap::None), "it round-trips");
+        def.shots[0].exposure = Some(5.0);
+        assert!(def.check().unwrap_err().to_string().contains("exposure is 0 to 4"));
     }
 }

@@ -801,6 +801,12 @@ fn shot_loader<'a>(
             post_in_look(&mut staged.resolved.post, &built.look().scene);
             occlusion_in_look(&mut staged.resolved.occlusion, &built.look().scene);
         }
+        if let Some(tonemap) = shot.tonemap {
+            staged.resolved.post.tonemap = tonemap;
+        }
+        if let Some(exposure) = shot.exposure {
+            staged.resolved.post.exposure = exposure;
+        }
         Ok(ShotStage { body, staged })
     }
 }
