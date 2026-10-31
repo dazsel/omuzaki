@@ -5,6 +5,7 @@
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::disallowed_methods, reason = "the evidence images are written beside the test, not by an op")]
 
 #[path = "avatar/kit.rs"]
 mod kit;
@@ -173,4 +174,93 @@ fn an_imported_avatar_smears_along_its_shared_palette() {
     let held = (0..palette).filter(|&j| scene.joints[palette + j].abs_diff_eq(carry * scene.joints[j], 1e-4)).count();
     assert!(held * 2 > palette, "most joints trail by the root's move alone: {held} of {palette}");
     stage.release(&mut renderer).unwrap();
+}
+
+/// On the GPU: the kit's default character swings both arms up at about 20 radians a second, and the frame mid-swing
+/// drawn with the `cartoon` smear covers more of the frame than the same frame drawn as posed, the extra below the
+/// arms, behind the motion: a streak, not a blur.
+#[cfg(feature = "wgpu")]
+#[test]
+fn on_the_gpu_a_swing_streaks_behind_the_arms() {
+    use omuzaki_anim_api::{HumanoidBone, HumanoidPose};
+    use omuzaki_char_api::BodyTemplateId;
+    use omuzaki_core::glam::Quat;
+    use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
+    use omuzaki_render_api::{Background, Colour, Image, Light, Projection};
+
+    omuzaki_char::link();
+    let template = BodyTemplateId::new("standard").unwrap();
+    let def = omuzaki_char::ops::character::create::default_character(&template).expect("the kit's default");
+    let kit = || {
+        RegistryBuilder
+            .build(&CharId::new("kit").unwrap(), &def, &BuildOptions::default(), &BuildServices::default())
+            .expect("the default character builds")
+    };
+    let size = UVec2::new(240, 320);
+    let mut renderer =
+        WgpuRenderer::headless(&HeadlessOptions { adapter: AdapterPreference::Software }).expect("lavapipe opens");
+    let mut scene = Scene::new(Camera::look_at(
+        Vec3::new(0.0, 1.1, 4.2),
+        Vec3::new(0.0, 1.1, 0.0),
+        Vec3::Y,
+        Projection::Perspective { fov_y_deg: 30.0, near: 0.05, far: 20.0 },
+    ));
+    scene.lights.push(Light::Directional {
+        to_light: Vec3::new(0.3, 0.8, 1.0),
+        colour: Colour::WHITE,
+        intensity: 2.5,
+        casts_shadow: false,
+    });
+    // From 70 degrees below the shoulders to 70 above in eight frames, both arms in the picture's plane.
+    let swing = |i: u16| {
+        let down = (70.0 - 140.0 * f32::from(i) / 8.0).to_radians();
+        let mut pose = HumanoidPose::REST;
+        pose.set(HumanoidBone::RightUpperArm, Quat::from_rotation_z(down));
+        pose.set(HumanoidBone::LeftUpperArm, Quat::from_rotation_z(-down));
+        FrameInput { pose, ..FrameInput::default() }
+    };
+    let mut render = |smears: Smears| -> Image {
+        let target = renderer.create_target(&TargetDesc { size, alpha: AlphaEncoding::Straight }).unwrap();
+        let mut stage = Stage::new(
+            &mut renderer,
+            kit(),
+            UploadOptions::default(),
+            scene.clone(),
+            target,
+            Quality::offline(),
+            StageClock::fixed(60.0),
+        )
+        .expect("the kit stages");
+        let mut resolved = resolved(smears);
+        resolved.background = Background::Solid { colour: Colour::TRANSPARENT };
+        stage.set_scene(&resolved, Mat4::IDENTITY);
+        for i in 0..=5 {
+            stage.tick(&mut renderer, &swing(i)).expect("a frame");
+        }
+        let image = renderer.read_target(target).expect("read");
+        stage.release(&mut renderer).unwrap();
+        renderer.release(target.into()).unwrap();
+        image
+    };
+    let cartoon = Smears { amount: 1.0, length_s: 0.05, min_speed: 1.0, jag: 0.5 };
+    let (posed, smeared) = (render(Smears::OFF), render(cartoon));
+    if let Some(dir) = std::env::var_os("OMUZAKI_EVIDENCE_DIR") {
+        let dir = std::path::PathBuf::from(dir);
+        for (name, image) in [("posed", &posed), ("smeared", &smeared)] {
+            let png = omuzaki_stage::ops::render::still::encode_png(image).expect("encodes");
+            std::fs::write(dir.join(format!("smear-swing-{name}.png")), png).expect("writes");
+        }
+    }
+    let covered = |image: &Image| image.rgba8.as_chunks::<4>().0.iter().map(|p| p[3] > 127).collect::<Vec<_>>();
+    let (a, b) = (covered(&posed), covered(&smeared));
+    let count = |c: &[bool]| c.iter().filter(|x| **x).count();
+    let (posed_px, smeared_px) = (count(&a), count(&b));
+    let width = size.x as usize;
+    // Rows of new pixels: where the streak lies against where the arms are now.
+    let new_rows: Vec<usize> =
+        a.iter().zip(&b).enumerate().filter(|(_, (was, now))| **now && !**was).map(|(i, _)| i / width).collect();
+    let kept = a.iter().zip(&b).filter(|(was, now)| **was && **now).count();
+    eprintln!("smear swing: posed {posed_px} px, smeared {smeared_px} px, kept {kept}, new {}", new_rows.len());
+    assert!(smeared_px * 100 > posed_px * 103, "the streaks add to the silhouette: {smeared_px} against {posed_px}");
+    assert!(kept * 100 > posed_px * 97, "the leading side holds: {kept} of {posed_px} posed pixels kept");
 }
