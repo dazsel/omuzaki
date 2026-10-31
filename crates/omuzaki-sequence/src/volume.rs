@@ -79,6 +79,7 @@ impl VolumePreset {
             turbulence,
             gravity: 0.0,
             opacity: 1.0,
+            melt: 0.45,
         };
         match self {
             Self::Smoke => t(0x00c8_c4cc, [0.62, 0.6, 0.7], 0x004a_4654, 9.0, 2.6, 0.2, 0.45, 0.18, 0.55),
@@ -125,6 +126,8 @@ pub struct Tuning {
     pub gravity: f32,
     /// 0 (unseen) to 1 (solid): how much shows through.
     pub opacity: f32,
+    /// How far puffs melt into each other, as a share of `size`: low keeps them round, high runs them into one sheet.
+    pub melt: f32,
 }
 
 /// Where a volume's puffs come from.
@@ -143,6 +146,10 @@ pub struct Emitter {
     /// Puffs are born anywhere inside this radius, metres.
     #[serde(default = "emitter_radius")]
     pub radius: f32,
+    /// Half-sizes of a box, metres, that puffs are born anywhere inside, in place of the radius: a wall of goo, a fog
+    /// bank, a row of fire along the ground.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extent: Option<[f32; 3]>,
 }
 
 fn emitter_radius() -> f32 {
@@ -151,7 +158,7 @@ fn emitter_radius() -> f32 {
 
 impl Default for Emitter {
     fn default() -> Self {
-        Self { at: [0.0; 3], actor: None, bone: None, radius: emitter_radius() }
+        Self { at: [0.0; 3], actor: None, bone: None, radius: emitter_radius(), extent: None }
     }
 }
 
@@ -212,6 +219,10 @@ pub struct VolumeDef {
     /// How solid, 0.05 to 1: below 1 what is behind shows through (slime, spray, a thin smoke).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
+    /// How far puffs melt into each other, 0 to 3 times their size (0.45 by default): high runs them into one sheet,
+    /// as poured liquid or a slime wave does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub melt: Option<f32>,
     /// How thick it is over time, 0 to 2: scales every puff (key it up to boil over, down to clear).
     #[serde(default = "density")]
     pub density: Track<f32>,
@@ -252,6 +263,7 @@ impl VolumeDef {
             turbulence: self.turbulence.unwrap_or(p.turbulence),
             gravity: self.gravity.unwrap_or(p.gravity),
             opacity: self.opacity.unwrap_or(p.opacity),
+            melt: self.melt.unwrap_or(p.melt),
         }
     }
 
@@ -301,7 +313,13 @@ impl VolumeDef {
         range("gravity", t.gravity, 0.0, 20.0)?;
         range("opacity", t.opacity, 0.05, 1.0)?;
         range("line_width", self.line_width, 0.0, 0.05)?;
+        range("melt", t.melt, 0.0, 3.0)?;
         range("emitter.radius", self.emitter.radius, 0.0, 10.0)?;
+        if let Some(extent) = self.emitter.extent {
+            for (axis, v) in ["x", "y", "z"].iter().zip(extent) {
+                range(&format!("emitter.extent.{axis}"), v, 0.0, 10.0)?;
+            }
+        }
         if !(16..=MAX_RESOLUTION).contains(&self.resolution) {
             return Err(format!("{at}.resolution is 16 to {MAX_RESOLUTION}"));
         }
@@ -391,7 +409,11 @@ pub fn puffs(def: &VolumeDef, t: f32, seed: u32, emitter: &dyn Fn(f32) -> Vec3) 
         let r = |i: u32| hash(k, i, seed);
         // Born anywhere in the emitter's ball, heading up and out with its own speed.
         let dir = Vec3::new(r(1) * 2.0 - 1.0, r(2) * 2.0 - 1.0, r(3) * 2.0 - 1.0).normalize_or_zero();
-        let start = emitter(born) + dir * def.emitter.radius * r(4).cbrt();
+        let start = emitter(born)
+            + match def.emitter.extent {
+                Some([x, y, z]) => Vec3::new((r(7) * 2.0 - 1.0) * x, (r(8) * 2.0 - 1.0) * y, (r(9) * 2.0 - 1.0) * z),
+                None => dir * def.emitter.radius * r(4).cbrt(),
+            };
         let out_dir = Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero();
         let speed = 0.7 + 0.6 * r(5);
         let travel =
@@ -468,7 +490,7 @@ pub fn mesh(def: &VolumeDef, t: f32, seed: u32, emitter: &dyn Fn(f32) -> Vec3) -
     }
     let tune = def.tuning();
     let roughness = tune.turbulence * tune.size * 0.45;
-    let blend = tune.size * 0.45;
+    let blend = (tune.size * tune.melt).max(1e-4);
     let margin = roughness + blend * 0.5 + 1e-3;
     let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
     for p in &alive {
@@ -669,6 +691,30 @@ mod tests {
         assert_eq!(solid.material().alpha, AlphaMode::Opaque, "a solid one stays opaque");
         let thin = VolumeDef { opacity: Some(0.0), ..volume };
         assert!(thin.check("v", &[]).unwrap_err().contains("opacity"));
+    }
+
+    #[test]
+    fn a_box_emitter_fills_its_box_and_melt_runs_puffs_into_one_sheet() {
+        let mut volume = def(VolumePreset::Goo);
+        volume.emitter.extent = Some([1.5, 0.2, 0.1]);
+        let at = |_: f32| Vec3::ZERO;
+        let alive = puffs(&volume, 1.0, 4, &at);
+        let xs: Vec<f32> = alive.iter().map(|p| p.centre.x).collect();
+        let (lo, hi) = xs.iter().fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(*x), b.max(*x)));
+        assert!(hi - lo > 1.8, "the puffs span the box's width: {lo} to {hi}");
+        // A point between two puffs is outside them when they stay apart and inside when they melt.
+        let two = [
+            Puff { centre: Vec3::new(-0.3, 0.0, 0.0), radius: 0.25 },
+            Puff { centre: Vec3::new(0.3, 0.0, 0.0), radius: 0.25 },
+        ];
+        let between = |melt: f32| field(&two, Vec3::ZERO, 0.24 * melt, 0.0, 1.0, 0.0, 1);
+        assert!(between(0.05) > 0.0, "apart when they barely melt");
+        assert!(between(2.0) < 0.0, "one sheet when they melt");
+        volume.melt = Some(4.0);
+        assert!(volume.check("v", &[]).unwrap_err().contains("melt"));
+        volume.melt = Some(2.0);
+        volume.emitter.extent = Some([1.0, -1.0, 0.0]);
+        assert!(volume.check("v", &[]).unwrap_err().contains("extent.y"));
     }
 
     #[test]
