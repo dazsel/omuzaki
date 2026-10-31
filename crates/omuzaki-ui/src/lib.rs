@@ -44,6 +44,7 @@ omuzaki_core::define_link! {
     omuzaki_app::link();
     omuzaki_audio_engine::link();
     omuzaki_audio_fx::link();
+    omuzaki_brief::link();
     omuzaki_char::link();
     omuzaki_char_api::link();
     omuzaki_cohost::link();
@@ -55,6 +56,7 @@ omuzaki_core::define_link! {
     omuzaki_mcp::link();
     omuzaki_obs::link();
     omuzaki_paint_ops::link();
+    omuzaki_parity::link();
     omuzaki_render::link();
     omuzaki_script::link();
     omuzaki_settings::link();

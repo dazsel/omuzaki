@@ -1,0 +1,1212 @@
+# The words `character.create_from_description` knows (`src/lexicon.rs` says how it is read).
+#
+# - `[[facet]]`: one thing a description can say, in the order the steps run. `many` facets take several options;
+#   `prior` lists the options drawn by the seed when the description says nothing (empty: the kit's default stays).
+# - `[[option]]`: what one choice does. `words` are the phrases that choose it (lower case; a plural `s` matches too).
+#   `template` and `style` go to `character.create`; `fits` lists the templates the option needs; `replaces` removes
+#   parts the kit's default character has; `parts` adds parts (or changes the one with that id); `steps` run ops, with
+#   `$character` for the character's id; `hints` are weaker phrases (`mage` for a robe) that choose only when
+#   nothing stronger chooses for the same facet or part; `colour` says where a colour named with the option goes (`a red dress`);
+#   `near` makes the option's words count only next to a thing of that kind (`long` only as in `long silver hair`).
+# - `[[colour]]`: a named colour, with a hand-picked hair gradient (root, middle, tip) where the derived one doesn't
+#   read as that colour of hair. `[[target]]`: the nouns a colour goes to on its own. `[priors]`: the colours an
+#   unnamed hair, eye or outfit colour is drawn from.
+#
+# Every phrase means one thing (a test checks), and every option's steps plan on a fresh character (a test checks).
+
+# ---------------------------------------------------------------- facets, in step order
+
+[[facet]]
+id = "build"
+summary = "The body template: chibi, petite, average or tall"
+
+[[facet]]
+id = "age"
+summary = "How old the character reads: the mature style (narrow eyes, small mouth, a longer face)"
+
+[[facet]]
+id = "body_shape"
+summary = "The body's shape: slim, athletic, curvy, broad..."
+
+[[facet]]
+id = "skin"
+summary = "The skin tone, very fair to deep"
+
+[[facet]]
+id = "outfit"
+summary = "The whole outfit: school uniform, hoodie, dress, kimono, robe, suit, maid, bodysuit..."
+prior = ["uniform", "uniform", "hoodie", "dress", "blazer", "cloak"]
+
+[[facet]]
+id = "bottoms"
+summary = "A skirt or trousers"
+
+[[facet]]
+id = "legwear"
+summary = "Tights, stockings, leggings or bare legs"
+
+[[facet]]
+id = "footwear"
+summary = "Boots, sneakers, loafers, heels, sandals or flats"
+
+[[facet]]
+id = "hair_length"
+summary = "How long the hair is"
+prior = ["short", "medium", "long", "long"]
+
+[[facet]]
+id = "hair_style"
+summary = "How the hair is worn: loose, twin tails, a ponytail, braids, buns"
+prior = ["loose", "loose", "loose", "twintails", "ponytail", "side-braids"]
+
+[[facet]]
+id = "hair_texture"
+summary = "The hair's texture: straight (the kit's own), wavy or curly"
+
+[[facet]]
+id = "bangs"
+summary = "The fringe: blunt, side-swept, curtain, wispy or none"
+
+[[facet]]
+id = "hair_extra"
+summary = "Extras in the hair: an ahoge"
+many = true
+
+[[facet]]
+id = "ears"
+summary = "Elf ears or animal ears"
+
+[[facet]]
+id = "eyes"
+summary = "The eye design: sparkly, droopy, sharp, sleepy, cat, doll or realistic"
+
+[[facet]]
+id = "makeup"
+summary = "Makeup: natural, soft glam, idol or gothic"
+refines = ["skin"]
+
+[[facet]]
+id = "expression"
+summary = "The face at rest: cheerful, calm, smug, shy, serious..."
+
+[[facet]]
+id = "accessories"
+summary = "Glasses, hats, horns, wings, a tail, headphones, a halo, jewellery and more"
+many = true
+
+# ---------------------------------------------------------------- build and age
+
+[[option]]
+facet = "build"
+id = "chibi"
+summary = "Chibi: a big head on a small body (the soft-sd template)"
+words = ["chibi", "sd", "super deformed", "tiny", "cute little"]
+template = "soft-sd"
+
+[[option]]
+facet = "build"
+id = "petite"
+summary = "Petite: short and slight (the mini template)"
+words = ["petite", "short girl", "short boy"]
+hints = ["kid", "child", "small"]
+template = "mini"
+
+[[option]]
+facet = "build"
+id = "average"
+summary = "Average anime proportions (the standard template)"
+words = ["average height", "medium height"]
+hints = ["teen", "teenage", "teenager", "student"]
+template = "standard"
+
+[[option]]
+facet = "build"
+id = "tall"
+summary = "Tall, with long legs (the tall template)"
+words = ["tall", "long legged", "leggy", "statuesque"]
+template = "tall"
+
+[[option]]
+facet = "age"
+id = "mature"
+summary = "Mature: narrow almond eyes under heavy lashes, a small mouth and a longer face"
+words = ["mature", "adult", "grown up", "older"]
+hints = ["elegant", "woman", "lady", "gentleman", "queen", "onee san"]
+style = "mature"
+fits = ["standard", "tall"]
+
+# ---------------------------------------------------------------- body shape
+
+[[option]]
+facet = "body_shape"
+id = "slim"
+summary = "Slim"
+words = ["slim", "slender", "thin", "skinny", "willowy"]
+steps = [{ op = "body.apply_shape_preset", args = { character = "$character", preset = "slim", blend = 1.0 } }]
+
+[[option]]
+facet = "body_shape"
+id = "athletic"
+summary = "Athletic"
+words = ["athletic", "muscular", "fit", "sporty", "strong", "toned"]
+steps = [{ op = "body.apply_shape_preset", args = { character = "$character", preset = "athletic", blend = 1.0 } }]
+
+[[option]]
+facet = "body_shape"
+id = "curvy"
+summary = "Curvy"
+words = ["curvy", "voluptuous", "shapely"]
+steps = [{ op = "body.apply_shape_preset", args = { character = "$character", preset = "curvy", blend = 1.0 } }]
+
+[[option]]
+facet = "body_shape"
+id = "hourglass"
+summary = "Hourglass"
+words = ["hourglass"]
+steps = [{ op = "body.apply_shape_preset", args = { character = "$character", preset = "hourglass", blend = 1.0 } }]
+
+[[option]]
+facet = "body_shape"
+id = "pear"
+summary = "Pear-shaped"
+words = ["pear shaped", "wide hips", "wide hipped"]
+steps = [{ op = "body.apply_shape_preset", args = { character = "$character", preset = "pear", blend = 1.0 } }]
+
+[[option]]
+facet = "body_shape"
+id = "broad"
+summary = "Broad-shouldered"
+words = ["broad", "broad shouldered", "big shoulders"]
+steps = [{ op = "body.apply_shape_preset", args = { character = "$character", preset = "broad", blend = 1.0 } }]
+
+[[option]]
+facet = "body_shape"
+id = "stocky"
+summary = "Stocky"
+words = ["stocky", "sturdy", "chubby", "plump", "chunky"]
+steps = [{ op = "body.apply_shape_preset", args = { character = "$character", preset = "stocky", blend = 1.0 } }]
+
+[[option]]
+facet = "body_shape"
+id = "lean"
+summary = "Lean and long"
+words = ["lean", "lanky", "wiry"]
+steps = [{ op = "body.apply_shape_preset", args = { character = "$character", preset = "lean-tall", blend = 1.0 } }]
+
+# ---------------------------------------------------------------- skin
+
+[[option]]
+facet = "skin"
+id = "very-fair"
+summary = "Very fair skin (tone 1)"
+words = ["very pale", "porcelain", "snow white skin", "ghostly", "very fair"]
+steps = [{ op = "palette.set_skin_tone", args = { character = "$character", tone = "tone-01" } }]
+
+[[option]]
+facet = "skin"
+id = "fair"
+summary = "Fair skin (tone 2)"
+words = ["pale", "fair", "fair skinned", "pale skinned", "pale skin", "fair skin"]
+steps = [{ op = "palette.set_skin_tone", args = { character = "$character", tone = "tone-02" } }]
+
+[[option]]
+facet = "skin"
+id = "light"
+summary = "Light skin (tone 4)"
+words = ["light skin", "light skinned"]
+steps = [{ op = "palette.set_skin_tone", args = { character = "$character", tone = "tone-04" } }]
+
+[[option]]
+facet = "skin"
+id = "olive"
+summary = "Olive skin (tone 6)"
+words = ["olive skin", "olive skinned", "olive toned"]
+steps = [{ op = "palette.set_skin_tone", args = { character = "$character", tone = "tone-06" } }]
+
+[[option]]
+facet = "skin"
+id = "tan"
+summary = "Tanned skin (tone 7)"
+words = ["tan", "tanned", "sun kissed", "suntanned", "tan skin", "gyaru"]
+steps = [{ op = "palette.set_skin_tone", args = { character = "$character", tone = "tone-07", undertone = "warm" } }]
+
+[[option]]
+facet = "skin"
+id = "brown"
+summary = "Brown skin (tone 9)"
+words = ["brown skin", "brown skinned"]
+steps = [{ op = "palette.set_skin_tone", args = { character = "$character", tone = "tone-09" } }]
+
+[[option]]
+facet = "skin"
+id = "dark"
+summary = "Dark skin (tone 11)"
+words = ["dark skin", "dark skinned"]
+steps = [{ op = "palette.set_skin_tone", args = { character = "$character", tone = "tone-11" } }]
+
+[[option]]
+facet = "skin"
+id = "deep"
+summary = "Deep skin (tone 12)"
+words = ["deep skin", "very dark skin", "ebony skin"]
+steps = [{ op = "palette.set_skin_tone", args = { character = "$character", tone = "tone-12" } }]
+
+# ---------------------------------------------------------------- outfits (the kit's default is a shirt, a pleated
+# skirt, tights and boots: an outfit replaces what it doesn't wear)
+
+[[option]]
+facet = "outfit"
+id = "uniform"
+summary = "School uniform: a shirt with a tie, a pleated skirt, tights and boots"
+words = ["school uniform", "uniform", "seifuku", "student uniform"]
+hints = ["schoolgirl", "school girl"]
+parts = [{ id = "tie", kind = "tie", attach = { to = "anchor", part = "shirt", anchor = "collar_ring" } }]
+colour = { part = "skirt" }
+
+[[option]]
+facet = "outfit"
+id = "casual"
+summary = "Casual: a shirt and a skirt with sneakers"
+words = ["casual clothes", "t shirt", "tee"]
+hints = ["casual", "everyday clothes"]
+replaces = ["boots"]
+parts = [{ id = "shoes", kind = "shoes", params = { style = "sneaker" } }]
+colour = { part = "shirt" }
+
+[[option]]
+facet = "outfit"
+id = "hoodie"
+summary = "A hoodie over a skirt, with sneakers"
+words = ["hoodie", "hooded sweatshirt", "sweatshirt"]
+hints = ["streetwear", "gamer", "comfy"]
+replaces = ["shirt", "boots"]
+parts = [{ id = "hoodie", kind = "hoodie" }, { id = "shoes", kind = "shoes", params = { style = "sneaker" } }]
+colour = { part = "hoodie" }
+
+[[option]]
+facet = "outfit"
+id = "dress"
+summary = "A dress with flats"
+words = ["dress", "gown", "sundress", "frock"]
+hints = ["princess"]
+replaces = ["shirt", "skirt", "legwear", "boots"]
+parts = [{ id = "dress", kind = "dress" }, { id = "shoes", kind = "shoes", params = { style = "flat" } }]
+colour = { part = "dress" }
+
+[[option]]
+facet = "outfit"
+id = "kimono"
+summary = "A kimono with an obi"
+words = ["kimono", "yukata", "furisode"]
+hints = ["traditional japanese", "shrine maiden", "miko"]
+replaces = ["shirt", "skirt", "legwear"]
+parts = [{ id = "kimono", kind = "kimono" }]
+colour = { part = "kimono" }
+
+[[option]]
+facet = "outfit"
+id = "robe"
+summary = "A long robe: a wizard, a mage, a priest"
+words = ["robe", "robes"]
+hints = ["wizard", "witch", "mage", "sorcerer", "sorceress", "priest", "priestess", "cleric", "necromancer"]
+replaces = ["shirt", "skirt"]
+parts = [{ id = "robe", kind = "robe" }]
+colour = { part = "robe" }
+
+[[option]]
+facet = "outfit"
+id = "cloak"
+summary = "A cloak over trousers and boots: an adventurer, a knight, a traveller"
+words = ["cloak", "cape", "mantle"]
+hints = ["knight", "adventurer", "traveller", "traveler", "ranger", "rogue", "hunter"]
+replaces = ["skirt"]
+parts = [{ id = "cloak", kind = "cloak" }, { id = "trousers", kind = "trousers" }]
+colour = { part = "cloak" }
+
+[[option]]
+facet = "outfit"
+id = "blazer"
+summary = "A blazer over a shirt and tie, with trousers and loafers"
+words = ["blazer", "suit", "jacket"]
+hints = ["business", "office", "formal", "detective", "butler", "librarian", "scholar", "teacher", "professor", "secretary"]
+replaces = ["skirt", "legwear", "boots"]
+parts = [
+    { id = "blazer", kind = "blazer" },
+    { id = "tie", kind = "tie", attach = { to = "anchor", part = "shirt", anchor = "collar_ring" } },
+    { id = "trousers", kind = "trousers" },
+    { id = "shoes", kind = "shoes", params = { style = "loafer" } },
+]
+colour = { part = "blazer" }
+
+[[option]]
+facet = "outfit"
+id = "maid"
+summary = "A maid's dress with an apron and a frilled headdress"
+words = ["maid outfit", "maid dress", "apron"]
+hints = ["maid"]
+replaces = ["shirt", "skirt"]
+parts = [
+    { id = "dress", kind = "dress" },
+    { id = "apron", kind = "apron" },
+    { id = "headdress", kind = "headdress" },
+    { id = "shoes", kind = "shoes", params = { style = "flat" } },
+]
+colour = { part = "dress" }
+
+[[option]]
+facet = "outfit"
+id = "bodysuit"
+summary = "A sleek bodysuit over slim trousers, with boots: a pilot, a hacker, sci-fi"
+words = ["bodysuit", "plugsuit"]
+hints = ["pilot", "sci fi", "cyber", "cyberpunk", "hacker", "android", "spy", "futuristic"]
+replaces = ["shirt", "skirt", "legwear"]
+parts = [{ id = "bodysuit", kind = "bodysuit" }, { id = "trousers", kind = "trousers", params = { leg = { thigh = 1.0, knee = 1.0, hem = 1.0 } } }]
+colour = { part = "bodysuit" }
+
+[[option]]
+facet = "outfit"
+id = "vest"
+summary = "A waistcoat over the shirt, with trousers: a bartender, a waiter"
+words = ["vest", "waistcoat"]
+hints = ["bartender", "waiter"]
+replaces = ["skirt"]
+parts = [{ id = "vest", kind = "vest" }, { id = "trousers", kind = "trousers" }, { id = "tie", kind = "tie", attach = { to = "anchor", part = "shirt", anchor = "collar_ring" } }]
+colour = { part = "vest" }
+
+# ---------------------------------------------------------------- garments named on their own
+
+[[option]]
+facet = "bottoms"
+id = "skirt"
+summary = "A pleated skirt"
+words = ["skirt", "pleated skirt", "miniskirt", "mini skirt"]
+replaces = ["trousers"]
+parts = [{ id = "skirt", kind = "skirt" }]
+colour = { part = "skirt" }
+
+[[option]]
+facet = "bottoms"
+id = "trousers"
+summary = "Trousers"
+words = ["trousers", "pants", "jeans", "slacks", "hakama"]
+replaces = ["skirt"]
+parts = [{ id = "trousers", kind = "trousers" }]
+colour = { part = "trousers" }
+
+[[option]]
+facet = "legwear"
+id = "tights"
+summary = "Tights"
+words = ["tights", "pantyhose"]
+parts = [{ id = "legwear", kind = "legwear", params = { style = "tights" } }]
+colour = { part = "legwear" }
+
+[[option]]
+facet = "legwear"
+id = "stockings"
+summary = "Thigh-high stockings"
+words = ["stockings", "thigh highs", "thighhighs", "knee socks", "knee high socks", "zettai ryouiki"]
+parts = [{ id = "legwear", kind = "legwear", params = { style = "stockings" } }]
+colour = { part = "legwear" }
+
+[[option]]
+facet = "legwear"
+id = "leggings"
+summary = "Leggings"
+words = ["leggings"]
+parts = [{ id = "legwear", kind = "legwear", params = { style = "leggings" } }]
+colour = { part = "legwear" }
+
+[[option]]
+facet = "legwear"
+id = "bare"
+summary = "Bare legs"
+words = ["bare legs", "bare legged"]
+replaces = ["legwear"]
+avoids = ["outfit.cloak", "outfit.blazer", "outfit.vest", "outfit.robe", "outfit.kimono", "outfit.bodysuit"]
+
+[[option]]
+facet = "footwear"
+id = "boots"
+summary = "Buckled boots"
+words = ["boots", "boot", "combat boots", "ankle boots"]
+replaces = ["shoes"]
+parts = [{ id = "boots", kind = "boots" }]
+colour = { part = "boots" }
+
+[[option]]
+facet = "footwear"
+id = "sneakers"
+summary = "Sneakers"
+words = ["sneakers", "trainers", "running shoes", "shoes"]
+replaces = ["boots"]
+parts = [{ id = "shoes", kind = "shoes", params = { style = "sneaker" } }]
+colour = { part = "shoes" }
+
+[[option]]
+facet = "footwear"
+id = "loafers"
+summary = "Loafers"
+words = ["loafers", "school shoes", "oxfords"]
+replaces = ["boots"]
+parts = [{ id = "shoes", kind = "shoes", params = { style = "loafer" } }]
+colour = { part = "shoes" }
+
+[[option]]
+facet = "footwear"
+id = "heels"
+summary = "Heels"
+words = ["heels", "high heels", "pumps", "stilettos"]
+replaces = ["boots"]
+parts = [{ id = "shoes", kind = "shoes", params = { style = "heel" } }]
+colour = { part = "shoes" }
+
+[[option]]
+facet = "footwear"
+id = "sandals"
+summary = "Sandals"
+words = ["sandals", "geta", "flip flops"]
+replaces = ["boots"]
+parts = [{ id = "shoes", kind = "shoes", params = { style = "sandal" } }]
+colour = { part = "shoes" }
+
+[[option]]
+facet = "footwear"
+id = "flats"
+summary = "Ballet flats"
+words = ["flats", "ballet flats", "mary janes"]
+replaces = ["boots"]
+parts = [{ id = "shoes", kind = "shoes", params = { style = "flat" } }]
+colour = { part = "shoes" }
+
+# ---------------------------------------------------------------- hair
+
+[[option]]
+facet = "hair_length"
+id = "short"
+summary = "Short hair, above the jaw"
+words = ["short hair", "short haired", "pixie", "pixie cut", "cropped hair", "short"]
+near = "hair"
+colour = "hair"
+steps = [{ op = "part.set_param", args = { character = "$character", part = "hair", path = "groups/c-curtain/generator", value = { length_front = 0.18, length_back = 0.2 } } }]
+
+[[option]]
+facet = "hair_length"
+id = "bob"
+summary = "A bob, to the jaw (the kit's own)"
+words = ["bob", "bob cut", "bobbed", "chin length"]
+colour = "hair"
+steps = [{ op = "part.set_param", args = { character = "$character", part = "hair", path = "groups/c-curtain/generator", value = { length_front = 0.26, length_back = 0.3 } } }]
+
+[[option]]
+facet = "hair_length"
+id = "medium"
+summary = "Shoulder-length hair"
+words = ["shoulder length", "medium hair", "medium length", "semi long", "mid length", "medium"]
+near = "hair"
+colour = "hair"
+steps = [{ op = "part.set_param", args = { character = "$character", part = "hair", path = "groups/c-curtain/generator", value = { length_front = 0.36, length_back = 0.42 } } }]
+
+[[option]]
+facet = "hair_length"
+id = "long"
+summary = "Long hair, past the shoulders"
+words = ["long hair", "long haired", "long", "flowing", "flowing hair"]
+near = "hair"
+colour = "hair"
+steps = [{ op = "part.set_param", args = { character = "$character", part = "hair", path = "groups/c-curtain/generator", value = { length_front = 0.5, length_back = 0.58 } } }]
+
+[[option]]
+facet = "hair_length"
+id = "very-long"
+summary = "Very long hair, to the waist"
+words = ["very long hair", "very long", "waist length", "floor length", "rapunzel"]
+near = "hair"
+colour = "hair"
+steps = [{ op = "part.set_param", args = { character = "$character", part = "hair", path = "groups/c-curtain/generator", value = { length_front = 0.68, length_back = 0.78 } } }]
+
+[[option]]
+facet = "hair_texture"
+id = "wavy"
+summary = "Soft waves through the lengths"
+words = ["wavy", "wavy hair", "waves"]
+near = "hair"
+steps = [{ op = "part.set_param", args = { character = "$character", part = "hair", path = "groups/c-curtain/generator/wave", value = { amplitude = 0.07, curl = 0.08, frequency = 2.4 } } }]
+
+[[option]]
+facet = "hair_texture"
+id = "curly"
+summary = "Tight curls through the lengths"
+words = ["curly", "curly hair", "curls", "ringlets"]
+near = "hair"
+steps = [{ op = "part.set_param", args = { character = "$character", part = "hair", path = "groups/c-curtain/generator/wave", value = { amplitude = 0.1, curl = 0.16, frequency = 3.4 } } }]
+
+[[option]]
+facet = "hair_style"
+id = "loose"
+summary = "Worn loose"
+words = ["loose hair", "hair down", "straight hair", "loose"]
+
+[[option]]
+facet = "hair_style"
+id = "twintails"
+summary = "Twin tails tied high behind the ears"
+words = ["twin tails", "twintails", "twintail", "pigtails", "pig tails"]
+colour = "hair"
+steps = [{ op = "part.set_param", args = { character = "$character", part = "hair", path = "groups", value = { e-twintails = { mirror = true, dynamics = { simulate = true, follow = "head" }, generator = { type = "tail", root = [68.0, 118.0, 0.01], length = 0.46, count = 6, spread_deg = 12.0, droop = 1.0, lean = -0.12, gather = 5, wave = { amplitude = 0.01, frequency = 1.0 }, width = { start = 0.03, mid = 0.036, tip = 0.005, tip_at = 0.55 } } } } } }]
+
+[[option]]
+facet = "hair_style"
+id = "ponytail"
+summary = "A high ponytail"
+words = ["ponytail", "pony tail", "high ponytail"]
+colour = "hair"
+steps = [{ op = "part.set_param", args = { character = "$character", part = "hair", path = "groups", value = { e-ponytail = { dynamics = { simulate = true, follow = "head" }, generator = { type = "tail", root = [72.0, 180.0, 0.01], length = 0.4, count = 8, spread_deg = 12.0, droop = 1.0, lean = 0.3, gather = 6, wave = { amplitude = 0.012, frequency = 1.0 }, width = { start = 0.03, mid = 0.036, tip = 0.005, tip_at = 0.55 } } } } } }]
+
+[[option]]
+facet = "hair_style"
+id = "twin-braids"
+summary = "Two long braids from behind the ears"
+words = ["twin braids", "two braids", "pigtail braids"]
+colour = "hair"
+steps = [{ op = "part.set_param", args = { character = "$character", part = "hair", path = "groups", value = { twin-braids = { mirror = true, generator = { type = "tail", root = [115.0, 100.0, 0.012], length = 0.48, lean = 0.1, braid = { crossings = 8.0, width = 0.05 } } } } } }]
+
+[[option]]
+facet = "hair_style"
+id = "side-braids"
+summary = "A braid behind each ear, falling in front of the shoulders"
+words = ["side braids", "braids", "plaits", "braided"]
+colour = "hair"
+steps = [{ op = "part.set_param", args = { character = "$character", part = "hair", path = "groups", value = { e-side-braids = { mirror = true, generator = { type = "tail", root = [100.0, 82.0, 0.012], length = 0.42, droop = 1.0, lean = -0.05, forward = 0.45, braid = { crossings = 6.0, width = 0.044, face_deg = 90.0 } } } } } }]
+
+[[option]]
+facet = "hair_style"
+id = "braid"
+summary = "One thick braid down the back"
+words = ["braid", "single braid", "back braid", "long braid", "plait"]
+colour = "hair"
+steps = [{ op = "part.set_param", args = { character = "$character", part = "hair", path = "groups", value = { e-back-braid = { generator = { type = "tail", root = [110.0, 180.0, 0.01], length = 0.5, droop = 1.0, lean = 0.35, gather = 6, braid = { crossings = 7.0, width = 0.06, narrow = 0.4 } } } } } }]
+
+[[option]]
+facet = "hair_style"
+id = "bun"
+summary = "A bun at the nape"
+words = ["bun", "low bun", "chignon", "hair bun", "updo"]
+colour = "hair"
+steps = [{ op = "part.set_param", args = { character = "$character", part = "hair", path = "groups", value = { e-bun = { generator = { type = "bun", centre = [105.0, 180.0, 0.015], radius = 0.055, gather = 6 } } } } }]
+
+[[option]]
+facet = "hair_style"
+id = "high-bun"
+summary = "A bun on the crown"
+words = ["high bun", "top knot", "topknot"]
+colour = "hair"
+steps = [{ op = "part.set_param", args = { character = "$character", part = "hair", path = "groups", value = { e-bun = { generator = { type = "bun", centre = [38.0, 180.0, 0.015], radius = 0.05, gather = 6 } } } } }]
+
+[[option]]
+facet = "hair_style"
+id = "twin-buns"
+summary = "Twin buns on top of the head"
+words = ["twin buns", "space buns", "odango", "two buns", "double buns"]
+colour = "hair"
+steps = [{ op = "part.set_param", args = { character = "$character", part = "hair", path = "groups", value = { e-buns = { mirror = true, generator = { type = "bun", centre = [42.0, 120.0, 0.015], radius = 0.045, gather = 4 } } } } }]
+
+[[option]]
+facet = "bangs"
+id = "blunt"
+summary = "Blunt bangs, cut straight across"
+words = ["blunt bangs", "straight bangs", "hime cut", "hime", "blunt fringe", "straight fringe"]
+colour = "hair"
+steps = [{ op = "hair.bangs.preset", args = { character = "$character", part = "hair", group = "b-bangs", preset = "blunt" } }]
+
+[[option]]
+facet = "bangs"
+id = "side-swept"
+summary = "Side-swept bangs"
+words = ["side swept bangs", "side bangs", "side swept", "swept bangs", "side fringe"]
+colour = "hair"
+steps = [{ op = "hair.bangs.preset", args = { character = "$character", part = "hair", group = "b-bangs", preset = "side-swept" } }]
+
+[[option]]
+facet = "bangs"
+id = "curtain"
+summary = "Curtain bangs, parted in the middle"
+words = ["curtain bangs", "parted bangs", "middle part", "center part", "centre part"]
+colour = "hair"
+steps = [{ op = "hair.bangs.preset", args = { character = "$character", part = "hair", group = "b-bangs", preset = "curtain" } }]
+
+[[option]]
+facet = "bangs"
+id = "wispy"
+summary = "Wispy, light bangs"
+words = ["wispy bangs", "wispy", "messy bangs", "light bangs", "messy"]
+colour = "hair"
+steps = [{ op = "hair.bangs.preset", args = { character = "$character", part = "hair", group = "b-bangs", preset = "wispy" } }]
+
+[[option]]
+facet = "bangs"
+id = "none"
+summary = "No bangs: the forehead shows"
+words = ["no bangs", "slicked back", "forehead", "swept back"]
+steps = [{ op = "hair.bangs.preset", args = { character = "$character", part = "hair", group = "b-bangs", preset = "none" } }]
+
+[[option]]
+facet = "hair_extra"
+id = "ahoge"
+summary = "An ahoge: a lock standing up from the crown"
+words = ["ahoge", "cowlick", "antenna hair", "idiot hair"]
+colour = "hair"
+steps = [{ op = "part.set_param", args = { character = "$character", part = "hair", path = "groups", value = { ahoge = { generator = { type = "ahoge", locks = 2, length = 0.14, curl_deg = 230.0, fan_deg = 28.0 } } } } }]
+
+# ---------------------------------------------------------------- ears
+
+[[option]]
+facet = "ears"
+id = "elf"
+summary = "Long pointed elf ears"
+words = ["elf ears", "pointed ears", "pointy ears"]
+hints = ["elf", "elven", "elfin"]
+steps = [{ op = "part.set_param", args = { character = "$character", part = "head", path = "ears", value = { kind = "elf" } } }]
+
+[[option]]
+facet = "ears"
+id = "animal"
+summary = "Animal ears on top of the head"
+words = ["cat ears", "fox ears", "animal ears", "kemonomimi", "nekomimi", "wolf ears"]
+hints = ["catgirl", "cat girl", "foxgirl", "fox girl", "wolf girl", "neko"]
+steps = [{ op = "part.set_param", args = { character = "$character", part = "head", path = "ears", value = { kind = "animal" } } }]
+
+# ---------------------------------------------------------------- the face
+
+[[option]]
+facet = "eyes"
+id = "sparkle"
+summary = "Shoujo sparkle: a big tall iris with a star and long curled lashes"
+words = ["sparkly eyes", "sparkling eyes", "starry eyes", "big eyes", "bright eyes"]
+hints = ["shoujo", "sparkly"]
+colour = "eyes"
+steps = [{ op = "face.eyes.preset", args = { character = "$character", preset = "sparkle" } }]
+
+[[option]]
+facet = "eyes"
+id = "tareme"
+summary = "Tareme: soft, droopy eyes"
+words = ["droopy eyes", "tareme", "gentle eyes", "soft eyes", "kind eyes"]
+hints = ["gentle", "kind", "soft spoken"]
+colour = "eyes"
+steps = [{ op = "face.eyes.preset", args = { character = "$character", preset = "tareme" } }]
+
+[[option]]
+facet = "eyes"
+id = "tsurime"
+summary = "Tsurime: sharp, lifted eyes"
+words = ["sharp eyes", "tsurime", "fierce eyes", "narrow eyes"]
+hints = ["fierce", "cool", "sharp", "tsundere", "intense"]
+colour = "eyes"
+steps = [{ op = "face.eyes.preset", args = { character = "$character", preset = "tsurime" } }]
+
+[[option]]
+facet = "eyes"
+id = "sleepy"
+summary = "Sleepy: heavy half lids"
+words = ["sleepy eyes", "half lidded"]
+hints = ["drowsy", "tired", "lazy", "bored", "sleepy"]
+colour = "eyes"
+steps = [{ op = "face.eyes.preset", args = { character = "$character", preset = "sleepy" } }]
+
+[[option]]
+facet = "eyes"
+id = "cat"
+summary = "Cat eyes: a slit pupil and a lifted outer corner"
+words = ["cat eyes", "cat eyed", "slit pupils", "feline eyes", "reptile eyes", "dragon eyes"]
+hints = ["feline"]
+colour = "eyes"
+steps = [{ op = "face.eyes.preset", args = { character = "$character", preset = "cat", keep_colours = false } }]
+
+[[option]]
+facet = "eyes"
+id = "doll"
+summary = "Doll eyes: very round, with dense even lashes"
+words = ["doll eyes", "doll like", "round eyes"]
+hints = ["doll", "innocent"]
+colour = "eyes"
+steps = [{ op = "face.eyes.preset", args = { character = "$character", preset = "doll" } }]
+
+[[option]]
+facet = "eyes"
+id = "realistic"
+summary = "Realistic eyes: a smaller iris with dense fibres"
+words = ["realistic eyes", "semi realistic"]
+hints = ["realistic"]
+colour = "eyes"
+steps = [{ op = "face.eyes.preset", args = { character = "$character", preset = "realistic" } }]
+
+[[option]]
+facet = "makeup"
+id = "natural"
+summary = "Barely-there makeup"
+words = ["natural makeup", "light makeup", "subtle makeup"]
+steps = [{ op = "face.makeup.preset", args = { character = "$character", preset = "natural" } }]
+
+[[option]]
+facet = "makeup"
+id = "soft-glam"
+summary = "Soft glam: a smoked lid, a rose lip and contour"
+words = ["glam", "soft glam", "makeup", "made up", "eyeliner", "winged eyeliner"]
+hints = ["glamorous"]
+steps = [{ op = "face.makeup.preset", args = { character = "$character", preset = "soft-glam" } }]
+
+[[option]]
+facet = "makeup"
+id = "idol"
+summary = "Idol stage makeup: a pink sparkle lid and a glossy lip"
+words = ["idol makeup", "stage makeup"]
+hints = ["idol", "pop idol", "singer", "popstar", "pop star"]
+steps = [{ op = "face.makeup.preset", args = { character = "$character", preset = "idol" } }]
+
+[[option]]
+facet = "makeup"
+id = "gothic"
+summary = "Gothic: a deep plum lid with a long wing and a dark lip"
+words = ["gothic", "dark makeup", "black lipstick"]
+hints = ["goth", "emo", "vampire"]
+tones = ["black", "maroon", "purple"]
+steps = [{ op = "face.makeup.preset", args = { character = "$character", preset = "gothic" } }]
+
+[[option]]
+facet = "expression"
+id = "relaxed"
+summary = "A soft, calm smile"
+words = ["calm", "serene", "relaxed", "peaceful", "warm", "friendly", "sweet"]
+steps = [{ op = "face.expression.set_default", args = { character = "$character", id = "relaxed" } }]
+
+[[option]]
+facet = "expression"
+id = "happy"
+summary = "A happy smile"
+words = ["cheerful", "happy", "smiling", "bubbly", "energetic", "genki", "upbeat", "joyful", "playful"]
+steps = [{ op = "face.expression.set_default", args = { character = "$character", id = "happy" } }]
+
+[[option]]
+facet = "expression"
+id = "smug"
+summary = "A smug look"
+words = ["smug", "confident", "cocky", "mischievous", "sly", "teasing"]
+steps = [{ op = "face.expression.set_default", args = { character = "$character", id = "smug" } }]
+
+[[option]]
+facet = "expression"
+id = "shy"
+summary = "A shy look"
+words = ["shy", "timid", "bashful", "nervous", "quiet"]
+steps = [{ op = "face.expression.set_default", args = { character = "$character", id = "shy" } }]
+
+[[option]]
+facet = "expression"
+id = "determined"
+summary = "A determined look"
+words = ["determined", "brave", "heroic", "serious", "stern", "stoic"]
+steps = [{ op = "face.expression.set_default", args = { character = "$character", id = "determined" } }]
+
+[[option]]
+facet = "expression"
+id = "pout"
+summary = "A pout"
+words = ["pouty", "pouting", "grumpy", "sulky", "bratty"]
+steps = [{ op = "face.expression.set_default", args = { character = "$character", id = "pout" } }]
+
+# ---------------------------------------------------------------- accessories
+
+[[option]]
+facet = "accessories"
+id = "round-glasses"
+summary = "Round glasses"
+words = ["round glasses", "glasses", "spectacles", "specs"]
+hints = ["bookish", "nerdy", "nerd"]
+parts = [{ id = "glasses", kind = "glasses", params = { style = "round" } }]
+colour = { part = "glasses" }
+
+[[option]]
+facet = "accessories"
+id = "square-glasses"
+summary = "Square glasses"
+words = ["square glasses", "rectangular glasses", "rimmed glasses"]
+parts = [{ id = "glasses", kind = "glasses", params = { style = "square" } }]
+colour = { part = "glasses" }
+
+[[option]]
+facet = "accessories"
+id = "cat-eye-glasses"
+summary = "Cat-eye glasses"
+words = ["cat eye glasses", "cateye glasses"]
+parts = [{ id = "glasses", kind = "glasses", params = { style = "cat_eye" } }]
+colour = { part = "glasses" }
+
+[[option]]
+facet = "accessories"
+id = "sunglasses"
+summary = "Sunglasses"
+words = ["sunglasses", "shades", "sunnies"]
+parts = [{ id = "glasses", kind = "glasses", params = { style = "sunglasses" } }]
+colour = { part = "glasses" }
+
+[[option]]
+facet = "accessories"
+id = "beret"
+summary = "A beret"
+words = ["beret"]
+hints = ["artist", "painter"]
+parts = [{ id = "hat", kind = "hat", params = { style = "beret" } }]
+colour = { part = "hat" }
+
+[[option]]
+facet = "accessories"
+id = "cap"
+summary = "A cap"
+words = ["cap", "baseball cap"]
+parts = [{ id = "hat", kind = "hat", params = { style = "cap" } }]
+colour = { part = "hat" }
+
+[[option]]
+facet = "accessories"
+id = "witch-hat"
+summary = "A witch's hat"
+words = ["witch hat", "witch s hat", "wizard hat", "pointy hat", "pointed hat"]
+parts = [{ id = "hat", kind = "hat", params = { style = "witch" } }]
+colour = { part = "hat" }
+
+[[option]]
+facet = "accessories"
+id = "beanie"
+summary = "A beanie"
+words = ["beanie", "knit hat", "woolly hat", "toque"]
+parts = [{ id = "hat", kind = "hat", params = { style = "beanie" } }]
+colour = { part = "hat" }
+
+[[option]]
+facet = "accessories"
+id = "crown"
+summary = "A crown"
+words = ["crown", "tiara"]
+hints = ["royal", "prince", "king"]
+parts = [{ id = "hat", kind = "hat", params = { style = "crown" } }]
+colour = { part = "hat" }
+
+[[option]]
+facet = "accessories"
+id = "horns"
+summary = "Swept-back horns"
+words = ["horns", "horned"]
+hints = ["demon", "devil", "succubus", "dragon girl", "draconic"]
+tones = ["black", "maroon", "red"]
+parts = [{ id = "horns", kind = "horns", params = { shape = "swept_back" } }]
+colour = { part = "horns" }
+
+[[option]]
+facet = "accessories"
+id = "ram-horns"
+summary = "Curled ram horns"
+words = ["ram horns", "curled horns"]
+hints = ["sheep", "goat"]
+parts = [{ id = "horns", kind = "horns", params = { shape = "ram", length = 0.2, base_radius = 0.028, horn = "#b0a08c" } }]
+colour = { part = "horns" }
+
+[[option]]
+facet = "accessories"
+id = "oni-horns"
+summary = "Oni horns"
+words = ["oni horns"]
+hints = ["oni", "ogre"]
+parts = [{ id = "horns", kind = "horns", params = { shape = "oni" } }]
+colour = { part = "horns" }
+
+[[option]]
+facet = "accessories"
+id = "antlers"
+summary = "Antlers"
+words = ["antlers"]
+hints = ["deer", "reindeer", "stag"]
+parts = [{ id = "horns", kind = "horns", params = { shape = "antler" } }]
+colour = { part = "horns" }
+
+[[option]]
+facet = "accessories"
+id = "angel-wings"
+summary = "Feathered wings"
+words = ["wings", "angel wings", "feathered wings", "winged"]
+hints = ["angel", "angelic", "bird"]
+tones = ["white", "beige", "silver"]
+parts = [{ id = "wings", kind = "wings", params = { kind = "feathered" } }]
+colour = { part = "wings" }
+
+[[option]]
+facet = "accessories"
+id = "bat-wings"
+summary = "Bat wings"
+words = ["bat wings", "demon wings", "devil wings"]
+hints = ["bat"]
+tones = ["black", "maroon", "red"]
+parts = [{ id = "wings", kind = "wings", params = { kind = "bat" } }]
+colour = { part = "wings" }
+
+[[option]]
+facet = "accessories"
+id = "fairy-wings"
+summary = "Fairy wings"
+words = ["fairy wings", "pixie wings", "butterfly wings"]
+hints = ["fairy", "fae"]
+tones = ["green", "teal", "pink"]
+parts = [{ id = "wings", kind = "wings", params = { kind = "fairy" } }]
+colour = { part = "wings" }
+
+[[option]]
+facet = "accessories"
+id = "mech-wings"
+summary = "Mechanical wings"
+words = ["mechanical wings", "robot wings", "mech wings", "jetpack"]
+hints = ["mecha"]
+parts = [{ id = "wings", kind = "wings", params = { kind = "mechanical" } }]
+colour = { part = "wings" }
+
+[[option]]
+facet = "accessories"
+id = "fox-tail"
+summary = "A fox tail"
+words = ["fox tail", "fluffy tail", "tail"]
+hints = ["kitsune", "fox"]
+parts = [{ id = "tail", kind = "tail", params = { kind = "fox" } }]
+colour = { part = "tail" }
+
+[[option]]
+facet = "accessories"
+id = "cat-tail"
+summary = "A cat tail"
+words = ["cat tail", "kitty tail"]
+parts = [{ id = "tail", kind = "tail", params = { kind = "cat" } }]
+colour = { part = "tail" }
+
+[[option]]
+facet = "accessories"
+id = "dragon-tail"
+summary = "A dragon tail"
+words = ["dragon tail", "lizard tail"]
+hints = ["dragon"]
+parts = [{ id = "tail", kind = "tail", params = { kind = "dragon" } }]
+colour = { part = "tail" }
+
+[[option]]
+facet = "accessories"
+id = "bunny-tail"
+summary = "A bunny tail"
+words = ["bunny tail"]
+hints = ["bunny", "rabbit"]
+parts = [{ id = "tail", kind = "tail", params = { kind = "bunny" } }]
+colour = { part = "tail" }
+
+[[option]]
+facet = "accessories"
+id = "headphones"
+summary = "Headphones"
+words = ["headphones", "headset"]
+hints = ["dj", "streamer"]
+parts = [{ id = "headphones", kind = "headphones" }]
+colour = { part = "headphones" }
+
+[[option]]
+facet = "accessories"
+id = "cat-headphones"
+summary = "Cat-ear headphones"
+words = ["cat ear headphones", "cat headphones", "kitty headphones"]
+parts = [{ id = "headphones", kind = "headphones", params = { cat_ears = true } }]
+colour = { part = "headphones" }
+
+[[option]]
+facet = "accessories"
+id = "halo"
+summary = "A glowing halo"
+words = ["halo"]
+hints = ["holy", "saint"]
+parts = [{ id = "halo", kind = "halo" }]
+
+[[option]]
+facet = "accessories"
+id = "hairpin"
+summary = "A hairpin"
+words = ["hairpin", "hair pin", "barrette", "hair clip", "hairclip"]
+parts = [{ id = "hairpin", kind = "hairpin" }]
+
+[[option]]
+facet = "accessories"
+id = "flower-hairpin"
+summary = "A flower in the hair"
+words = ["flower hairpin", "hair flower", "flower in her hair", "flower"]
+hints = ["floral"]
+parts = [{ id = "hairpin", kind = "hairpin", params = { style = "flower" } }]
+
+[[option]]
+facet = "accessories"
+id = "choker"
+summary = "A choker"
+words = ["choker", "collar"]
+parts = [{ id = "choker", kind = "choker" }]
+
+[[option]]
+facet = "accessories"
+id = "bell"
+summary = "A bell at the throat"
+words = ["bell", "neck bell", "jingle bell"]
+parts = [{ id = "choker", kind = "choker" }, { id = "bell", kind = "bell" }]
+
+[[option]]
+facet = "accessories"
+id = "earrings"
+summary = "Drop earrings"
+words = ["earrings", "drop earrings", "dangling earrings"]
+parts = [{ id = "earrings", kind = "earrings" }]
+
+[[option]]
+facet = "accessories"
+id = "hoop-earrings"
+summary = "Hoop earrings"
+words = ["hoop earrings", "hoops"]
+parts = [{ id = "earrings", kind = "earrings", params = { style = "hoop" } }]
+
+[[option]]
+facet = "accessories"
+id = "stud-earrings"
+summary = "Stud earrings"
+words = ["stud earrings", "studs", "piercings", "pierced ears"]
+parts = [{ id = "earrings", kind = "earrings", params = { style = "stud" } }]
+
+[[option]]
+facet = "accessories"
+id = "ring"
+summary = "A ring"
+words = ["ring", "wedding ring", "signet ring"]
+parts = [{ id = "ring", kind = "ring" }]
+
+[[option]]
+facet = "accessories"
+id = "bracelet"
+summary = "A bracelet"
+words = ["bracelet", "bangle", "wristband"]
+parts = [{ id = "bracelet", kind = "bracelet" }]
+
+[[option]]
+facet = "accessories"
+id = "headdress"
+summary = "A frilled headdress"
+words = ["headdress", "frilled headband", "lace headband", "headband", "katyusha"]
+parts = [{ id = "headdress", kind = "headdress" }]
+
+# ---------------------------------------------------------------- colours
+
+[[colour]]
+id = "black"
+words = ["black", "raven", "jet black", "onyx"]
+hex = "#2a2630"
+hair = ["#141218", "#2a2630", "#4a4658"]
+
+[[colour]]
+id = "white"
+words = ["white", "snow", "snowy", "snow white", "ivory"]
+hex = "#eeeef2"
+hair = ["#c8c8d4", "#eeeef2", "#ffffff"]
+
+[[colour]]
+id = "silver"
+words = ["silver", "platinum", "grey", "gray", "ash", "ashen", "silvery"]
+hex = "#c0c8d8"
+hair = ["#8a90a4", "#c0c8d8", "#e8ecf4"]
+
+[[colour]]
+id = "blonde"
+words = ["blonde", "blond", "golden", "gold", "honey", "flaxen", "yellow"]
+hex = "#f0d080"
+hair = ["#c89a4a", "#f0d080", "#fff0c0"]
+
+[[colour]]
+id = "brown"
+words = ["brown", "brunette", "chestnut", "chocolate", "auburn"]
+hex = "#8a5a44"
+hair = ["#6e4334", "#8a5a44", "#a8725a"]
+
+[[colour]]
+id = "red"
+words = ["red", "crimson", "scarlet", "ruby", "cherry"]
+hex = "#c8343c"
+hair = ["#8a1e2a", "#c8343c", "#e86a5c"]
+
+[[colour]]
+id = "ginger"
+words = ["ginger", "copper", "redhead", "strawberry blonde"]
+hex = "#d8743a"
+hair = ["#a04a22", "#d8743a", "#f0a060"]
+
+[[colour]]
+id = "orange"
+words = ["orange", "tangerine", "amber"]
+hex = "#f08a3a"
+
+[[colour]]
+id = "pink"
+words = ["pink", "rose", "rosy", "sakura", "bubblegum", "magenta"]
+hex = "#f09ab8"
+hair = ["#d06a90", "#f09ab8", "#ffd0e0"]
+
+[[colour]]
+id = "purple"
+words = ["purple", "violet", "lavender", "lilac", "plum", "amethyst"]
+hex = "#9a7ad0"
+hair = ["#5a3a8a", "#9a7ad0", "#c8b0f0"]
+
+[[colour]]
+id = "blue"
+words = ["blue", "azure", "sapphire", "cobalt", "sky blue", "light blue"]
+hex = "#5a8ae0"
+hair = ["#2a4a9a", "#5a8ae0", "#a0c4f8"]
+
+[[colour]]
+id = "navy"
+words = ["navy", "dark blue", "midnight", "indigo", "navy blue"]
+hex = "#2e3a6a"
+hair = ["#161c3a", "#2e3a6a", "#4a5a94"]
+
+[[colour]]
+id = "teal"
+words = ["teal", "cyan", "turquoise", "aqua", "aquamarine"]
+hex = "#3ab8b8"
+hair = ["#1a7a84", "#3ab8b8", "#9ae8e4"]
+
+[[colour]]
+id = "green"
+words = ["green", "emerald", "jade", "mint", "forest green", "olive green"]
+hex = "#4aa86a"
+hair = ["#2a6a44", "#4aa86a", "#9ad8a8"]
+
+[[colour]]
+id = "beige"
+words = ["beige", "cream", "tan coloured", "khaki", "camel"]
+hex = "#e8dcc4"
+
+[[colour]]
+id = "maroon"
+words = ["maroon", "burgundy", "wine", "oxblood"]
+hex = "#6a2232"
+
+[[target]]
+target = "hair"
+words = ["hair", "haired", "locks", "tresses", "mane"]
+
+[[target]]
+target = "eyes"
+words = ["eyes", "eye", "eyed", "irises", "iris", "gaze"]
+
+[[target]]
+target = "outfit"
+words = ["outfit", "clothes", "clothing", "attire", "costume", "garb", "top", "shirt"]
+
+[priors]
+hair = ["brown", "black", "silver", "pink", "blonde", "navy", "purple", "white", "blue", "ginger"]
+eyes = ["blue", "green", "purple", "red", "brown", "teal", "blonde", "pink"]
+outfit = ["navy", "black", "red", "white", "teal", "purple", "maroon", "beige", "pink"]
