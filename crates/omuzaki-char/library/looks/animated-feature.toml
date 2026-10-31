@@ -31,8 +31,8 @@ name = "stylized"
 [params.cloth.program.params]
 wrap = { float = 0.55 }
 shade-2-strength = { float = 0.35 }
-spec-strength = { float = 0.35 }
-spec-size = { float = 0.45 }
+spec-strength = { float = 0.08 }
+spec-size = { float = 0.4 }
 spec-softness = { float = 0.9 }
 rim-width = { float = 0.14 }
 rim-strength = { float = 0.45 }

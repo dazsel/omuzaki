@@ -27,9 +27,6 @@ name = "stylized"
 shade-2-strength = { float = 1.0 }
 shade-2-shift = { float = -0.35 }
 shade-2-softness = { float = 0.0 }
-spec-strength = { float = 0.5 }
-spec-size = { float = 0.1 }
-spec-softness = { float = 0.0 }
 
 [params.scene]
 bloom = false
