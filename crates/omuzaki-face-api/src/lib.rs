@@ -51,8 +51,8 @@ pub use profile::{
     AngerVeinStyle, Aperture, BlushKind, BrowStyle, CLOSE_SHOT, Catchlight, CatchlightShape, CheekStyle, Collarette,
     Crease, EffectStyle, EyeShadow, EyeStyle, FaceLayout, FaceMark, FaceProfile, FaceRatios, FangKind, FangStyle,
     Highlights, Iris, IrisColours, IrisDetail, IrisFibres, IrisFlecks, IrisPaint, Lash, LashStrands, LimbalRing, Lips,
-    LowerLidStyle, MAX_CATCHLIGHTS, MarkKind, MarkSide, MouthInterior, MouthStyle, NoseKind, NoseStyle, Pupil,
-    PupilShape, Sclera, StrandRow, TeethStyle, TongueStyle, WIDE_SHOT,
+    LowerLidStyle, MAX_CATCHLIGHTS, MAX_MARK_POINTS, MarkKind, MarkSide, MouthInterior, MouthStyle, NoseKind,
+    NoseStyle, Pupil, PupilShape, Sclera, StrandRow, TeethStyle, TongueStyle, WIDE_SHOT,
 };
 pub use resolve::ResolveError;
 

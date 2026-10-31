@@ -496,8 +496,12 @@ fn no_nose_draws_nothing_and_size_scales_the_tick() {
 
 // ------------------------------------------------------------------------------------------------ marks
 
+/// A circuit trace: across, a right-angle bend down, and on to the corner, with pads at its ends.
+const TRACE: [[f64; 2]; 4] = [[-1.0, 0.0], [0.2, 0.0], [0.5, -0.3], [0.5, -0.8]];
+
 fn mark(kind: MarkKind, at: [f64; 2], size: f64) -> FaceMark {
-    FaceMark { kind, at, size, ..FaceMark::default() }
+    let points = if kind == MarkKind::Line { TRACE.to_vec() } else { Vec::new() };
+    FaceMark { kind, at, size, points, pads: 3.0, ..FaceMark::default() }
 }
 
 fn marks(marks: Vec<FaceMark>) -> DrawList {
@@ -507,7 +511,7 @@ fn marks(marks: Vec<FaceMark>) -> DrawList {
 #[test]
 fn every_kind_of_mark_draws_and_a_profile_without_marks_draws_nothing() {
     assert!(marks(vec![]).is_empty());
-    for kind in [MarkKind::Freckles, MarkKind::BeautyMark, MarkKind::Paint, MarkKind::Scar] {
+    for kind in [MarkKind::Freckles, MarkKind::BeautyMark, MarkKind::Paint, MarkKind::Scar, MarkKind::Line] {
         assert!(!marks(vec![mark(kind, [0.05, -0.08], 0.01)]).is_empty(), "{kind:?}");
     }
 }
@@ -551,10 +555,47 @@ fn a_scar_is_a_line_with_cross_ticks() {
 }
 
 #[test]
+fn a_line_runs_through_its_points_with_a_pad_at_each_end() {
+    let size = 0.02;
+    let line = mark(MarkKind::Line, [0.06, -0.1], size);
+    let list = marks(vec![line.clone()]);
+    assert_eq!(count(&list, |c| matches!(c, Cmd::Stroke { .. })), 1, "one stroke through every point");
+    assert_eq!(count(&list, |c| matches!(c, Cmd::Fill { .. })), 2, "a pad at each end");
+    let centre = Vec2::new(0.06, -0.1);
+    let drawn = points(&list);
+    for p in TRACE {
+        #[allow(clippy::cast_possible_truncation)]
+        let want = centre + Vec2::new(p[0] as f32, p[1] as f32) * size as f32;
+        assert!(drawn.iter().any(|q| (*q - want).length() < 1e-6), "{want} is on the line");
+    }
+    assert_eq!(points(&list), points(&marks(vec![line.clone()])), "a line is a pure function of its fields");
+    let bare = marks(vec![FaceMark { pads: 0.0, ..line.clone() }]);
+    assert_eq!(count(&bare, |c| matches!(c, Cmd::Fill { .. })), 0, "no pads asked, none drawn");
+    let one_point = marks(vec![FaceMark { points: vec![[0.0, 0.0]], ..line }]);
+    assert!(one_point.is_empty(), "a line needs two points");
+}
+
+#[test]
+fn a_line_mark_is_checked() {
+    use omuzaki_face_api::Validate;
+    let bad = |m: FaceMark| {
+        let mut c = omuzaki_face_api::Check::new();
+        m.check(&mut c);
+        c.finish().is_err()
+    };
+    let line = mark(MarkKind::Line, [0.0, 0.0], 0.02);
+    assert!(!bad(line.clone()));
+    assert!(bad(FaceMark { points: vec![[0.0, 0.0]], ..line.clone() }), "one point");
+    assert!(bad(FaceMark { points: vec![[0.0, 0.0], [1.5, 0.0]], ..line.clone() }), "a point beyond 1");
+    assert!(bad(FaceMark { points: vec![[0.0, 0.0]; 33], ..line.clone() }), "too many points");
+    assert!(bad(FaceMark { width: 0.05, ..line }), "too wide");
+}
+
+#[test]
 fn every_mark_stays_inside_the_face_rect_wherever_it_is_put() {
     let rect = face_rect();
     let spots = [[-0.3, -0.4], [0.3, 0.3], [0.3, -0.4], [-0.3, 0.3], [0.0, 0.0]];
-    for kind in [MarkKind::Freckles, MarkKind::BeautyMark, MarkKind::Paint, MarkKind::Scar] {
+    for kind in [MarkKind::Freckles, MarkKind::BeautyMark, MarkKind::Paint, MarkKind::Scar, MarkKind::Line] {
         for at in spots {
             for size in [0.0003, 0.01, 0.1] {
                 for seed in [0, 1, 99] {
@@ -583,7 +624,7 @@ fn marks_fit_narrow_rects_stroke_included() {
     for rect in rects {
         let mut projection = mock_projection();
         projection.rect = rect;
-        for kind in [MarkKind::Freckles, MarkKind::BeautyMark, MarkKind::Paint, MarkKind::Scar] {
+        for kind in [MarkKind::Freckles, MarkKind::BeautyMark, MarkKind::Paint, MarkKind::Scar, MarkKind::Line] {
             for seed in [0, 1] {
                 let profile = profile_with(|p| {
                     p.marks = vec![FaceMark { seed, count: 30, ..mark(kind, [0.0, 0.0], 0.05) }];

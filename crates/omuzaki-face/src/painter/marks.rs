@@ -1,4 +1,4 @@
-//! Marks: freckles, beauty marks, face paint and scars (CB-23), drawn on the Base layer in profile order.
+//! Marks: freckles, beauty marks, face paint, scars and lines (CB-23), drawn on the Base layer in profile order.
 //!
 //! The prototype has none, so these are designed here from the contract ([`FaceMark`]) with three promises: a mark is a
 //! pure function of its fields (freckles scatter from `seed` with a small integer generator, never a clock or a global
@@ -8,7 +8,9 @@
 use std::f32::consts::{PI, TAU};
 
 use omuzaki_core::glam::Vec2;
-use omuzaki_face_api::{Cap, Cmd, Colour, FaceLayerId, FaceMark, FaceRect, Join, MarkKind, Paint, narrow};
+use omuzaki_face_api::{
+    Cap, Cmd, Colour, FaceLayerId, FaceMark, FaceRect, Join, MAX_MARK_POINTS, MarkKind, Paint, narrow,
+};
 
 use crate::painter::{PaintCtx, fixed_colour};
 
@@ -32,6 +34,9 @@ const SCAR_WIDTH: f32 = 0.08;
 const TICK_WIDTH: f32 = 0.05;
 const TICK_HALF_LENGTH: f32 = 0.16;
 const TICK_STATIONS: [f32; 4] = [-0.3, -0.1, 0.1, 0.3];
+/// A line mark's widest stroke and pad radius, as shares of `size`: 1 + the larger of the two stays within [`REACH`].
+const LINE_WIDTH_MAX: f32 = 0.1;
+const PAD_RADIUS_MAX: f32 = 0.25;
 /// Colour used when a palette slot reached the painter unresolved (it should not: the host resolves them).
 const FALLBACK_COLOUR: Colour = Colour::rgb(0x7a, 0x4a, 0x40);
 
@@ -64,6 +69,7 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
             MarkKind::Freckles => freckles(list, &ink, mark, centre, size),
             MarkKind::Paint => face_paint(list, &ink, mark.seed, centre, size),
             MarkKind::Scar => scar(list, &ink, centre, size),
+            MarkKind::Line => line(list, &ink, mark, centre, size),
         }
     }
 }
@@ -151,6 +157,28 @@ fn scar(list: &mut List, ink: &Ink, centre: Vec2, size: f32) {
         let at = centre + along * (station * size);
         let half = across * (TICK_HALF_LENGTH * size);
         stroke(list, ink, at - half, at + half, size * TICK_WIDTH);
+    }
+}
+
+/// A line through the mark's points with round ends and joins, and a pad at each end when it has them. The line and
+/// its pads are held within [`REACH`]: a point is kept within 1 of the centre, and the width within a tenth of `size`.
+fn line(list: &mut List, ink: &Ink, mark: &FaceMark, centre: Vec2, size: f32) {
+    if mark.points.len() < 2 {
+        return;
+    }
+    let mut points = [Vec2::ZERO; MAX_MARK_POINTS];
+    let n = mark.points.len().min(MAX_MARK_POINTS);
+    for (point, p) in points.iter_mut().zip(&mark.points) {
+        *point = centre + Vec2::new(narrow(p[0]), narrow(p[1])).clamp_length_max(1.0) * size;
+    }
+    let width = narrow(mark.width).min(LINE_WIDTH_MAX * size);
+    let pad = (narrow(mark.pads).max(0.0) * width / 2.0).min(PAD_RADIUS_MAX * size);
+    let path = list.path().polyline(&points[..n]).finish();
+    list.push(Cmd::Stroke { path, paint: ink.paint, width, cap: Cap::Round, join: Join::Round, opacity: ink.opacity });
+    if pad > width / 2.0 {
+        for end in [points[0], points[n - 1]] {
+            disc(list, ink, end, pad);
+        }
     }
 }
 
