@@ -63,6 +63,8 @@ To land on a reference's frames rather than near them:
 - `[[cue]]` tables place a face, channels or a shot at an exact second (`at`), apart from the lines' words, so a cut
   or a face change lands on the frame it lands on in the reference; a cue wins over a line's change at the same moment.
 - `handheld = 0` locks the camera off (1, the default, is a phone in a hand), so the only motion is what the shots ask.
+- `[body]` sets the living body's dials (`gestures`, `fidgets`, `sway`, `arms`, `amount`, each 0 to 2): a talking head
+  whose hands never come up takes `gestures = 0` and `fidgets = 0`.
 - A shot's `head_width` frames the head (hair included) at a share of the frame's width, the same on every character,
   where `zoom` alone depends on the character's size; `zoom`, `punch` and `push` scale it from there.
 - `[captions]` takes a `look` (`punchy`, the default: extra bold, heavy outline, shadow and pop; `clean`: bold, a thin

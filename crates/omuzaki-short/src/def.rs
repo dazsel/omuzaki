@@ -121,6 +121,10 @@ pub struct ShortDef {
     /// to [`MAX_HANDHELD`]. A shot's `shake` comes on top.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub handheld: f32,
+    /// How the body moves on its own while the face talks (the living body's dials, every amount `0..=2`): `gestures
+    /// = 0` keeps the hands still, `amount = 0` leaves only the head, the lean and the breath. As tuned when left out.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub body: omuzaki_anim_api::BodyStyle,
 }
 
 /// The most handheld drift a short may ask for.
@@ -710,6 +714,7 @@ impl ShortDef {
             cues: Vec::new(),
             inserts: Vec::new(),
             handheld: 1.0,
+            body: omuzaki_anim_api::BodyStyle::default(),
         }
     }
 
@@ -804,6 +809,14 @@ impl ShortDef {
         }
         if !(0.0..=MAX_HANDHELD).contains(&self.handheld) {
             return Err(ShortError::invalid("handheld", format!("{} is outside 0 to {MAX_HANDHELD}", self.handheld)));
+        }
+        for (name, value) in self.body.amounts() {
+            if !(0.0..=omuzaki_anim_api::MAX_BODY_AMOUNT).contains(&value) {
+                return Err(ShortError::invalid(
+                    format!("body.{name}"),
+                    format!("{value} is outside 0 to {}", omuzaki_anim_api::MAX_BODY_AMOUNT),
+                ));
+            }
         }
         if self.cues.len() > MAX_CUES {
             return Err(ShortError::invalid("cue", format!("{} cues; at most {MAX_CUES}", self.cues.len())));
@@ -1017,6 +1030,17 @@ text = "Second line."
         let shaky = text.replace("handheld = 0.0", "handheld = 9.0");
         assert!(ShortDef::from_toml(&shaky).unwrap_err().to_string().contains("handheld"));
         assert!(!ShortDef::from_toml(SAMPLE).unwrap().to_toml().unwrap().contains("handheld"), "the default stays out");
+    }
+
+    #[test]
+    fn reads_the_body_dials_and_checks_them() {
+        let still = ShortDef::from_toml(&format!("{SAMPLE}\n[body]\ngestures = 0.0\nfidgets = 0.0\n")).unwrap();
+        assert!(still.body.gestures.abs() < f32::EPSILON && still.body.fidgets.abs() < f32::EPSILON);
+        assert!((still.body.sway - 1.0).abs() < f32::EPSILON, "what it leaves out stays as tuned");
+        assert_eq!(ShortDef::from_toml(&still.to_toml().unwrap()).unwrap(), still);
+        let wild = ShortDef::from_toml(&format!("{SAMPLE}\n[body]\narms = 3.0\n"));
+        assert!(wild.unwrap_err().to_string().contains("body.arms"));
+        assert!(!ShortDef::from_toml(SAMPLE).unwrap().to_toml().unwrap().contains("[body]"), "the default stays out");
     }
 
     #[test]

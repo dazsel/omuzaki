@@ -181,7 +181,8 @@ fn run(
         kit.set_face(renderer, FaceRig::standard()).map_err(|e| render_error("the face", e))?;
     }
     let expressions = stage.trigger_expressions();
-    let mut performer = OfflinePerformer::new(scene.timeline, &expressions, ChannelBuf::NEUTRAL, base, def.seed)?;
+    let mut performer =
+        OfflinePerformer::new(scene.timeline, &expressions, ChannelBuf::NEUTRAL, base, def.seed, def.body)?;
     let [w, h] = def.size;
     #[allow(clippy::cast_precision_loss, reason = "sides are at most 4096")]
     let rig = CameraRig {
