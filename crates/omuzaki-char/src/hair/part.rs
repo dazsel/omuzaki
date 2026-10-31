@@ -161,7 +161,9 @@ pub fn build_with(
         place(params, ctx, template_head.as_ref(), ears, &frame, keep_out.as_ref(), depth.as_ref(), &mut entries)?
     };
     if sized {
-        entries.iter_mut().for_each(|entry| entry.group.size_about(size, joint));
+        for entry in &mut entries {
+            entry.group.size_about(size, joint);
+        }
         accents.size_about(size, joint);
     }
     let frame = OutwardFrame { head: head.centre(), body_axis: body_axis(body.as_deref(), head.centre()) };
@@ -169,7 +171,9 @@ pub fn build_with(
     let chains = tail_chains(params, ctx, head.as_ref(), &accents)?;
     let mut strays = Strays::of(params, template_head.as_ref(), ctx.quality);
     if sized {
-        strays.baby.iter_mut().for_each(|w| w.size_about(size, joint));
+        for wisp in &mut strays.baby {
+            wisp.size_about(size, joint);
+        }
     }
     let Meshes { mut stat, mut dynamic, ties } = mesh_groups(
         &entries,
