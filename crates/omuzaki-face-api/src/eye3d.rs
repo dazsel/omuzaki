@@ -719,8 +719,8 @@ mod tests {
     #[test]
     fn every_numeric_field_has_a_range() {
         let ranges = EyeDesign::default().ranges();
-        // Every field but the seed and the colours: the style, then 4 + 6 + 2 + 8 + 4 + 7 + 5.
-        assert_eq!(ranges.len(), 37, "{ranges:?}");
+        // Every field but the seed and the colours: the style, then 4 + 6 + 2 + 8 + 11 (the caruncle six) + 7 + 5.
+        assert_eq!(ranges.len(), 44, "{ranges:?}");
         let rule = ranges.iter().find(|r| r.path == "ball/radius").unwrap();
         assert!(rule.note.is_some(), "the iris rule is listed with the radius");
     }
