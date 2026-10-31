@@ -1,0 +1,66 @@
+id = "anime-bob"
+name = "Anime bob"
+summary = "A full, rounded chin-length bob with long pointed bangs over the eyes and side locks falling to a point at the jaw."
+origin = "built from the kit's generators and tuned on the kit's renders against a pixel overlay"
+
+[volume]
+whorl = { polar_deg = 25.0, azimuth_deg = 180.0 }
+# Fuller than the generators make: an anime bob is a rounded mass standing well off the head, not a cap.
+fullness = 1.5
+crown = 1.1
+back = 1.0
+
+[groups.a-cap]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.a-cap.generator]
+type = "cap"
+hairline_back_deg = 150.0
+
+[groups.b-bangs]
+dynamics = { simulate = false, follow = "head" }
+# Crisp card locks, each parting in two toward its tip: a drawn anime fringe.
+lock = { profile = "card", split = 2, split_from = 0.6, spread = 0.5 }
+
+[groups.b-bangs.generator]
+type = "bangs"
+sweep_deg = 12.0
+
+# Long pointed locks of uneven length over the eyes (the `anime` fringe preset): the under layer to the upper lids,
+# the top layer to the lower lids, long and short in turn so the eyes show through the gaps.
+[[groups.b-bangs.generator.layers]]
+count = 10
+spread_deg = 46.0
+tip_heights = [-0.01, -0.03, -0.02, -0.04, -0.015, -0.035, -0.02, -0.03]
+shade = 0.8
+hook_deg = 6.0
+
+[[groups.b-bangs.generator.layers]]
+count = 7
+spread_deg = 42.0
+tip_heights = [-0.02, -0.05, -0.03, -0.06, -0.035, -0.05, -0.025]
+shade = 1.0
+hook_deg = 6.0
+
+[groups.c-curtain]
+dynamics = { simulate = true, follow = "body" }
+
+[groups.c-curtain.generator]
+type = "curtain"
+length_front = 0.12
+length_back = 0.15
+drape_deg = 90.0
+envelope = [[3.0, 0.13], [0.0, 0.13]]
+count = 24
+columns = 2
+wave = { amplitude = 0.0, frequency = 1.0, curl = 0.05 }
+width = { start = 0.08, mid = 0.13, tip = 0.04, tip_at = 0.85 }
+
+[groups.d-framing]
+dynamics = { simulate = true, follow = "head" }
+
+# The side locks fall beside the cheeks and end in a point at the jaw: no tail behind the ear, which hooked them back
+# over it, and no curl, which twisted their ends.
+[groups.d-framing.generator]
+type = "framing"
+tail = []

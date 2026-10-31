@@ -210,7 +210,8 @@ pub fn finish(
     let textured = out.tile().is_some();
     let mut output = out.finish(ctx, common, regions, frame.cut.exponent)?;
     let name = format!("{}-fabric", ctx.part);
-    let cloth = look::cloth(ctx, colours, textured)?;
+    let mut cloth = look::cloth(ctx, colours, textured)?;
+    super::common::make_sheer(&mut cloth, common.sheer);
     for (material, spec) in &mut output.materials {
         if material.as_str() == name {
             *spec = cloth.clone();

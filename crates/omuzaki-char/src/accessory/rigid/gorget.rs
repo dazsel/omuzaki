@@ -71,6 +71,11 @@ pub(super) struct Shape {
     pub(super) ease: f64,
     /// The plate's thickness.
     pub(super) thickness: f64,
+    /// How many points the chest piece's lower edge hangs in, across its spread (an odd count hangs one at the front);
+    /// 0 for a smooth crescent.
+    pub(super) points: u32,
+    /// How far the edge rises between two points, as a share of the depth there.
+    pub(super) notch: f64,
 }
 
 impl Shape {
@@ -80,7 +85,26 @@ impl Shape {
         if self.spread <= 0.0 || off >= self.spread {
             return 0.0;
         }
-        self.chest * (FRAC_PI_2 * off / self.spread).cos().powf(CRESCENT)
+        let crescent = self.chest * (FRAC_PI_2 * off / self.spread).cos().powf(CRESCENT);
+        if self.points == 0 || self.notch <= 0.0 {
+            return crescent;
+        }
+        // Points `spacing` apart, one at the front when the count is odd: 0 at a point, 1 halfway between two.
+        let spacing = 2.0 * self.spread / f64::from(self.points);
+        let phase = if self.points % 2 == 1 { 0.0 } else { 0.5 };
+        let t = wrap(theta) / spacing + phase;
+        let between = 2.0 * (t - t.round()).abs();
+        crescent * (1.0 - self.notch * between * between.sqrt())
+    }
+
+    /// How many samples round the neck resolve the points: at least `least`, and a dozen to each point.
+    pub(super) fn samples(&self, least: usize) -> usize {
+        if self.points == 0 || self.notch <= 0.0 || self.spread <= 0.0 {
+            return least;
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a few hundred samples
+        let needed = (12.0 * f64::from(self.points) * TAU / (2.0 * self.spread)).ceil() as usize;
+        least.max(needed).min(1024)
     }
 
     /// The profile's `s` (up from the band's centre) at the plate's lower edge at `theta`.
@@ -513,13 +537,52 @@ mod tests {
 
     #[test]
     fn the_crescent_is_deepest_at_the_front_and_meets_the_band_at_its_ends() {
-        let shape = Shape { height: 0.02, chest: 0.04, spread: 1.0, band: 0.001, ease: 0.002, thickness: 0.001 };
+        let shape = Shape {
+            height: 0.02,
+            chest: 0.04,
+            spread: 1.0,
+            band: 0.001,
+            ease: 0.002,
+            thickness: 0.001,
+            points: 0,
+            notch: 0.0,
+        };
         assert!((shape.depth(0.0) - 0.04).abs() < 1e-12);
         assert!(shape.depth(0.5) < 0.04 && shape.depth(0.5) > 0.0);
         assert_eq!(shape.depth(1.0), 0.0);
         assert_eq!(shape.depth(PI), 0.0, "the back carries no chest piece");
         assert!((shape.depth(-0.5) - shape.depth(0.5)).abs() < 1e-12, "symmetric");
         assert!((shape.foot(PI) + 0.001).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_pointed_edge_hangs_its_points_on_the_crescent_and_rises_between_them() {
+        let shape = Shape {
+            height: 0.02,
+            chest: 0.04,
+            spread: 1.0,
+            band: 0.001,
+            ease: 0.002,
+            thickness: 0.001,
+            points: 5,
+            notch: 0.6,
+        };
+        let smooth = Shape { points: 0, ..shape };
+        let spacing = 2.0 / 5.0;
+        // A point at the front and every spacing out, on the crescent; halfway between, 60% up from it.
+        for k in [0.0, 1.0, -1.0, 2.0] {
+            let theta = k * spacing;
+            assert!((shape.depth(theta) - smooth.depth(theta)).abs() < 1e-9, "a point at {theta}");
+        }
+        let half = 0.5 * spacing;
+        assert!((shape.depth(half) - 0.4 * smooth.depth(half)).abs() < 1e-9);
+        assert!((shape.depth(-half) - shape.depth(half)).abs() < 1e-12, "symmetric");
+        assert_eq!(shape.depth(PI), 0.0);
+        // An even count puts the front between two points.
+        let even = Shape { points: 4, ..shape };
+        assert!(even.depth(0.0) < 0.5 * smooth.depth(0.0));
+        assert!(shape.samples(64) >= 12 * 5 * 3, "a dozen samples to each point: {}", shape.samples(64));
+        assert_eq!(smooth.samples(64), 64);
     }
 
     #[test]
