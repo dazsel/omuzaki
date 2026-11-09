@@ -22,6 +22,8 @@
 //!   segmenter's wait per pause and marks where a listener would nod.
 //! - [`parity`]: measured voice parity, our audio against a reference recording aligned by DTW, and the
 //!   `voice.compare` op.
+//! - [`prosody`]: a voice's pitch, intonation range and tempo reshaped after synthesis with its formants kept
+//!   (TD-PSOLA); the `kokoro` runtime uses it for `expressiveness`.
 //! - [`ears`]: [`SpeechEars`], the host as the AI performer hears it, dropping its own echo.
 //! - [`commands`]: voice commands (AP-10): the phrase matcher, the [`CommandListener`] that turns the person's raw-mic
 //!   transcripts into `voice.command` events, and the opt-in `voice_commands.*` ops.
@@ -51,6 +53,7 @@ pub mod g2p;
 pub mod host;
 pub mod kokoro_runtime;
 pub mod parity;
+pub mod prosody;
 pub mod queue;
 pub mod segmenter;
 pub mod slots;

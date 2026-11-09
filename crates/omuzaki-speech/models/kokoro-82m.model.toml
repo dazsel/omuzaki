@@ -57,9 +57,9 @@ sha256 = "669fe0647f9dd04fcab92f1439a40eeb4c8b4ab1f82e4996fe3d918ce4a63b73"
 size = 522240
 urls = ["https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/1939ad2a8e416c0acfeecc08a694d14ef25f2231/voices/bf_emma.bin"]
 
-# Kokoro has a speed control and no expressiveness control.
+# Kokoro has a speed control; the runtime makes expressiveness by scaling the intonation range after synthesis.
 [tts]
-honours = ["speed"]
+honours = ["speed", "expressiveness"]
 
 # Kokoro's own trained voices: none imitates a real person or was cloned from a recording. The first is the default.
 [[voices]]

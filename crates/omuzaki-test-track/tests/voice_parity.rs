@@ -1,6 +1,8 @@
 //! Voice parity on the real stack: Kokoro reads a fable that a LibriVox volunteer read (public domain, the speech
 //! smoke tests' pinned clip), and `voice.compare`'s scoring measures ours against the reading, round after round,
-//! adjusting the voice, the speed, the pitch and the pauses between sentences by what the measures say.
+//! adjusting the voice, the speed, the pitch and the pauses between sentences by what the measures say. Then the
+//! pitch moves to TD-PSOLA (formants kept, `omuzaki_speech::prosody`) and each sentence gets its own pitch offset and
+//! intonation range from the per-phrase measures (#2683): settings set by numbers, never the reading's contour.
 //!
 //! The reading is only measured against: nothing of it goes into ours (Kokoro speaks the text from its own voices; no
 //! cloning, no resynthesis). There is one take of the reader, so there is no takes floor: the targets are the op's
@@ -18,6 +20,7 @@ mod speech_support;
 use omuzaki_ai_api::ModelRegistry as _;
 use omuzaki_speech::parity::ops::{Scored, score};
 use omuzaki_speech::parity::overlay;
+use omuzaki_speech::prosody::{Shape, reshape};
 use omuzaki_speech::slots::clips::{CLIPS, decode_16k};
 use omuzaki_speech::slots::tts::{TTS_RATE, TtsCall, Utterance, resample};
 use omuzaki_speech::slots::{asr_slot, tts_slot};
@@ -31,17 +34,31 @@ struct Settings {
     speed: f32,
     pitch_semitones: f64,
     pause_s: f64,
+    /// Pitch by TD-PSOLA (formants kept) instead of the declared rate.
+    psola: bool,
+    /// Per sentence: an extra pitch offset (semitones) and an intonation range; empty for none.
+    lines: Vec<(f64, f64)>,
 }
 
 impl Settings {
     fn made_with(&self) -> String {
-        format!(
-            "kokoro-82m/{}, speed {:.2}, pitch {:+.1} semitones, {:.0} ms between sentences",
+        let mut out = format!(
+            "kokoro-82m/{}, speed {:.2}, pitch {:+.1} semitones{}, {:.0} ms between sentences",
             self.voice,
             self.speed,
             self.pitch_semitones,
+            if self.psola { " (TD-PSOLA, formants kept)" } else { "" },
             self.pause_s * 1000.0
-        )
+        );
+        if !self.lines.is_empty() {
+            let ranges: Vec<String> = self.lines.iter().map(|(p, r)| format!("{p:+.1}/{r:.2}")).collect();
+            out = format!("{out}, per sentence pitch/range {}", ranges.join(" "));
+        }
+        out
+    }
+
+    fn line(&self, i: usize) -> (f64, f64) {
+        self.lines.get(i).copied().unwrap_or((0.0, 1.0))
     }
 }
 
@@ -67,21 +84,57 @@ fn sentences(text: &str) -> Vec<String> {
     out
 }
 
-/// Ours at 16 kHz: each sentence spoken, pitched by playing it as if at a shifted rate (the TTS host's own way) with
-/// the speed compensating, and the pauses between.
-fn speak(call: &mut TtsCall, session: &mut dyn omuzaki_ai_api::Session, lines: &[String], s: &Settings) -> Vec<f32> {
-    let shift = 2f64.powf(s.pitch_semitones / 12.0);
-    let speed = (f64::from(s.speed) / shift) as f32;
-    let from = (f64::from(TTS_RATE) * shift).round() as u32;
+/// Ours at 16 kHz: each sentence spoken and pitched (by the declared rate, the TTS host's way, with the speed
+/// compensating; or by TD-PSOLA), with the pauses between. Also each sentence's span in ours, in samples.
+fn speak(
+    call: &mut TtsCall,
+    session: &mut dyn omuzaki_ai_api::Session,
+    lines: &[String],
+    s: &Settings,
+) -> (Vec<f32>, Vec<(usize, usize)>) {
     let mut out = Vec::new();
+    let mut spans = Vec::new();
     for (i, line) in lines.iter().enumerate() {
-        let pcm = call.speak(session, &Utterance { voice: s.voice, speed, ..Utterance::plain(line) }).unwrap().to_vec();
-        out.extend(resample(&pcm, from, 16_000));
+        let (extra, range) = s.line(i);
+        let start = out.len();
+        if s.psola {
+            let pcm =
+                call.speak(session, &Utterance { voice: s.voice, speed: s.speed, ..Utterance::plain(line) }).unwrap();
+            let shape = Shape { semitones: s.pitch_semitones + extra, range, tempo: 1.0 };
+            out.extend(resample(&reshape(pcm, TTS_RATE, &shape), TTS_RATE, 16_000));
+        } else {
+            let shift = 2f64.powf((s.pitch_semitones + extra) / 12.0);
+            let speed = (f64::from(s.speed) / shift) as f32;
+            let from = (f64::from(TTS_RATE) * shift).round() as u32;
+            let pcm = call.speak(session, &Utterance { voice: s.voice, speed, ..Utterance::plain(line) }).unwrap();
+            out.extend(resample(pcm, from, 16_000));
+        }
+        spans.push((start, out.len()));
         if i + 1 < lines.len() {
             out.extend(std::iter::repeat_n(0.0, (s.pause_s * 16_000.0) as usize));
         }
     }
-    out
+    (out, spans)
+}
+
+/// Each sentence's pitch offset from the rest of the line (cents) and its range ratio, from the per-phrase measures:
+/// a phrase counts for the sentence its middle falls in, weighted by its frames.
+fn per_sentence(scored: &Scored, ours: &[f32], spans: &[(usize, usize)]) -> Vec<(Option<f64>, Option<f64>)> {
+    let first = omuzaki_speech::parity::analyse(ours).speech_span().map_or(0, |(s, _)| s) as f64 * 10.0;
+    let line_bias = scored.parity.measures.f0_bias_cents;
+    let mut acc = vec![(0.0, 0.0, 0.0, 0.0); spans.len()];
+    for seg in &scored.parity.segments {
+        let middle = (first + seg.ours_ms[0].midpoint(seg.ours_ms[1])) * 16.0;
+        let Some(i) = spans.iter().position(|(a, b)| (*a as f64..*b as f64).contains(&middle)) else { continue };
+        let w = seg.frames as f64;
+        acc[i].0 += (seg.f0_bias_cents - line_bias) * w;
+        acc[i].1 += w;
+        if let Some(r) = seg.f0_range_ratio {
+            acc[i].2 += r.ln() * w;
+            acc[i].3 += w;
+        }
+    }
+    acc.iter().map(|&(b, wb, r, wr)| ((wb > 0.0).then(|| b / wb), (wr > 0.0).then(|| (r / wr).exp()))).collect()
 }
 
 fn metric(answer: &Value, name: &str) -> f64 {
@@ -99,6 +152,7 @@ fn badness(answer: &Value) -> f64 {
 }
 
 #[test]
+#[allow(clippy::too_many_lines, reason = "one study, round after round, read top to bottom")]
 fn kokoro_is_measured_against_a_public_domain_reading_and_tuned_by_the_measures() {
     let Some(files) = tts_folders() else { return };
     let dir = std::env::temp_dir().join(format!("omuzaki-voice-parity-{}", std::process::id()));
@@ -122,34 +176,36 @@ fn kokoro_is_measured_against_a_public_domain_reading_and_tuned_by_the_measures(
     eprintln!("{} sentences: {lines:?}", lines.len());
 
     let out = std::env::var_os("OMUZAKI_PARITY_OUT").map(std::path::PathBuf::from);
-    let mut s = Settings { voice: "af_heart", speed: 1.0, pitch_semitones: 0.0, pause_s: 0.4 };
+    let mut s =
+        Settings { voice: "af_heart", speed: 1.0, pitch_semitones: 0.0, pause_s: 0.4, psola: false, lines: Vec::new() };
     let mut rounds: Vec<(Settings, Value, Scored)> = Vec::new();
     let mut run = |s: &Settings, rounds: &mut Vec<(Settings, Value, Scored)>| {
-        let ours = speak(&mut call, session.as_mut(), &lines, s);
+        let (ours, spans) = speak(&mut call, session.as_mut(), &lines, s);
         let scored = score(&ours, reference, &[]).unwrap();
         let answer = scored.answer(&s.made_with(), &[]);
         eprintln!(
-            "| {} | {:.2} | {:.0} | {:.0} | {:.1} | {:.0} | {:.0} | {:.2} |",
+            "| {} | {:.2} | {:.0} | {:.0} | {:.2} | {:.1} | {:.0} | {:.0} | {:.2} |",
             s.made_with(),
             metric(&answer, "mcd_db"),
             metric(&answer, "f0_bias_cents"),
             metric(&answer, "f0_shape_cents"),
+            metric(&answer, "f0_range_factor"),
             metric(&answer, "duration_error_pct"),
             metric(&answer, "timing_rms_ms"),
             metric(&answer, "phrase_onset_ms"),
             badness(&answer),
         );
         rounds.push((s.clone(), answer, scored));
-        ours
+        (ours, spans)
     };
-    eprintln!("| ours | MCD dB | pitch bias c | intonation c | duration % | rhythm ms | onset ms | total |");
-    eprintln!("|---|---|---|---|---|---|---|---|");
-    let heart = run(&s, &mut rounds);
+    eprintln!("| ours | MCD dB | pitch bias c | intonation c | range × | duration % | rhythm ms | onset ms | total |");
+    eprintln!("|---|---|---|---|---|---|---|---|---|");
+    let (heart, _) = run(&s, &mut rounds);
 
     // Each voice at the starting settings; keep the closest.
     let others: Vec<(&str, Vec<f32>)> = ["af_bella", "am_michael", "bf_emma"]
         .into_iter()
-        .map(|voice| (voice, run(&Settings { voice, ..s.clone() }, &mut rounds)))
+        .map(|voice| (voice, run(&Settings { voice, ..s.clone() }, &mut rounds).0))
         .collect();
     s = rounds.iter().min_by(|a, b| badness(&a.1).total_cmp(&badness(&b.1))).map(|r| r.0.clone()).unwrap();
 
@@ -176,9 +232,34 @@ fn kokoro_is_measured_against_a_public_domain_reading_and_tuned_by_the_measures(
         run(&s, &mut rounds);
     }
 
+    // The same settings with the pitch by TD-PSOLA: the formants stay Kokoro's.
+    s = rounds.iter().skip(4).min_by(|a, b| badness(&a.1).total_cmp(&badness(&b.1))).map(|r| r.0.clone()).unwrap();
+    s = Settings { psola: true, ..s };
+    let (mut ours, mut spans) = run(&s, &mut rounds);
+
+    // Then each sentence by its own phrases: its pitch offset from the rest of the line, its intonation range.
+    for _ in 0..3 {
+        let scored = &rounds.last().unwrap().2;
+        let line_bias = scored.parity.measures.f0_bias_cents;
+        let wanted = per_sentence(scored, &ours, &spans);
+        let lines_now: Vec<(f64, f64)> = (0..lines.len()).map(|i| s.line(i)).collect();
+        s = Settings {
+            pitch_semitones: (s.pitch_semitones - line_bias / 100.0).clamp(-4.0, 4.0),
+            lines: lines_now
+                .iter()
+                .zip(&wanted)
+                .map(|(&(p, r), &(bias, ratio))| {
+                    ((p - bias.unwrap_or(0.0) / 100.0).clamp(-3.0, 3.0), (r / ratio.unwrap_or(1.0)).clamp(0.3, 3.0))
+                })
+                .collect(),
+            ..s
+        };
+        (ours, spans) = run(&s, &mut rounds);
+    }
+
     // What the timbre measures read between takes of one voice (af_heart again at another speed) and between voices,
     // with no reference in it: where a same-speaker target has to sit in this feature space.
-    let again = speak(&mut call, session.as_mut(), &lines, &Settings { speed: 1.15, ..rounds[0].0.clone() });
+    let (again, _) = speak(&mut call, session.as_mut(), &lines, &Settings { speed: 1.15, ..rounds[0].0.clone() });
     let heart_f = omuzaki_speech::parity::analyse(&heart);
     eprintln!("| pair | MCD dB | spectral dB | voicing |\n|---|---|---|---|");
     let pairs =

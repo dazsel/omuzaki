@@ -228,7 +228,7 @@ fn kokoro_ships_its_graph_voices_and_the_gold_lexicons_only() {
     assert_eq!(voices, ["af_heart", "af_bella", "am_michael", "bf_emma"]);
     assert!(kokoro.voices.iter().all(|v| !v.needs_consent() && !v.languages.is_empty()));
     let spec = kokoro.tts.as_ref().expect("[tts]");
-    assert!(spec.honours("speed") && !spec.honours("expressiveness"));
+    assert!(spec.honours("speed") && spec.honours("expressiveness"));
     eprintln!("{} {} {}", kokoro.id, kokoro.version, kokoro.digest_text().trim_end());
 }
 
