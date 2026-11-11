@@ -345,6 +345,9 @@ pub enum Draw {
         #[serde(default = "icon_size")]
         size: f32,
     },
+    /// Nothing of its own: the layers parented to it are drawn together and faded as one, so a stinger's stacked
+    /// panels fade out without showing through each other (each child's own opacity still applies inside).
+    Group {},
     /// Speed lines: streaks across the frame that sell a whip or a stinger.
     Lines {
         /// How many.
@@ -423,8 +426,8 @@ fn line_band() -> f32 {
 
 impl Draw {
     /// Every kind's name, for listings.
-    pub const KINDS: [&'static str; 10] =
-        ["text", "rect", "ellipse", "ring", "band", "map", "polygon", "bars", "icon", "lines"];
+    pub const KINDS: [&'static str; 11] =
+        ["text", "rect", "ellipse", "ring", "band", "map", "polygon", "bars", "icon", "lines", "group"];
 
     /// This one's kind.
     #[must_use]
@@ -440,6 +443,7 @@ impl Draw {
             Self::Bars { .. } => "bars",
             Self::Icon { .. } => "icon",
             Self::Lines { .. } => "lines",
+            Self::Group {} => "group",
         }
     }
 }
@@ -641,6 +645,7 @@ impl Draw {
                 positive("band", *band)?;
                 travel.check(&format!("{at}.travel"))?;
             }
+            Draw::Group {} => {}
         }
         Ok(())
     }
@@ -730,9 +735,9 @@ impl<'a> Painter<'a> {
             }
             None => None,
         };
-        let (x, y) = match parent {
-            Some(_) => (layer.x.at(local) * u, layer.y.at(local) * u),
-            None => (layer.x.at(local) * w, layer.y.at(local) * h),
+        let (x, y, u) = match parent {
+            Some(_) => (layer.x.at(local), layer.y.at(local), 1.0),
+            None => (layer.x.at(local) * w, layer.y.at(local) * h, u),
         };
         let scale = layer.scale.at(local);
         let [sx, sy] = layer.stretch.at(local);
@@ -748,22 +753,63 @@ impl<'a> Painter<'a> {
         })
     }
 
-    /// Draws every layer at `depth` that shows at `t` onto `canvas`, in order.
+    /// Draws every layer at `depth` that shows at `t` onto `canvas`, in order; a group's layers are drawn with it.
     pub fn paint(&self, canvas: &mut Pixmap, depth: Depth, t: f32, fps: u32) {
         for (index, layer) in self.layers.iter().enumerate() {
-            if layer.depth != depth || !layer.shows_at(t) {
+            if layer.depth != depth || !layer.shows_at(t) || self.group_of(index).is_some() {
                 continue;
             }
-            if layer.motion_blur > 0.0 {
-                self.paint_blurred(canvas, index, t, fps);
-            } else {
-                self.paint_one(canvas, index, t, 1.0);
-            }
+            self.paint_any(canvas, index, t, fps, 1.0);
         }
     }
 
+    /// Draws layer `index` at `t`, its opacity times `alpha`: a group with its layers, a blurred one across its shutter.
+    fn paint_any(&self, canvas: &mut Pixmap, index: usize, t: f32, fps: u32, alpha: f32) {
+        let Some(layer) = self.layers.get(index) else { return };
+        if matches!(layer.draw, Draw::Group {}) {
+            self.paint_group(canvas, index, t, fps, alpha);
+        } else if layer.motion_blur > 0.0 {
+            self.paint_blurred(canvas, index, t, fps, alpha);
+        } else {
+            self.paint_one(canvas, index, t, alpha);
+        }
+    }
+
+    /// The nearest group layer `index` is drawn inside, through its parents.
+    fn group_of(&self, index: usize) -> Option<usize> {
+        let mut at = self.layers.get(index)?;
+        for _ in 0..=16 {
+            let parent = self.layers.iter().position(|l| Some(&l.id) == at.parent.as_ref())?;
+            if matches!(self.layers[parent].draw, Draw::Group {}) {
+                return Some(parent);
+            }
+            at = &self.layers[parent];
+        }
+        None
+    }
+
+    /// Draws group `index`'s layers onto a clear frame of their own at full strength, then lays that frame down at the
+    /// group's opacity (times `alpha`): overlapping layers fade as one picture.
+    fn paint_group(&self, canvas: &mut Pixmap, index: usize, t: f32, fps: u32, alpha: f32) {
+        let Some(placed) = self.place(index, t, 0) else { return };
+        let opacity = (placed.opacity * alpha).clamp(0.0, 1.0);
+        if opacity <= 0.0 {
+            return;
+        }
+        let Some(mut scratch) = Pixmap::new(canvas.width(), canvas.height()) else { return };
+        // The members' placed opacities carry the group's own; drawn here, they leave it out.
+        let inside = 1.0 / placed.opacity;
+        for (member, layer) in self.layers.iter().enumerate() {
+            if layer.shows_at(t) && self.group_of(member) == Some(index) {
+                self.paint_any(&mut scratch, member, t, fps, inside);
+            }
+        }
+        let paint = tiny_skia::PixmapPaint { opacity, ..tiny_skia::PixmapPaint::default() };
+        canvas.draw_pixmap(0, 0, scratch.as_ref(), &paint, Transform::identity(), None);
+    }
+
     /// Draws layer `index` as the mean of several moments across the shutter, so a whip leaves a streak.
-    fn paint_blurred(&self, canvas: &mut Pixmap, index: usize, t: f32, fps: u32) {
+    fn paint_blurred(&self, canvas: &mut Pixmap, index: usize, t: f32, fps: u32, alpha: f32) {
         let Some(layer) = self.layers.get(index) else { return };
         #[allow(clippy::cast_precision_loss, reason = "frame rates of at most 60")]
         let shutter = layer.motion_blur / fps.max(1) as f32;
@@ -774,7 +820,7 @@ impl<'a> Painter<'a> {
             #[allow(clippy::cast_precision_loss, reason = "a handful of samples")]
             let at = t - shutter * (i as f32 / (samples - 1) as f32);
             scratch.fill(tiny_skia::Color::TRANSPARENT);
-            self.paint_one(&mut scratch, index, at.max(layer.start), 1.0);
+            self.paint_one(&mut scratch, index, at.max(layer.start), alpha);
             for (s, v) in sum.iter_mut().zip(scratch.data()) {
                 *s += f32::from(*v);
             }
@@ -968,6 +1014,7 @@ fn shapes(draw: &Draw, t: f32) -> Vec<Shape> {
         Draw::Lines { count, length, thickness, band, travel } => {
             lines(*count, *length, *thickness, *band, travel.at(t)).into_iter().collect()
         }
+        Draw::Group {} => Vec::new(),
     }
 }
 
@@ -1527,6 +1574,47 @@ mod tests {
         let painter_canvas = painted(&[parent.clone(), child.clone()], 1.0);
         let alone = painted(&[parent], 1.0);
         assert_ne!(painter_canvas.data(), alone.data(), "the child draws");
+    }
+
+    #[test]
+    fn a_group_fades_its_layers_as_one_picture() {
+        // Two solid squares overlapping in the middle of the frame, faded to half.
+        let square = |id: &str, x: f32, parent: Option<&str>, opacity: f32| {
+            let mut l = serde_json::json!({"id": id, "draw": {"kind": "rect", "w": 400, "h": 400}, "x": x, "y": 0.5,
+                "fill": "#ffffff", "opacity": opacity});
+            if let Some(p) = parent {
+                l["parent"] = serde_json::json!(p);
+                l["x"] = serde_json::json!((x - 0.5) * REFERENCE_WIDTH);
+                l["y"] = serde_json::json!(0.0);
+            }
+            layer(l)
+        };
+        let alpha_at = |p: &Pixmap, x: u32, y: u32| p.pixel(x, y).unwrap().alpha();
+        let apart = painted(&[square("a", 0.4, None, 0.5), square("b", 0.6, None, 0.5)], 0.5);
+        let group =
+            layer(serde_json::json!({"id": "g", "draw": {"kind": "group"}, "x": 0.5, "y": 0.5, "opacity": 0.5}));
+        let together = painted(&[group, square("a", 0.4, Some("g"), 1.0), square("b", 0.6, Some("g"), 1.0)], 0.5);
+        let (middle, side) = ((108, 192), (80, 192));
+        assert!(
+            alpha_at(&apart, middle.0, middle.1) > alpha_at(&apart, side.0, side.1) + 40,
+            "faded apart, they stack"
+        );
+        let (m, s) = (alpha_at(&together, middle.0, middle.1), alpha_at(&together, side.0, side.1));
+        assert!(m.abs_diff(s) <= 2 && (120..=136).contains(&m), "faded as a group, half everywhere: {m} and {s}");
+        assert_eq!(Draw::Group {}.kind(), "group");
+        assert!(Draw::KINDS.contains(&"group"));
+    }
+
+    #[test]
+    fn a_child_sits_in_points_of_its_parent_at_any_frame_size() {
+        // A dot 270 points right of its parent: a quarter of the frame's width, whatever the frame's size.
+        let parent = layer(serde_json::json!({"id": "p", "draw": {"kind": "group"}, "x": 0.25, "y": 0.5}));
+        let dot = layer(serde_json::json!({"id": "d", "parent": "p", "draw": {"kind": "rect", "w": 20, "h": 20},
+            "x": 270.0, "y": 0.0, "fill": "#ffffff"}));
+        let canvas = painted(&[parent, dot], 0.5);
+        let xs: Vec<u32> = (0..216).filter(|x| canvas.pixel(*x, 192).unwrap().alpha() > 128).collect();
+        let mid = u32::midpoint(xs[0], xs[xs.len() - 1]);
+        assert!(mid.abs_diff(108) <= 1, "the dot is at the frame's middle: {xs:?}");
     }
 
     #[test]
