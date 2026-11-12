@@ -65,7 +65,7 @@ impl Stature {
 /// rescaled afterwards without changing how it behaves. A part that simulates must be built in metres, which parts
 /// after the body are; the body and the head must not simulate.
 pub fn scale_output(part: &PartId, output: &mut PartOutput, s: f32) -> Result<(), BuildError> {
-    scale_output_about(part, output, s, Vec3::ZERO)
+    scale_with(part, output, s, Vec3::ZERO, false)
 }
 
 /// [`scale_output`] about `about` instead of the origin: every position `p` goes to `about + (p - about) * s`, every
@@ -76,6 +76,12 @@ pub fn scale_output(part: &PartId, output: &mut PartOutput, s: f32) -> Result<()
 /// # Errors
 /// As [`scale_output`].
 pub fn scale_output_about(part: &PartId, output: &mut PartOutput, s: f32, about: Vec3) -> Result<(), BuildError> {
+    scale_with(part, output, s, about, true)
+}
+
+/// [`scale_output_about`], with `own` saying whether `s` is the head's own size (which its [`HeadFact`] then reports
+/// through [`HeadSurface::own_size`]) or the stature's scale.
+fn scale_with(part: &PartId, output: &mut PartOutput, s: f32, about: Vec3, own: bool) -> Result<(), BuildError> {
     #[allow(clippy::float_cmp)] // exactly 1 means "no scale", and must leave the output bit for bit
     let unscaled = s == 1.0;
     if unscaled {
@@ -101,14 +107,14 @@ pub fn scale_output_about(part: &PartId, output: &mut PartOutput, s: f32, about:
             (w.fade_from, w.fade_to) = (about.z + (w.fade_from - about.z) * s, about.z + (w.fade_to - about.z) * s);
         }
     }
-    scale_publishes(&mut output.publishes, s, about);
+    scale_publishes(&mut output.publishes, s, about, own);
     scale_rig(&mut output.rig, s);
     Ok(())
 }
 
-fn scale_publishes(p: &mut Publishes, s: f32, about: Vec3) {
+fn scale_publishes(p: &mut Publishes, s: f32, about: Vec3, own: bool) {
     for head in p.values_mut::<HeadFact>() {
-        *head = Arc::new(ScaledHead { inner: head.clone(), scale: s, about });
+        *head = Arc::new(ScaledHead { inner: head.clone(), scale: s, about, own });
     }
     for fit in p.values_mut::<FitFact>() {
         *fit = Arc::new(ScaledFit { inner: fit.clone(), scale: s, about });
@@ -200,12 +206,28 @@ impl BodyFit for ScaledFit {
     }
 }
 
+/// `head` seen at `s` times its size about `about`, as the head's own size sizes it: what a part worn on the head sees
+/// it through to build at the template's head size (`s` the inverse of [`HeadSurface::own_size`]), then sizes its
+/// output the same way, so it keeps its proportions to the head.
+#[must_use]
+pub fn sized_head(head: Arc<dyn HeadSurface>, s: f32, about: Vec3) -> Arc<dyn HeadSurface> {
+    Arc::new(ScaledHead { inner: head, scale: s, about, own: true })
+}
+
+/// `fit` seen at `s` times its size about `about`: the body as a part built through [`sized_head`] sees it.
+#[must_use]
+pub fn sized_fit(fit: Arc<dyn BodyFit>, s: f32, about: Vec3) -> Arc<dyn BodyFit> {
+    Arc::new(ScaledFit { inner: fit, scale: s, about })
+}
+
 /// A head surface seen at `scale` times its authored size.
 #[derive(Debug)]
 struct ScaledHead {
     inner: Arc<dyn HeadSurface>,
     scale: f32,
     about: Vec3,
+    /// Whether `scale` is the head's own size ([`HeadSurface::own_size`]) rather than the stature's.
+    own: bool,
 }
 
 impl HeadSurface for ScaledHead {
@@ -219,6 +241,12 @@ impl HeadSurface for ScaledHead {
 
     fn layout_scale(&self) -> f32 {
         self.inner.layout_scale() * self.scale
+    }
+
+    /// The head's own sizing is about one point: this one when `scale` is it, else the inner one, moved.
+    fn own_size(&self) -> (f32, Vec3) {
+        let (size, about) = self.inner.own_size();
+        if self.own { (size * self.scale, self.about) } else { (size, self.about + (about - self.about) * self.scale) }
     }
 }
 

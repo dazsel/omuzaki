@@ -89,6 +89,17 @@ pub struct Wisp {
     pub thickness: Bulge,
 }
 
+impl Wisp {
+    /// The wisp at `s` times its size about `about`.
+    pub fn size_about(&mut self, s: f32, about: Vec3) {
+        let k = f64::from(s);
+        self.points.iter_mut().for_each(|p| *p = about + (*p - about) * s);
+        self.width =
+            Taper { start: self.width.start * k, mid: self.width.mid * k, tip: self.width.tip * k, ..self.width };
+        self.thickness = Bulge { base: self.thickness.base * k, swell: self.thickness.swell * k };
+    }
+}
+
 /// The wisp the `index`-th lock sheds, if it sheds one by `shed`: `rest` is the lock's polyline, `width` its width and
 /// `shade` its shade; `frame` gives the outward direction it strays toward.
 pub fn wisp(index: usize, rest: &[Vec3], width: &Taper, shade: f32, frame: &OutwardFrame, shed: &Shed) -> Option<Wisp> {
